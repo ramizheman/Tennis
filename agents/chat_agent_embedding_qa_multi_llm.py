@@ -1,0 +1,4897 @@
+#!/usr/bin/env python3
+
+import json
+import os
+import numpy as np
+import faiss
+import pickle
+from typing import Dict, List, Any, Optional
+import tiktoken
+import time
+import pickle
+
+class TennisChatAgentEmbeddingQAMultiLLM:
+    """
+    Tennis Chat Agent using embedding-based retrieval and multiple LLM options.
+    Supports Claude, Gemini, and OpenAI for answering questions.
+    """
+    
+    def __init__(self, llm_provider: str = "claude", api_key: str = None, model: str = None):
+        """
+        Initialize with specified LLM provider.
+        
+        Args:
+            llm_provider: "claude", "gemini", or "openai"
+            api_key: API key for the provider (optional, will use env vars)
+        """
+        self.llm_provider = llm_provider.lower()
+        self.api_key = api_key
+        self.custom_model = model  # Allow custom model override
+        self.chunks = []
+        self.index = None
+        self.metadata_store = []
+        self.match_id = "swiatek_pegula_20250628"
+        
+        # Rate limiting
+        self.last_api_call = 0
+        self.min_delay = 2.0  # Minimum 2 seconds between API calls
+        
+        # Initialize the appropriate client
+        self._init_llm_client()
+        
+    def _init_llm_client(self):
+        """Initialize the LLM client based on provider."""
+        if self.llm_provider == "claude":
+            try:
+                import anthropic
+                api_key = self.api_key or os.getenv("ANTHROPIC_API_KEY")
+                if not api_key:
+                    raise ValueError("ANTHROPIC_API_KEY environment variable required for Claude")
+                self.client = anthropic.Anthropic(api_key=api_key)
+                self.model = "claude-3-5-sonnet-20241022"
+            except ImportError:
+                raise ImportError("Please install anthropic: pip install anthropic")
+                
+        elif self.llm_provider == "gemini":
+            try:
+                import google.generativeai as genai
+                api_key = self.api_key or os.getenv("GOOGLE_API_KEY")
+                if not api_key:
+                    raise ValueError("GOOGLE_API_KEY environment variable required for Gemini")
+                genai.configure(api_key=api_key)
+                self.client = genai
+                self.model = "gemini-1.5-flash"
+            except ImportError:
+                raise ImportError("Please install google-generativeai: pip install google-generativeai")
+                
+        elif self.llm_provider == "openai":
+            try:
+                from openai import OpenAI
+                api_key = self.api_key or os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY environment variable required for OpenAI")
+                self.client = OpenAI(api_key=api_key)
+                self.model = self.custom_model or "gpt-4o-mini"  # Allow custom model
+            except ImportError:
+                raise ImportError("Please install openai: pip install openai")
+        else:
+            raise ValueError("llm_provider must be 'claude', 'gemini', or 'openai'")
+        
+    def load_exact_full_format(self, file_path: str = "EXACT_FULL_FORMAT.md") -> None:
+        """
+        Load and process the EXACT_FULL_FORMAT.md file into chunks with embeddings.
+        """
+        print("Loading EXACT_FULL_FORMAT.md...")
+        
+        # Read the file
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Split content into sections (tables vs point-by-point)
+        sections = self._split_into_sections(content)
+        
+        # Process each section
+        all_chunks = []
+        for section_name, section_text in sections.items():
+            print(f"Processing section: {section_name}")
+            
+            # Determine chunk type based on section content
+            chunk_type = self._determine_chunk_type(section_name, section_text)
+            
+            chunks = self._create_chunks_with_metadata(
+                section_text, 
+                chunk_type=chunk_type,
+                section=section_name,
+                match_id=self.match_id
+            )
+            all_chunks.extend(chunks)
+        
+        # Generate embeddings for all chunks
+        print("Generating embeddings...")
+        self.chunks = self._embed_chunks(all_chunks)
+        
+        # Create FAISS index
+        print("Creating vector index...")
+        self._create_vector_index()
+        
+        print(f"Loaded {len(self.chunks)} chunks with embeddings")
+        
+    def _split_into_sections(self, content: str) -> Dict[str, str]:
+        """
+        Split the EXACT_FULL_FORMAT.md content using improved semantic + size-aware chunking.
+        Creates optimal chunks based on content type and size for better searchability.
+        """
+        sections = {}
+        lines = content.split('\n')
+        
+        # Define section patterns and chunking strategies
+        section_config = {
+            'MATCH OVERVIEW:': 'small',
+            'RALLY OUTCOMES STATISTICS:': 'medium', 
+            'OVERVIEW STATISTICS:': 'small',
+            'SERVE1 STATISTICS (SUMMARY):': 'medium',
+            'SERVE1 STATISTICS (DETAILED):': 'large',
+            'SERVE2 STATISTICS (SUMMARY):': 'medium',
+            'SERVE2 STATISTICS (DETAILED):': 'large',
+            'RETURN1 STATISTICS (DETAILED):': 'large',
+            'RETURN2 STATISTICS (DETAILED):': 'large',
+            'KEY POINTS STATISTICS (SERVES):': 'medium',
+            'KEY POINTS STATISTICS (RETURNS):': 'medium',
+            'SHOTS1 STATISTICS:': 'large',
+            'SHOTS2 STATISTICS:': 'large',
+            'SHOTDIR1 STATISTICS:': 'large',
+            'SHOTDIR2 STATISTICS:': 'large',
+            'NETPTS1 STATISTICS:': 'small',
+            'NETPTS2 STATISTICS:': 'small',
+            'POINT-BY-POINT NARRATIVE:': 'narrative'
+        }
+        
+        current_section = None
+        current_text = []
+        current_strategy = None
+        
+        print("🔧 Using improved semantic chunking strategy...")
+        
+        for line in lines:
+            line_stripped = line.strip()
+            
+            # Check if this line starts a new section
+            section_found = None
+            strategy_found = None
+            
+            for pattern, strategy in section_config.items():
+                if line_stripped.startswith(pattern):
+                    section_found = pattern.rstrip(':').lower().replace(' ', '_').replace('(', '').replace(')', '')
+                    strategy_found = strategy
+                    break
+            
+            if section_found:
+                # Process previous section with its strategy
+                if current_section and current_text:
+                    self._process_section_with_strategy(sections, current_section, current_text, current_strategy)
+                
+                # Start new section
+                current_section = section_found
+                current_strategy = strategy_found
+                current_text = [line]
+            else:
+                current_text.append(line)
+        
+        # Process the last section
+        if current_section and current_text:
+            self._process_section_with_strategy(sections, current_section, current_text, current_strategy)
+        
+        print(f"✅ Created {len(sections)} optimized chunks using semantic boundaries")
+        return sections
+    
+    def _process_section_with_strategy(self, sections: Dict[str, str], section_name: str, 
+                                     lines: List[str], strategy: str):
+        """Process a section according to its chunking strategy."""
+        content = '\n'.join(lines)
+        
+        if strategy == 'small':
+            # Keep small sections intact (MATCH OVERVIEW, NETPTS, etc.)
+            sections[section_name] = content
+            print(f"  📝 {section_name}: kept intact (small)")
+            
+        elif strategy == 'medium':
+            # Split medium sections by player if beneficial
+            player_chunks = self._split_by_player_if_beneficial(content, section_name)
+            if len(player_chunks) > 1:
+                for i, chunk in enumerate(player_chunks):
+                    sections[f"{section_name}_player_{i+1}"] = chunk
+                print(f"  👥 {section_name}: split by player ({len(player_chunks)} chunks)")
+            else:
+                sections[section_name] = content
+                print(f"  📝 {section_name}: kept intact (medium)")
+                
+        elif strategy == 'large':
+            # Split large detailed sections by logical subsections
+            subsection_chunks = self._split_large_section_intelligently(content, section_name)
+            if len(subsection_chunks) > 1:
+                for i, chunk in enumerate(subsection_chunks):
+                    sections[f"{section_name}_part_{i+1}"] = chunk
+                print(f"  🔪 {section_name}: split by subsections ({len(subsection_chunks)} chunks)")
+            else:
+                sections[section_name] = content
+                print(f"  📝 {section_name}: kept intact (large)")
+                
+        elif strategy == 'narrative':
+            # Split point-by-point by game groups (every 12-15 points)
+            point_chunks = self._split_narrative_by_games(content)
+            for i, chunk in enumerate(point_chunks):
+                sections[f"{section_name}_games_{i+1}"] = chunk
+            print(f"  🎾 {section_name}: split by games ({len(point_chunks)} chunks)")
+    
+    def _split_by_player_if_beneficial(self, content: str, section_name: str) -> List[str]:
+        """Split content by player if it creates meaningful chunks."""
+        lines = content.split('\n')
+        iga_lines = []
+        jessica_lines = []
+        header_lines = []
+        
+        for line in lines:
+            if 'Iga Swiatek' in line and not line.strip().endswith(':'):
+                iga_lines.append(line)
+            elif 'Jessica Pegula' in line and not line.strip().endswith(':'):
+                jessica_lines.append(line)
+            elif line.strip().endswith(':') or line.startswith('---') or line.startswith('='):
+                header_lines.append(line)
+            else:
+                # Neutral lines go to both if we're splitting, otherwise to header
+                if iga_lines or jessica_lines:
+                    continue
+                header_lines.append(line)
+        
+        # Only split if both players have significant content
+        if len(iga_lines) >= 3 and len(jessica_lines) >= 3:
+            chunks = []
+            if iga_lines:
+                chunks.append('\n'.join(header_lines + iga_lines))
+            if jessica_lines:
+                chunks.append('\n'.join(header_lines + jessica_lines))
+            return chunks
+            
+        return [content]  # Don't split if not beneficial
+    
+    def _split_large_section_intelligently(self, content: str, section_name: str) -> List[str]:
+        """Split large sections by natural semantic boundaries."""
+        lines = content.split('\n')
+        chunks = []
+        current_chunk = []
+        
+        # Identify natural break points
+        for i, line in enumerate(lines):
+            current_chunk.append(line)
+            
+            # Look for natural breaks in detailed statistics
+            is_break_point = (
+                len(current_chunk) > 40 and  # Minimum chunk size
+                (line.strip().endswith('court.') or 
+                 line.strip().endswith('serves.') or
+                 line.strip().endswith('returns.') or
+                 (i < len(lines) - 1 and lines[i+1].strip() == '') or  # Empty line follows
+                 ('served to the' in line and 'court' in line and 
+                  i > 0 and 'served to the' not in lines[i-1]))
+            )
+            
+            if is_break_point:
+                chunks.append('\n'.join(current_chunk))
+                current_chunk = []
+        
+        # Handle remaining content
+        if current_chunk:
+            if chunks and len(current_chunk) < 20:
+                # Append small remainder to last chunk
+                chunks[-1] += '\n' + '\n'.join(current_chunk)
+            else:
+                chunks.append('\n'.join(current_chunk))
+        
+        return chunks if len(chunks) > 1 else [content]
+    
+    def _split_narrative_by_games(self, content: str) -> List[str]:
+        """Split point-by-point narrative by game groups for optimal chunk size."""
+        lines = content.split('\n')
+        chunks = []
+        current_chunk = []
+        point_count = 0
+        
+        for line in lines:
+            current_chunk.append(line)
+            
+            # Count actual points
+            if line.startswith('Point '):
+                point_count += 1
+                
+                # Create new chunk every 20 points (more comprehensive coverage)
+                # This ensures longer rallies don't get split across chunks
+                if point_count % 20 == 0 and len(current_chunk) > 10:
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = []
+        
+        # Handle remaining points
+        if current_chunk:
+            if chunks and len(current_chunk) < 8:
+                # Append small remainder to last chunk
+                chunks[-1] += '\n' + '\n'.join(current_chunk)
+            else:
+                chunks.append('\n'.join(current_chunk))
+        
+        return chunks if chunks else [content]
+    
+    def chunk_text(self, text: str, max_tokens: int = 500) -> List[str]:
+        """
+        Splits a long text into chunks small enough to feed an LLM.
+        Uses simple token count approximation (1 token ≈ 4 chars).
+        """
+        approx_chunk_size = max_tokens * 4  # 4 chars per token
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + approx_chunk_size
+            chunk = text[start:end]
+            chunks.append(chunk)
+            start = end
+        return chunks
+    
+    def _create_chunks_with_metadata(self, text: str, chunk_type: str, section: str, match_id: str) -> List[Dict]:
+        """
+        Returns a list of dicts with chunk text and enhanced metadata for better searchability.
+        """
+        # For tennis data, we want to keep sections intact rather than splitting arbitrarily
+        # Only split if the section exceeds embedding model limits (8k tokens)
+        estimated_tokens = len(text) // 4  # Rough approximation
+        
+        if estimated_tokens > 6000:  # More conservative buffer for 8192 token limit
+            # Split large sections intelligently
+            chunks = self._smart_chunk_large_section(text, section)
+        else:
+            # Keep section intact
+            chunks = [text]
+        
+        # Determine player focus and statistics type from section
+        player_focus = self._determine_player_focus(section)
+        stat_category = self._determine_stat_category(section)
+        
+        return [
+            {
+                "text": chunk,
+                "metadata": {
+                    "type": chunk_type,
+                    "section": section,
+                    "match_id": match_id,
+                    "player_focus": player_focus,
+                    "stat_category": stat_category,
+                    "contains_percentages": "%" in chunk,
+                    "contains_point_details": "Point " in chunk,
+                    "contains_long_rallies": any("shot rally" in line or "stroke rally" in line for line in chunk.split('\n') if "rally" in line),
+                    "match_info": {
+                        "date": "2025-06-28",
+                        "tournament": "Bad Homburg F",
+                        "players": ["Iga Swiatek", "Jessica Pegula"],
+                        "match_type": "WTA"
+                    }
+                }
+            }
+            for chunk in chunks
+        ]
+    
+    def _smart_chunk_large_section(self, text: str, section: str) -> List[str]:
+        """
+        Intelligently chunk large sections while preserving semantic meaning.
+        """
+        lines = text.split('\n')
+        
+        if "point-by-point" in section.lower():
+            # For point-by-point, group by games (every 6-8 points)
+            chunks = []
+            current_chunk = []
+            point_count = 0
+            
+            for line in lines:
+                current_chunk.append(line)
+                if line.startswith("Point "):
+                    point_count += 1
+                    if point_count >= 6:  # Start new chunk every 6 points
+                        chunks.append('\n'.join(current_chunk))
+                        current_chunk = []
+                        point_count = 0
+            
+            if current_chunk:
+                chunks.append('\n'.join(current_chunk))
+            
+            return chunks
+        
+        else:
+            # For statistics sections, try to split by player if possible
+            player1_lines = []
+            player2_lines = []
+            header_lines = []
+            other_lines = []
+            
+            for line in lines:
+                if "Iga Swiatek" in line:
+                    player1_lines.append(line)
+                elif "Jessica Pegula" in line:
+                    player2_lines.append(line)
+                elif line.strip().endswith(':') or line.startswith('---'):
+                    header_lines.append(line)
+                else:
+                    other_lines.append(line)
+            
+            # If we can separate by players, create player-specific chunks
+            if player1_lines or player2_lines:
+                chunks = []
+                if player1_lines:
+                    chunks.append('\n'.join(header_lines + player1_lines))
+                if player2_lines:
+                    chunks.append('\n'.join(header_lines + player2_lines))
+                if other_lines and not (player1_lines or player2_lines):
+                    chunks.append('\n'.join(header_lines + other_lines))
+                return chunks
+            
+            # Fallback: use precise token-based chunking
+            return self._precise_token_chunk(text, max_tokens=6000)
+    
+    def _precise_token_chunk(self, text: str, max_tokens: int) -> List[str]:
+        """Precisely chunk text using actual token counting."""
+        try:
+            import tiktoken
+            encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+            
+            total_tokens = len(encoding.encode(text))
+            if total_tokens <= max_tokens:
+                return [text]
+            
+            print(f"  📏 Precise chunking: {total_tokens} tokens → targeting {max_tokens} per chunk")
+            
+            lines = text.split('\n')
+            chunks = []
+            current_chunk = []
+            current_tokens = 0
+            
+            for line in lines:
+                line_tokens = len(encoding.encode(line + '\n'))
+                
+                if current_tokens + line_tokens > max_tokens and current_chunk:
+                    # Start new chunk
+                    chunks.append('\n'.join(current_chunk))
+                    current_chunk = [line]
+                    current_tokens = line_tokens
+                else:
+                    current_chunk.append(line)
+                    current_tokens += line_tokens
+            
+            if current_chunk:
+                chunks.append('\n'.join(current_chunk))
+            
+            print(f"  ✂️  Split into {len(chunks)} chunks (avg {total_tokens//len(chunks)} tokens each)")
+            return chunks
+            
+        except Exception as e:
+            print(f"  ⚠️  Token counting failed, using character fallback: {e}")
+            # Fallback to character-based chunking
+            max_chars = max_tokens * 4  # Rough estimate
+            chunks = []
+            for i in range(0, len(text), max_chars):
+                chunks.append(text[i:i + max_chars])
+            return chunks
+    
+    def _apply_rate_limit(self):
+        """Apply rate limiting to avoid hitting API limits."""
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_api_call
+        
+        if time_since_last_call < self.min_delay:
+            sleep_time = self.min_delay - time_since_last_call
+            print(f"⏳ Rate limiting: waiting {sleep_time:.1f}s...")
+            time.sleep(sleep_time)
+        
+        self.last_api_call = time.time()
+    
+    def _determine_player_focus(self, section: str) -> str:
+        """Determine which player this section focuses on."""
+        if "serve1" in section.lower() or "return1" in section.lower() or "shots1" in section.lower() or "shotdir1" in section.lower() or "netpts1" in section.lower():
+            return "Iga Swiatek"
+        elif "serve2" in section.lower() or "return2" in section.lower() or "shots2" in section.lower() or "shotdir2" in section.lower() or "netpts2" in section.lower():
+            return "Jessica Pegula"
+        else:
+            return "Both"
+    
+    def _determine_stat_category(self, section: str) -> str:
+        """Determine the category of statistics."""
+        section_lower = section.lower()
+        if "serve" in section_lower:
+            return "serving"
+        elif "return" in section_lower:
+            return "returning"
+        elif "shot" in section_lower:
+            return "shots"
+        elif "net" in section_lower:
+            return "net_play"
+        elif "key_points" in section_lower:
+            return "key_points"
+        elif "rally" in section_lower:
+            return "rally_outcomes"
+        elif "point-by-point" in section_lower:
+            return "narrative"
+        elif "overview" in section_lower:
+            return "overview"
+        else:
+            return "general"
+    
+    def _determine_chunk_type(self, section_name: str, section_text: str) -> str:
+        """Determine the type of chunk based on section name and content."""
+        section_lower = section_name.lower()
+        
+        if "point-by-point" in section_lower or "Point " in section_text:
+            return "narrative"
+        elif any(keyword in section_lower for keyword in ["statistics", "serve", "return", "shots", "net"]):
+            return "statistics"
+        elif "overview" in section_lower:
+            return "overview"
+        else:
+            return "general"
+    
+    def _detect_long_rallies(self, text: str) -> List[str]:
+        """Detect and extract information about long rallies in the text."""
+        long_rallies = []
+        lines = text.split('\n')
+        
+        for line in lines:
+            if "shot rally" in line or "stroke rally" in line:
+                # Extract rally length and details
+                if "16-shot rally" in line:
+                    long_rallies.append(f"LONGEST RALLY: {line}")
+                elif "10+ shot rally" in line or "11-shot rally" in line or "12-shot rally" in line or "13-shot rally" in line or "14-shot rally" in line or "15-shot rally" in line:
+                    long_rallies.append(f"LONG RALLY: {line}")
+        
+        return long_rallies
+    
+    def _is_match_insight_question(self, query: str) -> bool:
+        """Determine if a query is asking for match insights vs. statistics."""
+        query_lower = query.lower()
+        
+        # Match insight keywords
+        insight_keywords = [
+            "key moments", "decided", "outcome", "strategy", "momentum", 
+            "critical", "turning point", "what happened", "how did", 
+            "why did", "analyze", "explain", "describe the match",
+            "tactical", "pattern", "trend", "shift", "flow"
+        ]
+        
+        # Statistical keywords (strong indicators)
+        stat_keywords = [
+            "how many", "percentage", "total", "count", "statistics",
+            "breakdown", "compare", "numbers", "figures", "aces", 
+            "double faults", "winners", "errors", "first serve", "second serve"
+        ]
+        
+        insight_score = sum(1 for keyword in insight_keywords if keyword in query_lower)
+        stat_score = sum(1 for keyword in stat_keywords if keyword in query_lower)
+        
+        # If it's clearly asking for numbers, it's stats
+        if stat_score > 0:
+            return False
+        
+        return insight_score > 0
+    
+    def _embed_chunks(self, chunks: List[Dict]) -> List[Dict]:
+        """
+        Generate embeddings for chunks using Gemini's embedding-001 (FREE) as default.
+        Falls back to OpenAI if Gemini is not available.
+        """
+        # Try Gemini first (FREE)
+        try:
+            import google.generativeai as genai
+            
+            gemini_key = os.getenv("GOOGLE_API_KEY")
+            if gemini_key:
+                genai.configure(api_key=gemini_key)
+                
+                print("🔄 Generating embeddings with Gemini (FREE)...")
+                success_count = 0
+                for i, chunk in enumerate(chunks):
+                    try:
+                        result = genai.embed_content(
+                            model="models/embedding-001",
+                            content=chunk["text"]
+                        )
+                        chunk["embedding"] = result['embedding']
+                        success_count += 1
+                        if (i + 1) % 10 == 0:
+                            print(f"   Generated {i + 1}/{len(chunks)} embeddings...")
+                    except Exception as e:
+                        print(f"Gemini embedding error: {e}")
+                        chunk["embedding"] = None
+                
+                if success_count == len(chunks):
+                    print(f"✅ Successfully generated {len(chunks)} embeddings with Gemini")
+                    return chunks
+                else:
+                    print(f"⚠️  Gemini failed for {len(chunks) - success_count}/{len(chunks)} chunks. Trying OpenAI...")
+            else:
+                print("Warning: GOOGLE_API_KEY not found. Trying OpenAI...")
+        except ImportError:
+            print("Warning: Google Generative AI not available. Trying OpenAI...")
+        
+        # Fallback to OpenAI
+        try:
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if not openai_key:
+                print("Warning: OPENAI_API_KEY not found. Using dummy embeddings.")
+                for chunk in chunks:
+                    if chunk.get("embedding") is None:
+                        chunk["embedding"] = [0.0] * 768  # Gemini dimensions
+                return chunks
+            
+            client = OpenAI(api_key=openai_key)
+            
+            print("🔄 Generating embeddings with OpenAI (fallback)...")
+            success_count = 0
+            for i, chunk in enumerate(chunks):
+                if chunk.get("embedding") is None:  # Only process chunks that failed with Gemini
+                try:
+                    response = client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=chunk["text"]
+                    )
+                    chunk["embedding"] = response.data[0].embedding
+                        success_count += 1
+                        if (i + 1) % 10 == 0:
+                            print(f"   Generated {i + 1}/{len(chunks)} embeddings...")
+                except Exception as e:
+                        print(f"OpenAI embedding error: {e}")
+                        chunk["embedding"] = [0.0] * 1536  # OpenAI dimensions
+                else:
+                    success_count += 1  # Count chunks that already succeeded with Gemini
+            
+            print(f"✅ Generated {success_count}/{len(chunks)} real embeddings")
+            
+        except ImportError:
+            print("Warning: OpenAI not available. Using dummy embeddings.")
+            for chunk in chunks:
+                if chunk.get("embedding") is None:
+                    chunk["embedding"] = [0.0] * 768  # Default to Gemini dimensions
+        
+        return chunks
+    
+    def _create_vector_index(self) -> None:
+        """
+        Create FAISS index and store metadata.
+        """
+        if not self.chunks:
+            raise ValueError("No chunks available. Call load_exact_full_format() first.")
+        
+        # Get embedding dimension
+        dim = len(self.chunks[0]["embedding"])
+        
+        # Create FAISS index
+        self.index = faiss.IndexFlatL2(dim)
+        
+        # Convert embeddings to numpy
+        vectors = np.array([c["embedding"] for c in self.chunks]).astype('float32')
+        self.index.add(vectors)
+        
+        # Keep a parallel list of metadata for retrieval
+        self.metadata_store = [c["metadata"] for c in self.chunks]
+        
+        print(f"Created FAISS index with {len(self.chunks)} vectors of dimension {dim}")
+    
+    def save_embeddings_to_disk(self, filename_prefix: str = "tennis_embeddings") -> None:
+        """
+        Save embeddings, FAISS index, and metadata to disk for persistence.
+        """
+        if not self.chunks or not self.index:
+            raise ValueError("No embeddings available. Call load_exact_full_format() first.")
+        
+        # Save FAISS index
+        faiss_filename = f"{filename_prefix}_faiss.pkl"
+        with open(faiss_filename, 'wb') as f:
+            pickle.dump(self.index, f)
+        
+        # Save metadata store
+        metadata_filename = f"{filename_prefix}_metadata.pkl"
+        with open(metadata_filename, 'wb') as f:
+            pickle.dump(self.metadata_store, f)
+        
+        # Save chunks (for debugging/inspection)
+        chunks_filename = f"{filename_prefix}_chunks.pkl"
+        with open(chunks_filename, 'wb') as f:
+            pickle.dump(self.chunks, f)
+        
+        print(f"✅ Saved embeddings to disk:")
+        print(f"   FAISS index: {faiss_filename}")
+        print(f"   Metadata: {metadata_filename}")
+        print(f"   Chunks: {chunks_filename}")
+    
+    def load_embeddings_from_disk(self, filename_prefix: str = "tennis_embeddings") -> bool:
+        """
+        Load embeddings, FAISS index, and metadata from disk.
+        Returns True if successful, False if files don't exist.
+        """
+        try:
+            # Load FAISS index
+            faiss_filename = f"{filename_prefix}_faiss.pkl"
+            with open(faiss_filename, 'rb') as f:
+                self.index = pickle.load(f)
+            
+            # Load metadata store
+            metadata_filename = f"{filename_prefix}_metadata.pkl"
+            with open(metadata_filename, 'rb') as f:
+                self.metadata_store = pickle.load(f)
+            
+            # Load chunks (optional, for debugging)
+            chunks_filename = f"{filename_prefix}_chunks.pkl"
+            if os.path.exists(chunks_filename):
+                with open(chunks_filename, 'rb') as f:
+                    self.chunks = pickle.load(f)
+            else:
+                # Reconstruct chunks from metadata if needed
+                self.chunks = [{"metadata": meta} for meta in self.metadata_store]
+            
+            print(f"✅ Loaded embeddings from disk:")
+            print(f"   FAISS index: {faiss_filename}")
+            print(f"   Metadata: {metadata_filename}")
+            print(f"   Total chunks: {len(self.metadata_store)}")
+            
+            return True
+            
+        except FileNotFoundError:
+            print(f"❌ Embedding files not found. Run load_exact_full_format() first.")
+            return False
+        except Exception as e:
+            print(f"❌ Error loading embeddings: {e}")
+            return False
+    
+    def retrieve_relevant_chunks(self, query: str, top_k: int = 5) -> List[Dict]:
+        """
+        Retrieve the most relevant chunks for a given query with enhanced filtering.
+        """
+        if not self.index:
+            raise ValueError("Vector index not created. Call load_exact_full_format() first.")
+        
+        # Generate query embedding with Gemini (FREE) as default
+        query_embedding = None
+        
+        # Try Gemini first (FREE)
+        try:
+            import google.generativeai as genai
+            
+            gemini_key = os.getenv("GOOGLE_API_KEY")
+            if gemini_key:
+                genai.configure(api_key=gemini_key)
+                
+                result = genai.embed_content(
+                    model="models/embedding-001",
+                    content=query
+                )
+                query_embedding = result['embedding']
+            else:
+                print("Warning: No GOOGLE_API_KEY for embeddings. Trying OpenAI...")
+        except ImportError:
+            print("Warning: Google Generative AI not available. Trying OpenAI...")
+        except Exception as e:
+            print(f"Gemini embedding error: {e}. Trying OpenAI...")
+        
+                # Fallback to OpenAI
+        if query_embedding is None:
+        try:
+            from openai import OpenAI
+            openai_key = os.getenv("OPENAI_API_KEY")
+            if not openai_key:
+                    print("Warning: No OpenAI API key for embeddings. Using metadata-based retrieval.")
+                    return self._fallback_metadata_retrieval(query, top_k)
+            
+            client = OpenAI(api_key=openai_key)
+            query_embedding = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=query
+            ).data[0].embedding
+        except Exception as e:
+            print(f"Error generating query embedding: {e}")
+                return self._fallback_metadata_retrieval(query, top_k)
+        
+        # Search for similar chunks (get more than needed for filtering)
+        search_k = min(top_k * 3, len(self.chunks))  # Get 3x more for filtering
+        query_vector = np.array([query_embedding]).astype('float32')
+        distances, indices = self.index.search(query_vector, search_k)
+        
+        # Collect candidates with metadata
+        candidates = []
+        for i in indices[0]:
+            if i < len(self.chunks):
+                chunk_info = {
+                    "text": self.chunks[i]["text"],
+                    "metadata": self.chunks[i]["metadata"],
+                    "distance": float(distances[0][list(indices[0]).index(i)])
+                }
+                candidates.append(chunk_info)
+        
+        # Apply intelligent filtering based on query content
+        filtered_chunks = self._filter_chunks_by_query(query, candidates)
+        
+        # CRITICAL FIX: Always include overview_statistics for statistical questions
+        if not self._is_match_insight_question(query):
+            # Find overview_statistics chunk
+            overview_chunk = None
+            for chunk in self.chunks:
+                if 'overview_statistics' in chunk['metadata']['section']:
+                    overview_chunk = {
+                        "text": chunk['text'],
+                        "metadata": chunk['metadata'],
+                        "distance": 0.0,  # Perfect match
+                        "relevance_score": 10.0  # Maximum score
+                    }
+                    break
+            
+            # If overview chunk exists and not already in results, add it at the top
+            if overview_chunk and not any('overview_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                filtered_chunks.insert(0, overview_chunk)
+                print(f"🔧 FORCED overview_statistics to top of results for statistical question")
+            
+                 # DIRECTION + OUTCOME FIX: For questions about shots by direction AND outcome, force include all shot types for that direction/outcome combo
+         direction_outcome_fix_applied = False
+         direction_keywords = {
+             "crosscourt": ["crosscourt", "cross court"],
+             "down the line": ["down the line", "downline", "dtl"],
+             "down the middle": ["down the middle", "middle", "center"],
+             "inside-out": ["inside-out", "inside out"],
+             "inside-in": ["inside-in", "inside in"]
+         }
+         
+         outcome_keywords = {
+             "winner": ["winner", "winners"],
+             "forced error": ["forced error", "forced errors", "induced"],
+             "unforced error": ["unforced error", "unforced errors"],
+             "pts won": ["pts won", "points won", "ptswon"],
+             "pts lost": ["pts lost", "points lost", "ptslost"]
+         }
+         
+         detected_direction = None
+         detected_outcome = None
+         
+         # Check for direction + outcome combinations
+         for direction, dir_keywords in direction_keywords.items():
+             if any(keyword in query.lower() for keyword in dir_keywords):
+                 detected_direction = direction
+                 break
+         
+         for outcome, outcome_keywords_list in outcome_keywords.items():
+             if any(keyword in query.lower() for keyword in outcome_keywords_list):
+                 detected_outcome = outcome
+                 break
+         
+         if detected_direction and detected_outcome and any(word in query.lower() for word in ["shot", "shots", "forehand", "backhand", "slice"]):
+             # Force include both players' shot direction chunks for this specific direction/outcome combo
+             chunk_names = ["shotdir1_statistics", "shotdir2_statistics"]
+             chunk1_found = None
+             chunk2_found = None
+             
+             # Find both chunks
+             for chunk in self.chunks:
+                 if "shotdir1_statistics" in chunk['metadata']['section']:
+                     chunk1_found = {
+                         "text": chunk['text'],
+                         "metadata": chunk['metadata'],
+                         "distance": 0.0,  # Perfect match
+                         "relevance_score": 9.5  # Very high score for specific direction/outcome queries
+                     }
+                 elif "shotdir2_statistics" in chunk['metadata']['section']:
+                     chunk2_found = {
+                         "text": chunk['text'],
+                         "metadata": chunk['metadata'],
+                         "distance": 0.0,  # Perfect match
+                         "relevance_score": 9.5  # Very high score for specific direction/outcome queries
+                     }
+             
+             # Add chunks if not already in results
+             if chunk1_found and not any("shotdir1_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
+                 filtered_chunks.insert(0, chunk1_found)
+                 print(f"🎯 FORCED shotdir1_statistics to top for {detected_direction} {detected_outcome} query")
+             
+             if chunk2_found and not any("shotdir2_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
+                 filtered_chunks.insert(0, chunk2_found)
+                 print(f"🎯 FORCED shotdir2_statistics to top for {detected_direction} {detected_outcome} query")
+             
+             direction_outcome_fix_applied = True
+         
+         # UNIVERSAL FIX: For "each player" or "both players" questions, force include both players' chunks
+         universal_fix_applied = False
+         if any(phrase in query.lower() for phrase in ["each player", "both players", "both player"]):
+            # Define all the split player statistics sections
+            split_sections = {
+                "serve": ["serve1_statistics_summary", "serve2_statistics_summary"],
+                "shots": ["shots1_statistics", "shots2_statistics"],
+                "shotdir": ["shotdir1_statistics", "shotdir2_statistics"],
+                "return": ["return1_statistics", "return2_statistics"],
+                "netpts": ["netpts1_statistics", "netpts2_statistics"],
+                "keypoints": ["keypoints1_statistics", "keypoints2_statistics"]
+            }
+            
+            # Check which statistic type the question is about (in order of specificity)
+            detected_stat_type = None
+            
+            # Check most specific keywords first to avoid conflicts
+            if any(phrase in query.lower() for phrase in ["break point", "break points", "game point", "game points"]):
+                detected_stat_type = "keypoints"
+            elif any(phrase in query.lower() for phrase in ["net points", "net approaches", "volley", "volleys"]):
+                detected_stat_type = "netpts"
+            elif any(phrase in query.lower() for phrase in ["crosscourt", "down the line", "down the middle", "inside-out", "inside-in"]):
+                detected_stat_type = "shotdir"
+            elif any(phrase in query.lower() for phrase in ["winner", "winners", "unforced error", "unforced errors", "forehand", "backhand"]):
+                detected_stat_type = "shots"
+            elif any(phrase in query.lower() for phrase in ["return", "returns", "returnable"]):
+                detected_stat_type = "return"
+            elif any(phrase in query.lower() for phrase in ["ace", "aces", "serve", "serving", "double fault", "double faults", "first serve", "second serve"]):
+                detected_stat_type = "serve"
+            
+            # Apply the fix for the detected statistic type
+            if detected_stat_type and detected_stat_type in split_sections:
+                chunk_names = split_sections[detected_stat_type]
+                chunk1_name, chunk2_name = chunk_names
+                chunk1_found = None
+                chunk2_found = None
+                
+                # Find both chunks
+                for chunk in self.chunks:
+                    if chunk1_name in chunk['metadata']['section']:
+                        chunk1_found = {
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,  # Perfect match
+                            "relevance_score": 8.0  # High score
+                        }
+                    elif chunk2_name in chunk['metadata']['section']:
+                        chunk2_found = {
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,  # Perfect match
+                            "relevance_score": 8.0  # High score
+                        }
+                
+                # Add chunks if not already in results
+                if chunk1_found and not any(chunk1_name in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    filtered_chunks.insert(0, chunk1_found)
+                    print(f"🔧 FORCED {chunk1_name} to top of results for 'each player' {detected_stat_type} question")
+                
+                if chunk2_found and not any(chunk2_name in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    filtered_chunks.insert(0, chunk2_found)
+                    print(f"🔧 FORCED {chunk2_name} to top of results for 'each player' {detected_stat_type} question")
+                
+                universal_fix_applied = True
+        
+                 # CRITICAL FIX: For ace/serve questions (only if universal fix and direction/outcome fix didn't apply)
+         if not universal_fix_applied and not direction_outcome_fix_applied and any(word in query.lower() for word in ["ace", "aces", "serve", "serving", "double fault"]):
+            serve1_chunk = None
+            serve2_chunk = None
+            
+            # Find serve1_statistics_summary chunk
+            for chunk in self.chunks:
+                if 'serve1_statistics_summary' in chunk['metadata']['section']:
+                    serve1_chunk = {
+                        "text": chunk['text'],
+                        "metadata": chunk['metadata'],
+                        "distance": 0.0,  # Perfect match
+                        "relevance_score": 8.0  # High score
+                    }
+                    break
+            
+            # Find serve2_statistics_summary chunk
+            for chunk in self.chunks:
+                if 'serve2_statistics_summary' in chunk['metadata']['section']:
+                    serve2_chunk = {
+                        "text": chunk['text'],
+                        "metadata": chunk['metadata'],
+                        "distance": 0.0,  # Perfect match
+                        "relevance_score": 8.0  # High score
+                    }
+                    break
+            
+            # Add serve1 chunk if not already in results
+            if serve1_chunk and not any('serve1_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                filtered_chunks.insert(0, serve1_chunk)
+                print(f"🔧 FORCED serve1_statistics_summary to top of results for serve question")
+            
+            # Add serve2 chunk if not already in results
+            if serve2_chunk and not any('serve2_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                filtered_chunks.insert(0, serve2_chunk)
+                print(f"🔧 FORCED serve2_statistics_summary to top of results for serve question")
+        
+                 # CRITICAL FIX: For net points questions (only if universal fix and direction/outcome fix didn't apply)
+         if not universal_fix_applied and not direction_outcome_fix_applied and any(word in query.lower() for word in ["net", "net points", "net approaches", "volley", "volleys", "overhead"]):
+            netpts1_chunk = None
+            netpts2_chunk = None
+            
+            # Find netpts1_statistics chunk
+            for chunk in self.chunks:
+                if 'netpts1_statistics' in chunk['metadata']['section']:
+                    netpts1_chunk = {
+                        "text": chunk['text'],
+                        "metadata": chunk['metadata'],
+                        "distance": 0.0,  # Perfect match
+                        "relevance_score": 8.0  # High score
+                    }
+                    break
+            
+            # Find netpts2_statistics chunk
+            for chunk in self.chunks:
+                if 'netpts2_statistics' in chunk['metadata']['section']:
+                    netpts2_chunk = {
+                        "text": chunk['text'],
+                        "metadata": chunk['metadata'],
+                        "distance": 0.0,  # Perfect match
+                        "relevance_score": 8.0  # High score
+                    }
+                    break
+            
+            # Add netpts1 chunk if not already in results
+            if netpts1_chunk and not any('netpts1_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                filtered_chunks.insert(0, netpts1_chunk)
+                print(f"🔧 FORCED netpts1_statistics to top of results for net question")
+            
+            # Add netpts2 chunk if not already in results
+            if netpts2_chunk and not any('netpts2_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                filtered_chunks.insert(0, netpts2_chunk)
+                print(f"🔧 FORCED netpts2_statistics to top of results for net question")
+        
+        # Return top_k results
+        return filtered_chunks[:top_k]
+    
+    def _get_stat_keywords(self, stat_type: str) -> List[str]:
+        """Get keywords that indicate a question is about a specific statistic type."""
+        keywords = {
+            "serve": ["ace", "aces", "serve", "serving", "double fault", "double faults", "first serve", "second serve"],
+            "shots": ["winner", "winners", "unforced error", "unforced errors", "forehand", "backhand", "shot"],
+            "shotdir": ["crosscourt", "down the line", "down the middle", "inside-out", "inside-in", "direction"],
+            "return": ["return", "returns", "returnable", "returning"],
+            "netpts": ["net points", "net approaches", "volley", "volleys", "overhead", "approach"],
+            "keypoints": ["break point", "break points", "game point", "game points", "deuce", "key point"]
+        }
+        return keywords.get(stat_type, [])
+    
+    def _filter_chunks_by_query(self, query: str, candidates: List[Dict]) -> List[Dict]:
+        """
+        Filter and re-rank chunks based on query content and metadata.
+        """
+        query_lower = query.lower()
+        
+        # Determine query intent
+        player_mentioned = None
+        if "swiatek" in query_lower or "iga" in query_lower:
+            player_mentioned = "Iga Swiatek"
+        elif "pegula" in query_lower or "jessica" in query_lower:
+            player_mentioned = "Jessica Pegula"
+        
+        stat_category = None
+        if any(word in query_lower for word in ["serve", "serving", "aces", "double fault"]):
+            stat_category = "serving"
+        elif any(word in query_lower for word in ["return", "returning"]):
+            stat_category = "returning"
+        elif any(word in query_lower for word in ["shot", "winner", "error", "forehand", "backhand"]):
+            stat_category = "shots"
+        elif any(word in query_lower for word in ["net", "volley", "approach"]):
+            stat_category = "net_play"
+        elif any(word in query_lower for word in ["key point", "break point", "game point", "set point", "match point", "deuce", "advantage", "bp", "gp", "converted", "faced", "saved"]):
+            stat_category = "key_points"
+        elif any(word in query_lower for word in ["point", "rally", "narrative", "longest", "shot", "stroke", "key moments", "decided", "outcome", "strategy", "momentum", "critical", "turning point"]):
+            stat_category = "narrative"
+        elif any(word in query_lower for word in ["overview", "summary", "total"]):
+            stat_category = "overview"
+        
+        # Score and filter chunks
+        scored_chunks = []
+        for chunk in candidates:
+            score = 1.0 - chunk["distance"]  # Convert distance to similarity score
+            metadata = chunk["metadata"]
+            
+            # CRITICAL FIX: Prioritize overview statistics for statistical questions
+            if not self._is_match_insight_question(query):
+                # For statistical questions, heavily prioritize overview and authoritative totals
+                if "overview_statistics" in metadata.get("section", "").lower():
+                    score += 5.0  # Extremely high boost for overview statistics
+                elif "authoritative totals" in chunk["text"].lower():
+                    score += 3.0  # Very high boost for authoritative totals
+                elif "serve1_statistics_summary" in metadata.get("section", "").lower():
+                    score += 2.0  # High boost for serve summary with authoritative totals
+                elif "serve2_statistics_summary" in metadata.get("section", "").lower():
+                    score += 2.0  # High boost for serve summary with authoritative totals
+                # KEY POINTS HIERARCHY: Prioritize key points section for break points and game points
+                elif "key_points" in metadata.get("section", "").lower():
+                    if any(word in query_lower for word in ["break point", "break points", "bp", "converted", "faced", "saved"]):
+                        score += 3.0  # Very high boost for break point questions
+                    elif any(word in query_lower for word in ["game point", "game points", "gp", "set point", "set points", "match point", "match points"]):
+                        score += 3.0  # Very high boost for game/set/match point questions
+                    elif any(word in query_lower for word in ["key point", "key points", "critical point", "deuce", "advantage"]):
+                        score += 2.5  # High boost for general key point questions
+                
+                # SHOT HIERARCHY: Establish clear priority for shot-related questions
+                # 1. SHOT STATISTICS: For forehand/backhand SIDE (all shots from that side - volleys, dropshots, etc.)
+                if any(word in query_lower for word in ["forehand side", "backhand side", "volley", "dropshot", "lob", "net play", "swinging volley"]) and "shots" in metadata.get("section", "").lower():
+                    if "shots1_statistics" in metadata.get("section", "").lower() or "shots2_statistics" in metadata.get("section", "").lower():
+                        score += 2.5  # High boost for shot statistics (side-based shots)
+                
+                # Also use SHOT STATISTICS for general shot performance questions
+                if any(word in query_lower for word in ["shot", "winner", "error", "unforced", "forced", "total shots"]) and "shots" in metadata.get("section", "").lower():
+                    if "shots1_statistics" in metadata.get("section", "").lower() or "shots2_statistics" in metadata.get("section", "").lower():
+                        score += 2.0  # High boost for general shot statistics
+                
+                # 2. SHOT DIRECTION: For forehand/backhand GROUNDSTROKES and placement patterns
+                if any(word in query_lower for word in ["forehand groundstroke", "backhand groundstroke", "groundstroke", "crosscourt", "down the line", "down the middle", "inside out", "inside in", "direction", "placement", "pattern"]) and "shotdir" in metadata.get("section", "").lower():
+                    if "authoritative totals" in chunk["text"].lower():
+                        score += 2.0  # High boost for shot direction (groundstrokes and placement)
+                
+                # Special case: When "forehand" or "backhand" mentioned alone, prefer SHOT DIRECTION (groundstrokes)
+                if any(word in query_lower for word in ["forehand", "backhand"]) and not any(word in query_lower for word in ["side", "volley", "dropshot", "lob"]) and "shotdir" in metadata.get("section", "").lower():
+                    if "authoritative totals" in chunk["text"].lower():
+                        score += 1.8  # Slightly lower than explicit groundstroke questions
+                
+                # 3. SHOT DIRECTIONAL BREAKDOWN: For directional + outcome performance (detailed breakdowns)
+                if any(word in query_lower for word in ["crosscourt winner", "down the line error", "inside out performance", "directional outcome"]) and "shotdir" in metadata.get("section", "").lower():
+                    if "detailed breakdown" in chunk["text"].lower() or "table2" in metadata.get("section", "").lower():
+                        score += 1.5  # Medium boost for detailed directional breakdowns
+                
+                # For net statistics
+                if any(word in query_lower for word in ["net", "volley", "approach", "passed"]) and "netpts" in metadata.get("section", "").lower():
+                    score += 1.0
+                
+
+                
+                # Special boost for court-specific questions
+                if any(word in query_lower for word in ["deuce court", "ad court", "wide", "body", "t"]):
+                    if "serve" in metadata.get("section", "").lower() and any(word in chunk["text"].lower() for word in ["deuce", "ad", "wide", "body", "t"]):
+                        score += 0.5
+            
+            # Boost score for player match
+            if player_mentioned and metadata.get("player_focus") == player_mentioned:
+                score += 0.3
+            elif player_mentioned and metadata.get("player_focus") == "Both":
+                score += 0.1  # Still relevant but less specific
+            
+            # Boost score for category match
+            if stat_category and metadata.get("stat_category") == stat_category:
+                score += 0.25
+            
+            # Boost for percentage queries
+            if any(word in query_lower for word in ["percent", "%", "rate", "ratio"]) and metadata.get("contains_percentages"):
+                score += 0.15
+            
+            # Boost for point-by-point queries
+            if any(word in query_lower for word in ["point", "rally", "what happened"]) and metadata.get("contains_point_details"):
+                score += 0.2
+            
+            # Extra boost for rally-specific queries
+            if any(word in query_lower for word in ["longest rally", "rally", "shot rally", "stroke rally"]) and metadata.get("contains_point_details"):
+                score += 0.3
+            
+            # Extra boost for match insight/strategy queries
+            if any(word in query_lower for word in ["key moments", "decided", "outcome", "strategy", "momentum", "critical", "turning point"]) and metadata.get("contains_point_details"):
+                score += 0.4  # Higher boost for narrative chunks
+            
+            # Prioritize narrative chunks for match insight questions
+            if self._is_match_insight_question(query) and metadata.get("contains_point_details"):
+                score += 0.5  # Very high boost for narrative chunks
+            elif self._is_match_insight_question(query) and "rally_outcomes" in metadata.get("section", ""):
+                score -= 0.3  # Penalize rally outcomes for insight questions
+            
+            chunk["relevance_score"] = score
+            scored_chunks.append(chunk)
+        
+        # Sort by relevance score (descending)
+        scored_chunks.sort(key=lambda x: x["relevance_score"], reverse=True)
+        
+        return scored_chunks
+    
+    def _fallback_metadata_retrieval(self, query: str, top_k: int) -> List[Dict]:
+        """
+        Fallback retrieval method using metadata matching when embeddings aren't available.
+        """
+        query_lower = query.lower()
+        
+        # Simple keyword-based matching
+        relevant_chunks = []
+        for chunk in self.chunks:
+            text_lower = chunk["text"].lower()
+            metadata = chunk["metadata"]
+            
+            # Calculate basic relevance score
+            score = 0
+            
+            # Check for direct text matches
+            query_words = query_lower.split()
+            text_words = text_lower.split()
+            common_words = set(query_words) & set(text_words)
+            score += len(common_words) * 0.1
+            
+            # Check metadata relevance
+            if any(word in query_lower for word in ["swiatek", "iga"]) and metadata.get("player_focus") == "Iga Swiatek":
+                score += 0.5
+            elif any(word in query_lower for word in ["pegula", "jessica"]) and metadata.get("player_focus") == "Jessica Pegula":
+                score += 0.5
+            
+            if score > 0:
+                relevant_chunks.append({
+                    "text": chunk["text"],
+                    "metadata": metadata,
+                    "distance": 1.0 - score,  # Convert to distance-like metric
+                    "relevance_score": score
+                })
+        
+        # Sort by relevance and return top_k
+        relevant_chunks.sort(key=lambda x: x["relevance_score"], reverse=True)
+        return relevant_chunks[:top_k]
+    
+    def answer_query_with_llm(self, query: str, relevant_chunks: List[Dict]) -> str:
+        """
+        Use LLM to answer the query based on retrieved chunks.
+        """
+        if not relevant_chunks:
+            return "I don't have enough relevant information to answer this question."
+        
+        # Prepare context from retrieved chunks
+        context_parts = []
+        for chunk in relevant_chunks:
+            section_info = f"[{chunk['metadata']['section']} - {chunk['metadata']['type']}]"
+            context_parts.append(f"{section_info}\n{chunk['text']}")
+        
+        context = "\n\n".join(context_parts)
+        
+        # Enhanced prompt with specific instructions for different question types
+        is_statistical = self._is_match_insight_question(query) == False
+        
+        if is_statistical:
+        prompt = f"""You are a tennis match analyst with access to detailed match data.
+
+IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
+- ALWAYS look for "AUTHORITATIVE TOTALS" first - these are the single source of truth
+- When asked for "counts" or "numbers", provide the actual count, NOT percentages
+- When asked for "converted" break points, look for "Break Points won" or "converted" data
+- For court-specific questions (deuce court, ad court), combine both courts for totals unless specifically asked for one court
+- For "game points", look in the key points section for "game points" data
+- For shot statistics, use the authoritative totals rows first, then go to breakdowns or details as needed(e.g., "Iga Swiatek hit forehand shots 111 times")
+- For shot direction totals, use the "AUTHORITATIVE TOTALS" row first, then go to breakdowns or details as needed
+- SHOT HIERARCHY: Use SHOT STATISTICS for forehand/backhand SIDE (all shots from that side). Use SHOT DIRECTION for forehand/backhand GROUNDSTROKES and placement patterns. Use SHOT DIRECTIONAL BREAKDOWN for directional + outcome performance.
+- For net statistics, use the net points section data
+
+DATA SOURCE PRIORITY:
+1. AUTHORITATIVE TOTALS (highest priority)
+2. OVERVIEW STATISTICS 
+3. Summary sections
+4. Detailed breakdowns (only for distributions, never for recalculating totals)
+
+Context from the match (retrieved from relevant sections):
+{context}
+
+Question: {query}
+
+**CRITICAL INSTRUCTIONS FOR ANSWERING:**
+
+**For STATISTICS questions** (how many, percentages, totals, counts):
+- **ALWAYS look for "AUTHORITATIVE TOTALS" sections first** - these are the single source of truth
+- **ALWAYS look for "OVERVIEW STATISTICS" section** - this contains the official match statistics
+- **ONLY calculate totals from breakdowns when you don't have authoritative totals** - use only the authoritative totals provided
+- Give concise, direct answers with key numbers
+- Use bullet points or brief sentences
+- Focus on the specific numbers requested
+- No lengthy explanations unless asked for insights
+
+**For STRATEGY/INSIGHT questions** (key moments, momentum, analysis):
+- Provide detailed analysis with specific examples
+- Explain patterns and sequences from point-by-point data
+- Include context about what happened and why
+
+**For RALLY questions** (longest rally, specific rallies):
+- Focus on the specific rally details requested
+- Include shot sequences and outcomes
+
+**DATA SOURCE PRIORITY:**
+1. **AUTHORITATIVE TOTALS** (highest priority - single source of truth)
+2. **OVERVIEW STATISTICS** (official match statistics)
+3. **Summary or details or breakdowns sections** (serve1_statistics_summary, serve2_statistics_summary)
+4. **Key points sections** (for break point or important points questions)
+5. **Point-by-point narrative** (for rally and insight questions)
+
+**SHOT HIERARCHY:**
+- **SHOT STATISTICS**: Use for forehand/backhand SIDE (all shots from that side - volleys, dropshots, lobs, etc.) and general shot performance
+- **SHOT DIRECTION**: Use for forehand/backhand GROUNDSTROKES specifically and placement patterns (crosscourt, down-the-line, etc.)
+- **SHOT DIRECTIONAL BREAKDOWN**: Use for directional + outcome performance (detailed breakdowns)
+
+**IMPORTANT DISTINCTION:**
+- "Forehand/Backhand" alone usually means groundstrokes → Use SHOT DIRECTION
+- "Forehand/Backhand side" means all shots from that side → Use SHOT STATISTICS
+
+**SHOT DIRECTION CLARIFICATION:**
+- "Shot direction" refers to: crosscourt, down the line, down the middle, inside-out, and inside-in
+- These are placement patterns for groundstrokes (not serve directions)
+
+If the context doesn't contain enough information to answer completely, say so.
+
+Answer:"""
+        
+        # Rate limiting
+        self._apply_rate_limit()
+        
+        try:
+            if self.llm_provider == "claude":
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1000,
+                    temperature=0.1,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.content[0].text
+                
+            elif self.llm_provider == "gemini":
+                model = self.client.GenerativeModel(self.model)
+                response = model.generate_content(prompt)
+                return response.text
+                
+            elif self.llm_provider == "openai":
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1000,
+                    temperature=0.1
+                )
+                return response.choices[0].message.content
+                
+        except Exception as e:
+            return f"Error generating response: {e}"
+    
+    def ask_question(self, question: str, top_k: int = 5) -> str:
+        """
+        Main method to ask a question and get an answer.
+        """
+        print(f"Processing question: {question}")
+        
+        # Retrieve relevant chunks
+        relevant_chunks = self.retrieve_relevant_chunks(question, top_k)
+        
+        if not relevant_chunks:
+            return "I couldn't find any relevant information to answer your question."
+        
+        print(f"Retrieved {len(relevant_chunks)} relevant chunks")
+        
+        # Generate answer using LLM
+        answer = self.answer_query_with_llm(question, relevant_chunks)
+        
+        return answer
+    
+    def get_chunk_info(self) -> Dict:
+        """
+        Get information about the loaded chunks.
+        """
+        if not self.chunks:
+            return {"error": "No chunks loaded"}
+        
+        # Count chunks by type and section
+        type_counts = {}
+        section_counts = {}
+        
+        for chunk in self.chunks:
+            chunk_type = chunk["metadata"]["type"]
+            section = chunk["metadata"]["section"]
+            
+            type_counts[chunk_type] = type_counts.get(chunk_type, 0) + 1
+            section_counts[section] = section_counts.get(section, 0) + 1
+        
+        return {
+            "total_chunks": len(self.chunks),
+            "chunks_by_type": type_counts,
+            "chunks_by_section": section_counts,
+            "match_id": self.match_id,
+            "llm_provider": self.llm_provider
+        }
+
+    def convert_json_to_natural_language(self, match_data: Dict[str, Any]) -> str:
+        """
+        Convert all JSON data to natural language text that the LLM can easily read and analyze.
+        This includes all tables, player names, data descriptions, and context.
+        """
+        if not match_data:
+            return "No match data available."
+            
+        natural_language = []
+        natural_language.append("TENNIS MATCH DATA - NATURAL LANGUAGE FORMAT")
+        natural_language.append("=" * 60)
+        natural_language.append("")
+        natural_language.append("IMPORTANT INSTRUCTIONS FOR DATA ANALYSIS:")
+        natural_language.append("- When answering about TOTALS (aces, double faults, points won), use only the AUTHORITATIVE TOTALS as the single source of truth")
+        natural_language.append("- Use detailed breakdowns only for distributions and patterns, never for recalculating totals")
+        natural_language.append("- Breakdowns sum to the authoritative totals - do not add them again")
+        natural_language.append("- Summary statistics take precedence over detailed breakdowns for aggregate numbers")
+        natural_language.append("")
+        
+        # Handle the actual JSON structure with matches array
+        if 'matches' in match_data and match_data['matches']:
+            match = match_data['matches'][0]  # Get the first match
+            
+            # Add match overview information
+            natural_language.extend(self._get_match_overview_text(match))
+            natural_language.append("")
+            
+            # Add all detailed statistics in natural language
+            if 'details_tables' in match:
+                natural_language.extend(self._convert_details_tables_to_text(match['details_tables']))
+            
+            # Add details_flat data for shots, shotdir, and netpts (these are not in details_tables)
+            if 'details_flat' in match:
+                natural_language.extend(self._convert_details_flat_to_text(match['details_flat']))
+            
+            # Add point-by-point data if available
+            if 'point_log' in match:
+                natural_language.extend(self._convert_point_log_to_text(match['point_log']))
+            elif 'pointlog_rows' in match:
+                natural_language.extend(self._convert_point_log_to_text(match['pointlog_rows']))
+            
+        # Post-process to move rally outcomes to the end for optimal embedding order
+        final_text = "\n".join(natural_language)
+        final_text = self._move_rally_outcomes_to_end(final_text)
+        
+        return final_text
+
+    def _move_rally_outcomes_to_end(self, content: str) -> str:
+        """Move RALLY OUTCOMES STATISTICS section to the very end for optimal embedding order"""
+        
+        lines = content.split('\n')
+        
+        # Find the rally outcomes section
+        rally_start = None
+        rally_end = None
+        
+        for i, line in enumerate(lines):
+            if "RALLY OUTCOMES STATISTICS:" in line:
+                rally_start = i
+            elif rally_start is not None and line.strip() and any(keyword in line for keyword in ["STATISTICS:", "NARRATIVE:"]) and "RALLY OUTCOMES" not in line:
+                rally_end = i
+                break
+        
+        if rally_start is None:
+            # No rally outcomes section found, return as-is
+            return content
+        
+        if rally_end is None:
+            rally_end = len(lines)  # If it's the last section
+        
+        # Extract the rally outcomes section
+        rally_section = lines[rally_start:rally_end]
+        
+        # Remove rally outcomes from its current position
+        lines_without_rally = lines[:rally_start] + lines[rally_end:]
+        
+        # Add rally outcomes at the very end
+        lines_without_rally.extend([''] + rally_section)
+        
+        return '\n'.join(lines_without_rally)
+
+    def _get_match_overview_text(self, match: Dict[str, Any]) -> List[str]:
+        """Convert match overview data to natural language"""
+        text = []
+        text.append("MATCH OVERVIEW:")
+        text.append("-" * 20)
+        
+        # Extract basic match information
+        if 'basic' in match:
+            basic = match['basic']
+            text.append(f"The match was played on {basic.get('date', 'Unknown')} at the {basic.get('tournament', 'Unknown')} tournament.")
+            text.append(f"The players were {basic.get('player1', 'Unknown')} and {basic.get('player2', 'Unknown')}.")
+            text.append(f"This was a {basic.get('tour', 'Unknown')} match.")
+            
+            # Use explicit match result if available, otherwise extract from point-by-point data
+            match_result = basic.get('match_result', '')
+            if match_result:
+                text.append(f"Final Score: {match_result}")
+            else:
+                final_score = self._extract_final_score(match)
+                if final_score:
+                    text.append(f"Final Score: {final_score['winner']} defeated {final_score['loser']} {final_score['score']}")
+                else:
+                    text.append("Final score not available in the data.")
+        
+        return text
+
+    def _extract_final_score(self, match: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        """Extract final score from point-by-point data"""
+        try:
+            if 'pointlog_rows' not in match:
+                return None
+            
+            pointlog = match['pointlog_rows']
+            if not pointlog:
+                return None
+            
+            # Get the last point to find final score
+            last_point = pointlog[-1]
+            
+            # Extract final sets and games from the last point
+            final_sets = last_point.get('sets', '0-0')
+            final_games = last_point.get('games', '0-0')
+            
+            # Parse sets score to determine winner
+            sets_parts = final_sets.split('-')
+            if len(sets_parts) == 2:
+                player1_sets = int(sets_parts[0])  # Iga Swiatek's sets
+                player2_sets = int(sets_parts[1])  # Jessica Pegula's sets
+                
+                # Get player names
+                player1 = match.get('basic', {}).get('player1', 'Player 1')  # Iga Swiatek
+                player2 = match.get('basic', {}).get('player2', 'Player 2')  # Jessica Pegula
+                
+                if player2_sets > player1_sets:
+                    winner = player2
+                    loser = player1
+                    score = f"{player2_sets}-{player1_sets} in sets ({final_games} in final set)"
+                else:
+                    winner = player1
+                    loser = player2  
+                    score = f"{player1_sets}-{player2_sets} in sets ({final_games} in final set)"
+                
+                return {
+                    'winner': winner,
+                    'loser': loser,
+                    'score': score
+                }
+            
+        except Exception as e:
+            print(f"Error extracting final score: {e}")
+        
+        return None
+
+    def _determine_match_winner(self, match: Dict[str, Any]) -> Optional[str]:
+        """Determine match winner from available data sources"""
+        try:
+            # Method 1: Check for explicit match result in details_tables
+            if 'details_tables' in match:
+                for table in match['details_tables']:
+                    if table.get('name', '').lower() in ['other data', 'match result', 'result']:
+                        for row in table.get('rows', []):
+                            label = row.get('label', '').lower()
+                            if 'match result' in label or 'result' in label:
+                                values = row.get('values', [])
+                                if values and values[0]:
+                                    result_text = values[0]
+                                    # Parse format like "Jessica Pegula d. Iga Swiatek 6-4 7-5"
+                                    if ' d. ' in result_text:
+                                        winner = result_text.split(' d. ')[0].strip()
+                                        return winner
+            
+            # Method 2: Check details_flat for match result
+            if 'details_flat' in match:
+                flat_data = match['details_flat']
+                for key, value in flat_data.items():
+                    if 'result' in key.lower() and isinstance(value, str) and ' d. ' in value:
+                        winner = value.split(' d. ')[0].strip()
+                        return winner
+            
+            return None
+        except Exception:
+            return None
+
+    def _extract_match_result_with_score(self, match: Dict[str, Any]) -> Optional[str]:
+        """Extract match result with score from available data"""
+        try:
+            # Check details_flat for match result
+            if 'details_flat' in match:
+                flat_data = match['details_flat']
+                for key, value in flat_data.items():
+                    if 'result' in key.lower() and isinstance(value, str):
+                        # Clean up malformed player names
+                        result = value
+                        # Fix "PegulaJessica Pegula" -> "Jessica Pegula"
+                        if "PegulaJessica Pegula" in result:
+                            result = result.replace("PegulaJessica Pegula", "Jessica Pegula")
+                        # Fix any other similar patterns
+                        if "SwiatekIga Swiatek" in result:
+                            result = result.replace("SwiatekIga Swiatek", "Iga Swiatek")
+                        return result
+            
+            return None
+        except Exception:
+            return None
+
+    def _convert_details_tables_to_text(self, details_tables: List[Dict[str, Any]]) -> List[str]:
+        """Convert all details tables to natural language text"""
+        text = []
+        
+        for table in details_tables:
+            table_name = table.get('name', 'Unknown Table')
+            rows = table.get('rows', [])
+            
+            # Skip shots, shotdir, netpts, serve, return, and keypoints tables since they will be handled by _convert_details_flat_to_text
+            if any(keyword in table_name.lower() for keyword in ['shots', 'shotdir', 'netpts', 'serve', 'return', 'keypoints']):
+                continue
+            
+            # Handle special cases
+            # Skip 'other data' table since match result is already in overview
+            if table_name.lower() == 'other data':
+                continue
+            elif 'serve' in table_name.lower():
+                text.extend(self._convert_serve_table(table_name, rows))
+            elif 'return' in table_name.lower():
+                text.extend(self._convert_return_table(table_name, rows))
+            elif 'keypoints' in table_name.lower():
+                text.extend(self._convert_keypoints_table(rows))
+            elif 'serveneut' in table_name.lower():
+                text.extend(self._convert_serveneut_table(rows))
+            elif 'rallyoutcomes' in table_name.lower():
+                text.extend(self._convert_rallyoutcomes_table(rows))
+            elif 'overview' in table_name.lower():
+                text.extend(self._convert_overview_table(rows))
+            else:
+                # Generic table conversion
+                text.extend(self._convert_generic_table(table_name, rows))
+            
+            text.append("")  # Add spacing between tables
+            
+        return text
+
+    def _convert_table_row_to_text(self, row: Dict[str, Any], table_name: str, column_headers: List[str]) -> List[str]:
+        """Convert a single table row to natural language sentences"""
+        text = []
+        
+        row_label = row.get('label', 'Unknown')
+        values = row.get('values', [])
+        
+        # Determine player from table name or row label
+        player = self._get_player_from_table_or_row(table_name, row_label)
+        
+        # Determine table type (table1 vs table2) based on column headers
+        table_type = self._determine_table_type(column_headers)
+        
+        # Handle different table types
+        if 'serveneut' in table_name.lower():
+            text.extend(self._convert_serveneut_row_to_sentences(row_label, values, column_headers, player))
+        elif 'serve' in table_name.lower():
+            text.extend(self._convert_serve_row_to_sentences(row_label, values, column_headers, player, table_type))
+        elif 'return' in table_name.lower():
+            text.extend(self._convert_return_row_to_sentences(row_label, values, column_headers, player, table_type))
+        elif 'keypoints' in table_name.lower():
+            text.extend(self._convert_keypoints_row_to_sentences(row_label, values, column_headers, player))
+        elif 'shots' in table_name.lower():
+            text.extend(self._convert_shots_row_to_sentences(row_label, values, column_headers, player))
+        elif 'shotdir' in table_name.lower():
+            text.extend(self._convert_shotdir_row_to_sentences(row_label, values, column_headers, player, table_type))
+        elif 'netpts' in table_name.lower():
+            text.extend(self._convert_netpts_row_to_sentences(row_label, values, column_headers, player))
+        elif 'rallyoutcomes' in table_name.lower():
+            text.extend(self._convert_rallyoutcomes_row_to_sentences(row_label, values, column_headers))
+        elif 'overview' in table_name.lower():
+            text.extend(self._convert_overview_row_to_sentences(row_label, values, column_headers))
+        else:
+            # Generic conversion for unknown table types
+            text.extend(self._convert_generic_row_to_sentences(row_label, values, column_headers, table_name))
+            
+        return text
+
+    def _get_player_from_table_or_row(self, table_name: str, row_label: str) -> str:
+        """Determine player name from table name or row label"""
+        if 'serve1' in table_name or 'return1' in table_name or 'shots1' in table_name or 'shotdir1' in table_name or 'netpts1' in table_name:
+            return "Iga Swiatek"
+        elif 'serve2' in table_name or 'return2' in table_name or 'shots2' in table_name or 'shotdir2' in table_name or 'netpts2' in table_name:
+            return "Jessica Pegula"
+        elif 'IS' in row_label:
+            return "Iga Swiatek"
+        elif 'JP' in row_label:
+            return "Jessica Pegula"
+        else:
+            return "Unknown Player"
+
+    def _determine_table_type(self, column_headers: List[str]) -> str:
+        """Determine if this is table1 or table2 based on column headers"""
+        # For serves: table1 has "Total: Pts", table2 has "1st: Pts" and "2nd: Pts"
+        if "Total: Pts" in column_headers:
+            return "table1"
+        elif "1st: Pts" in column_headers and "2nd: Pts" in column_headers:
+            return "table2"
+        
+        # For returns: table1 has outcome columns, table2 has depth columns
+        return_table1_specific = ["Pts", "Total: Pts", "PtsW----%", "RtbleW--%", "inPlay--%", "inPlayW-%", "Wnr-----%", "AvgRally"]
+        return_table2_specific = ["Shlw----%", "Deep----%", "V Deep--%", "UFE-----%", "net-----%", "deep----%", "wide----%", "wide&deep"]
+        
+        # Check for return table2 first (more specific columns)
+        if any(col in column_headers for col in return_table2_specific):
+            return "table2"
+        elif any(col in column_headers for col in return_table1_specific):
+            return "table1"
+        
+        # Default to table1
+        return "table1"
+
+    def _convert_shot_abbreviations(self, shot_type: str) -> str:
+        """Convert shot type abbreviations to proper descriptions"""
+        shot_type = shot_type.lower()
+        
+        # Replace common abbreviations
+        if shot_type.startswith("fh "):
+            shot_type = shot_type.replace("fh ", "forehand ")
+        elif shot_type.startswith("bh "):
+            shot_type = shot_type.replace("bh ", "backhand ")
+        
+        # Handle specific shot types
+        if "gs (top/flt/slc)" in shot_type:
+            shot_type = shot_type.replace("gs (top/flt/slc)", "groundstrokes with topspin, flat, or slice")
+        elif "(top/flt)" in shot_type:
+            shot_type = shot_type.replace("(top/flt)", "with topspin or flat")
+        elif "gs" in shot_type:
+            shot_type = shot_type.replace("gs", "groundstrokes")
+        elif "lob" in shot_type:
+            shot_type = shot_type.replace("lob", "lobs")
+        elif "drop shot" in shot_type:
+            shot_type = shot_type.replace("drop shot", "drop shots")
+        elif "slice/chip" in shot_type:
+            shot_type = shot_type.replace("slice/chip", "slice or chip shots")
+        elif "swinging volley" in shot_type:
+            shot_type = shot_type.replace("swinging volley", "swinging volleys")
+        elif "volley" in shot_type:
+            shot_type = shot_type.replace("volley", "volleys")
+        
+        return shot_type
+
+    def _convert_shots_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str) -> List[str]:
+        """Convert shot statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different shot row types
+        if "Total" in row_label:
+            context = f"{player} hit shots"
+        elif "Forehand side" in row_label:
+            context = f"{player} hit forehand shots"
+        elif "Backhand side" in row_label:
+            context = f"{player} hit backhand shots"
+        elif "FH GS (top/flt/slc)" in row_label:
+            context = f"{player} hit forehand groundstrokes with topspin or flat shots or slice shots"
+        elif "BH GS (top/flt/slc)" in row_label:
+            context = f"{player} hit backhand groundstrokes with topspin or flat shots or slice shots"
+        elif "Groundstrokes (top/flt)" in row_label:
+            context = f"{player} hit groundstrokes with topspin or flat shots"
+        elif "Baseline shots" in row_label:
+            context = f"{player} hit baseline shots"
+        elif "Net shots" in row_label:
+            context = f"{player} hit shots at the net"
+        elif "Dropshots" in row_label:
+            context = f"{player} hit dropshots"
+        elif "Lobs" in row_label:
+            context = f"{player} hit lobs"
+        elif "Volleys" in row_label:
+            context = f"{player} hit volleys"
+        elif "Swinging volleys" in row_label:
+            context = f"{player} hit swinging volleys"
+        elif "Forehands (top/flt)" in row_label:
+            context = f"{player} hit forehand topspin or flat shots"
+        elif "Backhands (top/flt)" in row_label:
+            context = f"{player} hit backhand topspin or flat shots"
+        elif "FH slice/chip" in row_label:
+            context = f"{player} hit forehand slice or chip shots"
+        elif "BH slice/chip" in row_label:
+            context = f"{player} hit backhand slice or chip shots"
+        elif "BH drop shot" in row_label:
+            context = f"{player} hit backhand drop shots"
+        elif "BH lob" in row_label:
+            context = f"{player} hit backhand lobs"
+        elif "FH volley" in row_label:
+            context = f"{player} hit forehand volleys"
+        elif "FH swinging volley" in row_label:
+            context = f"{player} hit forehand swinging volleys"
+        else:
+            context = f"{player} hit shots"
+        
+        # Convert each value to a sentence with better formatting
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "Total":
+                    sentences.append(f"{context} {value} times.")
+                elif header == "Winner--%":
+                     # Extract the number and percentage
+                     if "(" in value and ")" in value:
+                         number = value.split("(")[0].strip()
+                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                         if "Total" in row_label:
+                             sentences.append(f"{player} hit {number} winners, which represents {percentage}% of all shots hit by {player}.")
+                         elif "Forehand side" in row_label:
+                             sentences.append(f"{player} hit {number} forehand winners, which represents {percentage}% of all forehand shots hit by {player}.")
+                         elif "Backhand side" in row_label:
+                             sentences.append(f"{player} hit {number} backhand winners, which represents {percentage}% of all backhand shots hit by {player}.")
+                         else:
+                             # Use the actual row label instead of generic "this shot type"
+                             shot_type = self._convert_shot_abbreviations(row_label)
+                             sentences.append(f"{player} hit {number} winners with {shot_type}, which represents {percentage}% of all {shot_type} hit by {player}.")
+                     else:
+                         sentences.append(f"{player} hit {value} winners.")
+                elif header == "UnfErr--%":
+                     # Extract the number and percentage
+                     if "(" in value and ")" in value:
+                         number = value.split("(")[0].strip()
+                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                         if "Total" in row_label:
+                             sentences.append(f"{player} made {number} unforced errors, which represents {percentage}% of all shots hit by {player}.")
+                         elif "Forehand side" in row_label:
+                             sentences.append(f"{player} made {number} forehand unforced errors, which represents {percentage}% of all forehand shots hit by {player}.")
+                         elif "Backhand side" in row_label:
+                             sentences.append(f"{player} made {number} backhand unforced errors, which represents {percentage}% of all backhand shots hit by {player}.")
+                         else:
+                             # Use the actual row label instead of generic "this shot type"
+                             shot_type = self._convert_shot_abbreviations(row_label)
+                             sentences.append(f"{player} made {number} unforced errors with {shot_type}, which represents {percentage}% of all {shot_type} hit by {player}.")
+                     else:
+                         sentences.append(f"{player} made {value} unforced errors.")
+                elif header == "IndFcd--%":
+                     # Extract the number and percentage
+                     if "(" in value and ")" in value:
+                         number = value.split("(")[0].strip()
+                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                         if "Total" in row_label:
+                             sentences.append(f"{player} made {number} induced forced errors, which represents {percentage}% of all shots hit by {player}.")
+                         elif "Forehand side" in row_label:
+                             sentences.append(f"{player} made {number} induced forced errors with forehand shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                         elif "Backhand side" in row_label:
+                             sentences.append(f"{player} made {number} induced forced errors with backhand shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                         else:
+                             # Use the actual row label instead of generic "this shot type"
+                             shot_type = self._convert_shot_abbreviations(row_label)
+                             sentences.append(f"{player} made {number} induced forced errors with {shot_type}, which represents {percentage}% of all {shot_type} hit by {player}.")
+                     else:
+                         sentences.append(f"{player} made {value} induced forced errors.")
+                elif header == "PtEnd---%":
+                     # Extract the number and percentage
+                     if "(" in value and ")" in value:
+                         number = value.split("(")[0].strip()
+                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                         if "Total" in row_label:
+                             sentences.append(f"{player} ended {number} points with shots, which represents {percentage}% of all shots hit by {player}.")
+                         elif "Forehand side" in row_label:
+                             sentences.append(f"{player} ended {number} points with forehand shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                         elif "Backhand side" in row_label:
+                             sentences.append(f"{player} ended {number} points with backhand shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                         else:
+                             # Use the actual row label instead of generic "this shot type"
+                             shot_type = self._convert_shot_abbreviations(row_label)
+                             sentences.append(f"{player} ended {number} points with {shot_type}, which represents {percentage}% of all {shot_type} hit by {player}.")
+                     else:
+                         sentences.append(f"{player} ended {value} points with shots.")
+                elif header == "SvReturn":
+                     # Extract the number and percentage
+                     if "(" in value and ")" in value:
+                         number = value.split("(")[0].strip()
+                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                         if "Total" in row_label:
+                             sentences.append(f"{player} hit {number} serve returns, which represents {percentage}% of all shots hit by {player}.")
+                         elif "Forehand side" in row_label:
+                             sentences.append(f"{player} hit {number} forehand serve returns, which represents {percentage}% of all forehand shots hit by {player}.")
+                         elif "Backhand side" in row_label:
+                             sentences.append(f"{player} hit {number} backhand serve returns, which represents {percentage}% of all backhand shots hit by {player}.")
+                         else:
+                             # Use the actual row label instead of generic "this shot type"
+                             shot_type = self._convert_shot_abbreviations(row_label)
+                             sentences.append(f"{player} hit {number} serve returns with {shot_type}, which represents {percentage}% of all {shot_type} hit by {player}.")
+                     else:
+                         sentences.append(f"{player} hit {value} serve returns.")
+                elif header == "inPtsW--%":
+                     # Extract the number and percentage
+                     if "(" in value and ")" in value:
+                         number = value.split("(")[0].strip()
+                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                         if "Total" in row_label:
+                             sentences.append(f"{player} won {number} points with shots, which represents {percentage}% of all shots hit by {player}.")
+                         elif "Forehand side" in row_label:
+                             sentences.append(f"{player} won {number} points with forehand shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                         elif "Backhand side" in row_label:
+                             sentences.append(f"{player} won {number} points with backhand shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                         else:
+                             # Use the actual row label instead of generic "this shot type"
+                             shot_type = self._convert_shot_abbreviations(row_label)
+                             sentences.append(f"{player} won {number} points with {shot_type}, which represents {percentage}% of all {shot_type} hit by {player}.")
+                     else:
+                         sentences.append(f"{player} won {value} points with shots.")
+                elif header == "inPtsL--%":
+                     # Extract the number and percentage
+                     if "(" in value and ")" in value:
+                         number = value.split("(")[0].strip()
+                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                         if "Total" in row_label:
+                             sentences.append(f"{player} lost {number} points with shots, which represents {percentage}% of all shots hit by {player}.")
+                         elif "Forehand side" in row_label:
+                             sentences.append(f"{player} lost {number} points with forehand shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                         elif "Backhand side" in row_label:
+                             sentences.append(f"{player} lost {number} points with backhand shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                         else:
+                             # Use the actual row label instead of generic "this shot type"
+                             shot_type = self._convert_shot_abbreviations(row_label)
+                             sentences.append(f"{player} lost {number} points with {shot_type}, which represents {percentage}% of all {shot_type} hit by {player}.")
+                     else:
+                         sentences.append(f"{player} lost {value} points with shots.")
+                else:
+                    # Generic fallback for any other headers
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_shotdir_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str, table_type: str = "table1") -> List[str]:
+        """Convert shot direction statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different shot direction row types
+        if "Total" in row_label:
+            context = f"{player} hit shots in different directions"
+        elif "Forehand" in row_label:
+            context = f"{player} hit forehand shots"
+        elif "Backhand" in row_label:
+            context = f"{player} hit backhand shots"
+        elif "BH slice" in row_label:
+            context = f"{player} hit backhand slice shots"
+        else:
+            context = f"{player} hit shots in different directions"
+        
+        # Convert each value to a sentence with better formatting
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                # Handle table1 structure (direction breakdowns)
+                if table_type == "table1":
+                    if "Total" in row_label:
+                        # Handle Total row - process each column as direction breakdown
+                        if header == "Crosscourt":
+                            # Extract just the number from percentage format
+                            if "(" in value and ")" in value:
+                                number = value.split("(")[0].strip()
+                                sentences.append(f"{player} hit {number} crosscourt shots.")
+                            else:
+                                sentences.append(f"{player} hit {value} crosscourt shots.")
+                        elif header == "Down middle":
+                            # Extract just the number from percentage format
+                            if "(" in value and ")" in value:
+                                number = value.split("(")[0].strip()
+                                sentences.append(f"{player} hit {number} down-the-middle shots.")
+                            else:
+                                sentences.append(f"{player} hit {value} down-the-middle shots.")
+                        elif header == "Down the line":
+                            # Extract just the number from percentage format
+                            if "(" in value and ")" in value:
+                                number = value.split("(")[0].strip()
+                                sentences.append(f"{player} hit {number} down-the-line shots.")
+                            else:
+                                sentences.append(f"{player} hit {value} down-the-line shots.")
+                        elif header == "Inside-out":
+                            # Extract just the number from percentage format
+                            if "(" in value and ")" in value:
+                                number = value.split("(")[0].strip()
+                                sentences.append(f"{player} hit {number} inside-out shots.")
+                            else:
+                                sentences.append(f"{player} hit {value} inside-out shots.")
+                        elif header == "Inside-in":
+                            # Extract just the number from percentage format
+                            if "(" in value and ")" in value:
+                                number = value.split("(")[0].strip()
+                                sentences.append(f"{player} hit {number} inside-in shots.")
+                            else:
+                                sentences.append(f"{player} hit {value} inside-in shots.")
+                        else:
+                            # Generic fallback for table1 Total row
+                            sentences.append(f"{context} and {header}: {value}.")
+                    else:
+                        # Handle other table1 rows (Forehand, Backhand, BH slice) - sum up the values
+                        if "(" in value and ")" in value:
+                            number = value.split("(")[0].strip()
+                            if "Forehand" in row_label:
+                                sentences.append(f"{player} hit {number} forehand shots.")
+                            elif "Backhand" in row_label:
+                                sentences.append(f"{player} hit {number} backhand shots.")
+                            elif "BH slice" in row_label:
+                                sentences.append(f"{player} hit {number} backhand slice shots.")
+                            else:
+                                sentences.append(f"{context} and {header}: {number}.")
+                        else:
+                            if "Forehand" in row_label:
+                                sentences.append(f"{player} hit {value} forehand shots.")
+                            elif "Backhand" in row_label:
+                                sentences.append(f"{player} hit {value} backhand shots.")
+                            elif "BH slice" in row_label:
+                                sentences.append(f"{player} hit {value} backhand slice shots.")
+                            else:
+                                sentences.append(f"{context} and {header}: {value}.")
+                    continue  # Skip the table2 processing for table1
+                
+                # Handle table2 structure (outcome breakdowns)
+                if table_type == "table2":
+                    if header == "Total":
+                        if "FH crosscourt" in row_label:
+                            sentences.append(f"{player} hit {value} forehand crosscourt shots.")
+                        elif "FH down middle" in row_label:
+                            sentences.append(f"{player} hit {value} forehand down-the-middle shots.")
+                        elif "FH down the line" in row_label:
+                            sentences.append(f"{player} hit {value} forehand down-the-line shots.")
+                        elif "FH inside-out" in row_label:
+                            sentences.append(f"{player} hit {value} forehand inside-out shots.")
+                        elif "BH crosscourt" in row_label:
+                            sentences.append(f"{player} hit {value} backhand crosscourt shots.")
+                        elif "BH down middle" in row_label:
+                            sentences.append(f"{player} hit {value} backhand down-the-middle shots.")
+                        elif "BH down the line" in row_label:
+                            sentences.append(f"{player} hit {value} backhand down-the-line shots.")
+                        elif "BH inside-out" in row_label:
+                            sentences.append(f"{player} hit {value} backhand inside-out shots.")
+                        else:
+                            sentences.append(f"{player} hit {value} {row_label.lower().replace('down the line', 'down-the-line')} shots.")
+                    elif header == "PtEnding":
+                        if "(" in value and ")" in value:
+                            number = value.split("(")[0].strip()
+                            percentage = value.split("(")[1].split(")")[0]
+                            sentences.append(f"{player} ended {number} points with {row_label.lower().replace('down the line', 'down-the-line')} shots, or {percentage} of {row_label.lower().replace('down the line', 'down-the-line')} shots ended points.")
+                        else:
+                            sentences.append(f"{player} ended {value} points with {row_label.lower()} shots.")
+                    elif header == "Winner":
+                        if "(" in value and ")" in value:
+                            number = value.split("(")[0].strip()
+                            percentage = value.split("(")[1].split(")")[0]
+                            sentences.append(f"{player} hit {number} {row_label.lower().replace('down the line', 'down-the-line')} winners, or {percentage} of {row_label.lower().replace('down the line', 'down-the-line')} shots were winners.")
+                        else:
+                            sentences.append(f"{player} hit {value} {row_label.lower()} winners.")
+                    elif header == "InduceFcd":
+                        if "(" in value and ")" in value:
+                            number = value.split("(")[0].strip()
+                            percentage = value.split("(")[1].split(")")[0]
+                            sentences.append(f"{player} induced {number} forced errors with {row_label.lower().replace('down the line', 'down-the-line')} shots, or {percentage} of {row_label.lower().replace('down the line', 'down-the-line')} shots induced forced errors.")
+                        else:
+                            sentences.append(f"{player} induced {value} forced errors with {row_label.lower()} shots.")
+                    elif header == "UnfErr":
+                        if "(" in value and ")" in value:
+                            number = value.split("(")[0].strip()
+                            percentage = value.split("(")[1].split(")")[0]
+                            sentences.append(f"{player} had {number} unforced errors with {row_label.lower().replace('down the line', 'down-the-line')} shots, or {percentage} of {row_label.lower().replace('down the line', 'down-the-line')} shots were unforced errors.")
+                        else:
+                            sentences.append(f"{player} had {value} unforced errors with {row_label.lower()} shots.")
+                    elif header == "inPtsWon":
+                        if "(" in value and ")" in value:
+                            number = value.split("(")[0].strip()
+                            percentage = value.split("(")[1].split(")")[0]
+                            sentences.append(f"{player} won {number} points when hitting {row_label.lower().replace('down the line', 'down-the-line')} shots, or {percentage} success rate with {row_label.lower().replace('down the line', 'down-the-line')} shots.")
+                        else:
+                            sentences.append(f"{player} won {value} points when hitting {row_label.lower()} shots.")
+                    elif header == "inPtsLost":
+                        if "(" in value and ")" in value:
+                            number = value.split("(")[0].strip()
+                            percentage = value.split("(")[1].split(")")[0]
+                            sentences.append(f"{player} lost {number} points when hitting {row_label.lower().replace('down the line', 'down-the-line')} shots, or {percentage} failure rate with {row_label.lower().replace('down the line', 'down-the-line')} shots.")
+                        else:
+                            sentences.append(f"{player} lost {value} points when hitting {row_label.lower()} shots.")
+                    else:
+                        # Generic fallback for table2
+                        sentences.append(f"{context} and {header}: {value}.")
+                    continue  # Skip the existing table2 processing
+                
+                # Generic fallback for any other cases
+                sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_serve_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str, table_type: str) -> List[str]:
+        """Convert serve statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different serve row types
+        if "Total" in row_label:
+            context = f"{player} served"
+        elif "1st Serve" in row_label:
+            context = f"{player} hit first serves"
+        elif "2nd Serve" in row_label:
+            context = f"{player} hit second serves"
+        else:
+            context = f"{player} served"
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "Total":
+                    sentences.append(f"{context} {value} times.")
+                elif header == "Pts":
+                    sentences.append(f"{context} and won {value} points.")
+                elif header == "PtsW----%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0]
+                        sentences.append(f"{context} and won {number} points, or {percentage} of serves were won.")
+                    else:
+                        sentences.append(f"{context} and won {value} points.")
+                elif header == "ACE":
+                    sentences.append(f"{context} and hit {value} aces.")
+                elif header == "DF":
+                    sentences.append(f"{context} and made {value} double faults.")
+                else:
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_return_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str, table_type: str) -> List[str]:
+        """Convert return statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different return row types
+        if "Total" in row_label:
+            context = f"{player} returned"
+        elif "1st Serve Return" in row_label:
+            context = f"{player} returned first serves"
+        elif "2nd Serve Return" in row_label:
+            context = f"{player} returned second serves"
+        else:
+            context = f"{player} returned"
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "Total":
+                    sentences.append(f"{context} {value} times.")
+                elif header == "Pts":
+                    sentences.append(f"{context} and won {value} points.")
+                elif header == "PtsW----%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0]
+                        sentences.append(f"{context} and won {number} points, or {percentage} of returns were won.")
+                    else:
+                        sentences.append(f"{context} and won {value} points.")
+                else:
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_keypoints_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str) -> List[str]:
+        """Convert key points statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different key points row types
+        if "Break Points" in row_label:
+            context = f"{player} faced break points"
+        elif "Set Points" in row_label:
+            context = f"{player} faced set points"
+        elif "Match Points" in row_label:
+            context = f"{player} faced match points"
+        else:
+            context = f"{player} played key points"
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "OPP":
+                    sentences.append(f"{context} {value} times.")
+                elif header == "CONV":
+                    sentences.append(f"{context} and converted {value}.")
+                elif header == "CONV--%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{context} and converted {number}, or {percentage} conversion rate.")
+                    else:
+                        sentences.append(f"{context} and converted {value}.")
+                else:
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_serveneut_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str) -> List[str]:
+        """Convert serve neutral rally distribution row to natural language sentences"""
+        sentences = []
+        
+        # Use the player parameter that's already passed in
+        # If we need to determine player from row_label, do it here
+        if 'IS' in row_label:
+            player = "Iga Swiatek"
+        elif 'JP' in row_label:
+            player = "Jessica Pegula"
+        
+        # Determine serve type context
+        if "1st Serve" in row_label:
+            serve_type = "first serve"
+        elif "2nd Serve" in row_label:
+            serve_type = "second serve"
+        else:
+            serve_type = "serve"
+        
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0" and value != "-":
+                header = column_headers[i]
+                
+                if header == "Pts":
+                    sentences.append(f"{player} served {value} {serve_type}s.")
+                elif header == "1+ shots":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points overall.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points overall.")
+                elif header == "2+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 2 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 2 or more shots.")
+                elif header == "3+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 3 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 3 or more shots.")
+                elif header == "4+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 4 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 4 or more shots.")
+                elif header == "5+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 5 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 5 or more shots.")
+                elif header == "6+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 6 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 6 or more shots.")
+                elif header == "7+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 7 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 7 or more shots.")
+                elif header == "8+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 8 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 8 or more shots.")
+                elif header == "9+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 9 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 9 or more shots.")
+                elif header == "10+":
+                    if "%" in value:
+                        percentage = value.replace("%", "")
+                        sentences.append(f"{player} won {percentage}% of {serve_type} points when rallies reached 10 or more shots.")
+                    else:
+                        sentences.append(f"{player} won {value} {serve_type} points when rallies reached 10 or more shots.")
+        
+        return sentences
+
+    def _convert_rallyoutcomes_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str]) -> List[str]:
+        """Convert rally outcomes statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different rally outcome row types
+        if "Total" in row_label:
+            context = "Rally outcomes"
+        elif "Short" in row_label:
+            context = "Short rallies (1-3 shots)"
+        elif "Medium" in row_label:
+            context = "Medium rallies (4-6 shots)"
+        elif "Long" in row_label:
+            context = "Long rallies (7+ shots)"
+        else:
+            context = "Rally outcomes"
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "Total":
+                    sentences.append(f"{context} occurred {value} times.")
+                elif header == "Pts":
+                    sentences.append(f"{context} and {value} points were played.")
+                else:
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_overview_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str]) -> List[str]:
+        """Convert overview statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different overview row types
+        if "A%" in row_label:
+            context = "Ace percentage"
+        elif "DF%" in row_label:
+            context = "Double fault percentage"
+        elif "1stIn" in row_label:
+            context = "First serve in percentage"
+        elif "1st%" in row_label:
+            context = "First serve won percentage"
+        elif "2nd%" in row_label:
+            context = "Second serve won percentage"
+        elif "BPSaved" in row_label:
+            context = "Break points saved"
+        elif "RPW%" in row_label:
+            context = "Return points won percentage"
+        elif "Winners" in row_label:
+            context = "Winners"
+        elif "UFE" in row_label:
+            context = "Unforced errors"
+        else:
+            context = "Overview statistic"
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "A%":
+                    sentences.append(f"{context} was {value}.")
+                elif header == "DF%":
+                    sentences.append(f"{context} was {value}.")
+                elif header == "1stIn":
+                    sentences.append(f"{context} was {value}.")
+                elif header == "1st%":
+                    sentences.append(f"{context} was {value}.")
+                elif header == "2nd%":
+                    sentences.append(f"{context} was {value}.")
+                elif header == "BPSaved":
+                    sentences.append(f"{context} were {value}.")
+                elif header == "RPW%":
+                    sentences.append(f"{context} was {value}.")
+                elif header == "Winners":
+                    sentences.append(f"{context} were {value}.")
+                elif header == "UFE":
+                    sentences.append(f"{context} were {value}.")
+                else:
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_generic_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], table_name: str) -> List[str]:
+        """Convert generic row to natural language sentences"""
+        sentences = []
+        
+        context = f"In the {table_name} category"
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                sentences.append(f"{context}, {row_label}: {header} = {value}.")
+        
+        return sentences
+
+    def _convert_netpts_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str) -> List[str]:
+        """Convert net points statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different net row types
+        if "All Net Points" in row_label:
+            context = f"{player} played"
+        elif "All Net Approaches" in row_label:
+            context = f"{player} made"
+        elif "Net Points (excl S-and-V)" in row_label:
+            context = f"{player} played"
+        elif "Net Approaches (excl S-and-V)" in row_label:
+            context = f"{player} made"
+        else:
+            context = f"{player} played"
+        
+        # Convert each value to a sentence with better formatting
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "Pts":
+                    if "All Net Points" in row_label:
+                        sentences.append(f"{player} played {value} net points.")
+                    elif "Net Points (excl S-and-V)" in row_label:
+                        sentences.append(f"{player} played {value} net points excluding serve and volleys.")
+                    elif "All Net Approaches" in row_label:
+                        sentences.append(f"{player} made {value} net approaches.")
+                    elif "Net Approaches (excl S-and-V)" in row_label:
+                        sentences.append(f"{player} made {value} net approaches excluding serve and volleys.")
+                    else:
+                        sentences.append(f"{context} {value} times.")
+                elif header == "Won-----%":
+                    # Extract the number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} won {number} net points, or {percentage}% of total net points for {player}.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} won {number} net approaches, or {percentage}% of total net approaches for {player}.")
+                        elif "Net Points (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} won {number} net points excluding serve and volleys, or {percentage}% of total net points excluding serve and volleys for {player}.")
+                        elif "Net Approaches (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} won {number} net approaches excluding serve and volleys, or {percentage}% of total net approaches excluding serve and volleys for {player}.")
+                        else:
+                            sentences.append(f"{context} and won {number} points, or {percentage}% of total net points for {player}.")
+                    else:
+                        sentences.append(f"{context} and won {value} points.")
+                elif header == "Wnr at Net":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} hit {number} winners at the net, which represents {percentage}% of net points for {player}.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} hit {number} winners on net approaches, which represents {percentage}% of net approaches for {player}.")
+                        elif "Net Points (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} hit {number} winners at the net excluding serve and volleys, which represents {percentage}% of net points for {player}.")
+                        elif "Net Approaches (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} hit {number} winners on net approaches excluding serve and volleys, which represents {percentage}% of net approaches for {player}.")
+                        else:
+                            sentences.append(f"{player} hit {number} winners at the net, which represents {percentage}% of net points for {player}.")
+                    else:
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} hit {value} winners at the net.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} hit {value} winners on net approaches.")
+                        else:
+                            sentences.append(f"{player} hit {value} winners at the net.")
+                elif header == "indFcd at Net":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors at the net, which represents {percentage}% of net points for {player}.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors on net approaches, which represents {percentage}% of net approaches for {player}.")
+                        elif "Net Points (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors at the net excluding serve and volleys, which represents {percentage}% of net points for {player}.")
+                        elif "Net Approaches (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors on net approaches excluding serve and volleys, which represents {percentage}% of net approaches for {player}.")
+                        else:
+                            sentences.append(f"{player} induced {number} forced errors at the net, which represents {percentage}% of net points for {player}.")
+                    else:
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} induced {value} forced errors at the net.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} induced {value} forced errors on net approaches.")
+                        else:
+                            sentences.append(f"{player} induced {value} forced errors at the net.")
+                elif header == "UFE at Net":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} made {number} unforced errors at the net, which represents {percentage}% of net points for {player}.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} made {number} unforced errors on net approaches, which represents {percentage}% of net approaches for {player}.")
+                        elif "Net Points (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} made {number} unforced errors at the net excluding serve and volleys, which represents {percentage}% of net points for {player}.")
+                        elif "Net Approaches (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} made {number} unforced errors on net approaches excluding serve and volleys, which represents {percentage}% of net approaches for {player}.")
+                        else:
+                            sentences.append(f"{player} made {number} unforced errors at the net, which represents {percentage}% of net points for {player}.")
+                    else:
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} made {value} unforced errors at the net.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} made {value} unforced errors on net approaches.")
+                        else:
+                            sentences.append(f"{player} made {value} unforced errors at the net.")
+                elif header == "Passed at Net":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} was passed {number} times at the net, which represents {percentage}% of net points for {player}.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} was passed {number} times on net approaches, which represents {percentage}% of net approaches for {player}.")
+                        elif "Net Points (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} was passed {number} times at the net excluding serve and volleys, which represents {percentage}% of net points for {player}.")
+                        elif "Net Approaches (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} was passed {number} times on net approaches excluding serve and volleys, which represents {percentage}% of net approaches for {player}.")
+                        else:
+                            sentences.append(f"{player} was passed {number} times at the net, which represents {percentage}% of net points for {player}.")
+                    else:
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} was passed {value} times at the net.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} was passed {value} times on net approaches.")
+                        else:
+                            sentences.append(f"{player} was passed {value} times at the net.")
+                elif header == "PsgSht indFcd":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors with passing shots at the net, which represents {percentage}% of net points.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors with passing shots on net approaches, which represents {percentage}% of net approaches.")
+                        elif "Net Points (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors with passing shots at the net excluding serve and volleys, which represents {percentage}% of net points.")
+                        elif "Net Approaches (excl S-and-V)" in row_label:
+                            sentences.append(f"{player} induced {number} forced errors with passing shots on net approaches excluding serve and volleys, which represents {percentage}% of net approaches.")
+                        else:
+                            sentences.append(f"{player} induced {number} forced errors with passing shots at the net, which represents {percentage}% of net points.")
+                    else:
+                        if "All Net Points" in row_label:
+                            sentences.append(f"{player} induced {value} forced errors with passing shots at the net.")
+                        elif "All Net Approaches" in row_label:
+                            sentences.append(f"{player} induced {value} forced errors with passing shots on net approaches.")
+                        else:
+                            sentences.append(f"{player} induced {value} forced errors with passing shots at the net.")
+                elif header == "rallyLen":
+                    if "All Net Points" in row_label:
+                        sentences.append(f"{player} played at the net and the average rally length was {value} strokes.")
+                    elif "All Net Approaches" in row_label:
+                        sentences.append(f"{player} approached the net and the average rally length was {value} strokes.")
+                    elif "Net Points (excl S-and-V)" in row_label:
+                        sentences.append(f"{player} played at the net excluding serve and volleys and the average rally length was {value} strokes.")
+                    elif "Net Approaches (excl S-and-V)" in row_label:
+                        sentences.append(f"{player} approached the net excluding serve and volleys and the average rally length was {value} strokes.")
+                    else:
+                        sentences.append(f"{context} and the average rally length was {value} strokes.")
+                else:
+                    # Generic fallback
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_details_flat_to_text(self, details_flat: Dict[str, Any]) -> List[str]:
+        """Convert details_flat data to natural language text"""
+        text = []
+        
+        # Group the flat data by table type
+        shots_data = {}
+        shotdir_data = {}
+        netpts_data = {}
+        serve_data = {}
+        return_data = {}
+        keypoints_data = {}
+        overview_data = {}
+        
+        for key, value in details_flat.items():
+            if key.startswith('shots1') or key.startswith('shots2'):
+                shots_data[key] = value
+            elif key.startswith('shotdir1') or key.startswith('shotdir2'):
+                shotdir_data[key] = value
+            elif key.startswith('netpts1') or key.startswith('netpts2'):
+                netpts_data[key] = value
+            elif key.startswith('serve1') or key.startswith('serve2'):
+                serve_data[key] = value
+            elif key.startswith('return1') or key.startswith('return2'):
+                return_data[key] = value
+            elif key.startswith('keypoints'):
+                keypoints_data[key] = value
+            elif key.startswith('overview'):
+                overview_data[key] = value
+        
+        # Convert serve data (most important - comes first)
+        if serve_data:
+            text.extend(self._convert_flat_serve_to_text(serve_data))
+        
+        # Convert return data (second most important)
+        if return_data:
+            text.extend(self._convert_flat_return_to_text(return_data))
+        
+        # Convert overview data (summary statistics)
+        if overview_data:
+            text.extend(self._convert_flat_overview_to_text(overview_data))
+        
+        # Convert key points data
+        if keypoints_data:
+            text.extend(self._convert_flat_keypoints_to_text(keypoints_data))
+        
+        # Convert shots data
+        if shots_data:
+            text.extend(self._convert_flat_shots_to_text(shots_data))
+        
+        # Convert shotdir data
+        if shotdir_data:
+            text.extend(self._convert_flat_shotdir_to_text(shotdir_data))
+        
+        # Convert netpts data
+        if netpts_data:
+            text.extend(self._convert_flat_netpts_to_text(netpts_data))
+        
+        return text
+
+    def _convert_flat_shots_to_text(self, shots_data: Dict[str, Any]) -> List[str]:
+        """Convert flat shots data to natural language text"""
+        text = []
+        
+        # Group by player
+        shots1_data = {k: v for k, v in shots_data.items() if k.startswith('shots1')}
+        shots2_data = {k: v for k, v in shots_data.items() if k.startswith('shots2')}
+        
+        if shots1_data:
+            text.append("SHOTS1 STATISTICS:")
+            text.append("-" * 20)
+            text.extend(self._convert_flat_shots_player_to_text(shots1_data, "Iga Swiatek"))
+            text.append("")
+        
+        if shots2_data:
+            text.append("SHOTS2 STATISTICS:")
+            text.append("-" * 20)
+            text.extend(self._convert_flat_shots_player_to_text(shots2_data, "Jessica Pegula"))
+            text.append("")
+        
+        return text
+
+    def _convert_flat_shots_player_to_text(self, shots_data: Dict[str, Any], player: str) -> List[str]:
+        """Convert flat shots data for one player to natural language text"""
+        text = []
+        
+        # TIER 1 (AUTHORITATIVE): Extract all columns from TOTAL, FOREHAND, and BACKHAND rows
+        total_row_values = None
+        forehand_row_values = None
+        backhand_row_values = None
+        row_headers = None
+        
+        # Find the header row
+        header_key = None
+        for key in shots_data.keys():
+            if 'SHOT TYPES' in key:
+                header_key = key
+                break
+        
+        if header_key:
+            headers = [h.strip() for h in shots_data[header_key].split(' | ')]
+            
+            # Extract all columns from TOTAL, FOREHAND, and BACKHAND rows (all are authoritative)
+            for key, value in shots_data.items():
+                if key != header_key and 'SHOT TYPES' not in key:
+                    # Extract the row label (remove the prefix like "shots1 - ")
+                    row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                    
+                    # Skip if this looks like a header row
+                    if any(header_word in row_label for header_word in ['SHOT TYPES', 'PtEnd', 'Winner', 'IndFcd', 'UnfErr', 'SvReturn', 'inPtsW', 'inPtsL']):
+                        continue
+                    
+                    # Split the value by | to get individual values
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Extract all columns from the authoritative rows
+                    if len(values) == len(headers) and any(v != '' and v != '0' for v in values):
+                        if 'Total' in row_label:
+                            total_row_values = values
+                            row_headers = headers
+                        elif 'Forehand side' in row_label:
+                            forehand_row_values = values
+                            row_headers = headers
+                        elif 'Backhand side' in row_label:
+                            backhand_row_values = values
+                            row_headers = headers
+        
+        # Add all authoritative totals from TOTAL, FOREHAND, and BACKHAND rows
+        if row_headers:
+            text.append(f"AUTHORITATIVE TOTALS FOR {player.upper()} SHOT STATISTICS:")
+            
+            # Add TOTAL row data
+            if total_row_values:
+                text.append("TOTAL SHOTS AUTHORITATIVE DATA:")
+                for i, (header, value) in enumerate(zip(row_headers, total_row_values)):
+                    if value and value != "0":
+                        if header == "Total":
+                            text.append(f"{player} hit {value} total shots.")
+                        elif header == "PtEnd---%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} ended {number} total points with shots.")
+                        elif header == "Winner--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} hit {number} total winners.")
+                        elif header == "IndFcd--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} was induced into making {number} total forced errors.")
+                        elif header == "UnfErr--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} made {number} total unforced errors.")
+                        elif header == "SvReturn":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} hit {number} total serve returns.")
+                        elif header == "inPtsW--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} won {number} total points with shots.")
+                        elif header == "inPtsL--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} lost {number} total points with shots.")
+            
+            # Add FOREHAND row data
+            if forehand_row_values:
+                text.append("FOREHAND SHOTS AUTHORITATIVE DATA:")
+                for i, (header, value) in enumerate(zip(row_headers, forehand_row_values)):
+                    if value and value != "0":
+                        if header == "Total":
+                            text.append(f"{player} hit {value} forehand shots.")
+                        elif header == "PtEnd---%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} ended {number} points with forehand shots.")
+                        elif header == "Winner--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} hit {number} forehand winners.")
+                        elif header == "IndFcd--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} was induced into making {number} forced errors with forehand shots.")
+                        elif header == "UnfErr--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} made {number} forehand unforced errors.")
+                        elif header == "SvReturn":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} hit {number} forehand serve returns.")
+                        elif header == "inPtsW--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} won {number} points with forehand shots.")
+                        elif header == "inPtsL--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} lost {number} points with forehand shots.")
+            
+            # Add BACKHAND row data
+            if backhand_row_values:
+                text.append("BACKHAND SHOTS AUTHORITATIVE DATA:")
+                for i, (header, value) in enumerate(zip(row_headers, backhand_row_values)):
+                    if value and value != "0":
+                        if header == "Total":
+                            text.append(f"{player} hit {value} backhand shots.")
+                        elif header == "PtEnd---%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} ended {number} points with backhand shots.")
+                        elif header == "Winner--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} hit {number} backhand winners.")
+                        elif header == "IndFcd--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} was induced into making {number} forced errors with backhand shots.")
+                        elif header == "UnfErr--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} made {number} backhand unforced errors.")
+                        elif header == "SvReturn":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} hit {number} backhand serve returns.")
+                        elif header == "inPtsW--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} won {number} points with backhand shots.")
+                        elif header == "inPtsL--%":
+                            number = value.split('(')[0].strip()
+                            text.append(f"{player} lost {number} points with backhand shots.")
+            
+            text.append("")
+            text.append("DETAILED BREAKDOWN (these are contextual details, not for recalculating totals):")
+            text.append("")
+        
+        # Second pass: process all rows for detailed breakdown
+        if header_key:
+            headers = [h.strip() for h in shots_data[header_key].split(' | ')]
+            
+            # Process each data row (skip the header row)
+            for key, value in shots_data.items():
+                if key != header_key and 'SHOT TYPES' not in key:
+                    # Extract the row label (remove the prefix like "shots1 - ")
+                    row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                    
+                    # Skip if this looks like a header row
+                    if any(header_word in row_label for header_word in ['SHOT TYPES', 'Total', 'PtEnd', 'Winner', 'IndFcd', 'UnfErr', 'SvReturn', 'inPtsW', 'inPtsL']):
+                        continue
+                    
+                    # Split the value by | to get individual values
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Only process if we have valid data (not just headers)
+                    if len(values) == len(headers) and any(v != '' and v != '0' for v in values):
+                        # Convert to sentences using the existing method
+                        sentences = self._convert_shots_row_to_sentences(row_label, values, headers, player)
+                        text.extend(sentences)
+        
+        return text
+
+    def _convert_flat_shotdir_to_text(self, shotdir_data: Dict[str, Any]) -> List[str]:
+        """Convert flat shotdir data to natural language text"""
+        text = []
+        
+        # Group by player
+        shotdir1_data = {k: v for k, v in shotdir_data.items() if k.startswith('shotdir1')}
+        shotdir2_data = {k: v for k, v in shotdir_data.items() if k.startswith('shotdir2')}
+        
+        if shotdir1_data:
+            text.append("SHOTDIR1 STATISTICS:")
+            text.append("-" * 22)
+            text.extend(self._convert_flat_shotdir_player_to_text(shotdir1_data, "Iga Swiatek"))
+            text.append("")
+        
+        if shotdir2_data:
+            text.append("SHOTDIR2 STATISTICS:")
+            text.append("-" * 22)
+            text.extend(self._convert_flat_shotdir_player_to_text(shotdir2_data, "Jessica Pegula"))
+            text.append("")
+        
+        return text
+
+    def _convert_flat_shotdir_player_to_text(self, shotdir_data: Dict[str, Any], player: str) -> List[str]:
+        """Convert flat shotdir data for one player to natural language text"""
+        text = []
+        
+        # Group by table type
+        table1_data = {k: v for k, v in shotdir_data.items() if '_table1' in k}
+        table2_data = {k: v for k, v in shotdir_data.items() if '_table2' in k}
+        
+        # TIER 1 (AUTHORITATIVE): Extract totals from "Total" row as single source of truth
+        total_shots_all_directions = 0
+        total_forehand_shots = 0
+        total_backhand_shots = 0
+        total_backhand_slice_shots = 0
+        
+        # Directional totals
+        total_crosscourt_shots = 0
+        total_down_the_line_shots = 0
+        total_down_the_middle_shots = 0
+        total_inside_out_shots = 0
+        total_inside_in_shots = 0
+        
+        # Extract authoritative totals from table1 rows
+        if table1_data:
+            header_key = None
+            for key in table1_data.keys():
+                if 'SHOT DIRECTION' in key:
+                    header_key = key
+                    break
+            
+            if header_key:
+                headers = [h.strip() for h in table1_data[header_key].split(' | ')]
+                
+                for key, value in table1_data.items():
+                    if key != header_key and 'SHOT DIRECTION' not in key:
+                        row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                        
+                        # Skip header rows except Total
+                        if any(header_word in row_label for header_word in ['SHOT DIRECTION', 'PtEnding', 'Winner', 'InduceFcd', 'UnfErr', 'inPtsWon', 'inPtsLost']):
+                            continue
+                        
+                        values = [v.strip() for v in value.split(' | ')]
+                        
+                        # Extract totals from each row
+                        if len(values) == len(headers) and any(v != '' and v != '0' for v in values):
+                            try:
+                                # Sum up all direction values for this shot type
+                                shot_total = sum(int(v.split('(')[0].strip()) for v in values if v and '(' in v and v.split('(')[0].strip().isdigit())
+                                
+                                if 'Total' in row_label:
+                                    total_shots_all_directions = shot_total  # AUTHORITATIVE
+                                    
+                                    # Extract directional totals from the Total row
+                                    for i, header in enumerate(headers):
+                                        if i < len(values) and values[i] and '(' in values[i]:
+                                            direction_value = int(values[i].split('(')[0].strip())
+                                            if 'Crosscourt' in header:
+                                                total_crosscourt_shots = direction_value
+                                            elif 'Down the line' in header:
+                                                total_down_the_line_shots = direction_value
+                                            elif 'Down the middle' in header:
+                                                total_down_the_middle_shots = direction_value
+                                            elif 'Inside-out' in header:
+                                                total_inside_out_shots = direction_value
+                                            elif 'Inside-in' in header:
+                                                total_inside_in_shots = direction_value
+                                
+                                elif 'Forehand' in row_label:
+                                    total_forehand_shots = shot_total
+                                elif 'BH slice' in row_label:
+                                    total_backhand_slice_shots = shot_total
+                                elif 'Backhand' in row_label:
+                                    total_backhand_shots = shot_total
+                            except (ValueError, IndexError):
+                                continue
+        
+        # Add authoritative summary (TIER 1)
+        if total_shots_all_directions > 0:
+            text.append(f"AUTHORITATIVE TOTALS FOR {player.upper()} SHOT DIRECTIONS:")
+            text.append(f"{player} hit {total_shots_all_directions} total shots in all directions including crosscourt, down the middle, down the line, inside-out, and inside-in.")
+            text.append("")
+            text.append("SHOT TYPE BREAKDOWN (these sum to total above, do not add again):")
+            if total_forehand_shots > 0:
+                text.append(f"{player} hit {total_forehand_shots} forehand shots in all directions including crosscourt, down the middle, down the line, inside-out, and inside-in.")
+            if total_backhand_shots > 0:
+                text.append(f"{player} hit {total_backhand_shots} backhand shots in all directions including crosscourt, down the middle, down the line, inside-out, and inside-in.")
+            if total_backhand_slice_shots > 0:
+                text.append(f"{player} hit {total_backhand_slice_shots} backhand slice shots in all directions including crosscourt, down the middle, down the line, inside-out, and inside-in.")
+            text.append("")
+            text.append("DIRECTIONAL BREAKDOWN (these sum to totals above, do not add again):")
+            if total_crosscourt_shots > 0:
+                text.append(f"{player} hit {total_crosscourt_shots} crosscourt shots.")
+            if total_down_the_line_shots > 0:
+                text.append(f"{player} hit {total_down_the_line_shots} down the line shots.")
+            if total_down_the_middle_shots > 0:
+                text.append(f"{player} hit {total_down_the_middle_shots} down the middle shots.")
+            if total_inside_out_shots > 0:
+                text.append(f"{player} hit {total_inside_out_shots} inside-out shots.")
+            if total_inside_in_shots > 0:
+                text.append(f"{player} hit {total_inside_in_shots} inside-in shots.")
+            text.append("")
+        
+        # Process table1 (direction breakdowns)
+        if table1_data:
+            text.append("SHOT DIRECTION BREAKDOWN:")
+            text.append("-" * 25)
+            
+            # Find the header row for table1
+            header_key = None
+            for key in table1_data.keys():
+                if 'SHOT DIRECTION' in key:
+                    header_key = key
+                    break
+            
+            if header_key:
+                headers = [h.strip() for h in table1_data[header_key].split(' | ')]
+                
+                # Process each data row in table1
+                for key, value in table1_data.items():
+                    if key != header_key and 'SHOT DIRECTION' not in key:
+                        # Extract the row label
+                        row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                        
+                        # Skip if this looks like a header row
+                        if any(header_word in row_label for header_word in ['SHOT DIRECTION', 'Total', 'PtEnding', 'Winner', 'InduceFcd', 'UnfErr', 'inPtsWon', 'inPtsLost']):
+                            continue
+                        
+                        # Split the value by | to get individual values
+                        values = [v.strip() for v in value.split(' | ')]
+                        
+                        # Only process if we have valid data
+                        if len(values) == len(headers) and any(v != '' and v != '0' for v in values):
+                            # Convert to sentences for table1
+                            sentences = self._convert_shotdir_table1_row_to_sentences(row_label, values, headers, player)
+                            text.extend(sentences)
+            
+            text.append("")
+        
+        # Process table2 (detailed breakdowns by shot type and direction)
+        if table2_data:
+            text.append("SHOT DIRECTION DETAILED BREAKDOWN:")
+            text.append("-" * 35)
+            
+            # Find the header row for table2
+            header_key = None
+            for key in table2_data.keys():
+                if 'SHOT DIRECTION' in key:
+                    header_key = key
+                    break
+            
+            if header_key:
+                headers = [h.strip() for h in table2_data[header_key].split(' | ')]
+                
+                # Process each data row in table2
+                for key, value in table2_data.items():
+                    if key != header_key and 'SHOT DIRECTION' not in key:
+                        # Extract the row label
+                        row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                        
+                        # Skip if this looks like a header row
+                        if any(header_word in row_label for header_word in ['SHOT DIRECTION', 'Total', 'PtEnding', 'Winner', 'InduceFcd', 'UnfErr', 'inPtsWon', 'inPtsLost']):
+                            continue
+                        
+                        # Split the value by | to get individual values
+                        values = [v.strip() for v in value.split(' | ')]
+                        
+                        # Only process if we have valid data
+                        if len(values) == len(headers) and any(v != '' and v != '0' for v in values):
+                            # Convert to sentences for table2
+                            sentences = self._convert_shotdir_table2_row_to_sentences(row_label, values, headers, player)
+                            text.extend(sentences)
+        
+        return text
+
+    def _convert_shotdir_table1_row_to_sentences(self, row_label: str, values: List[str], headers: List[str], player: str) -> List[str]:
+        """Convert shot direction table1 row to natural language sentences"""
+        sentences = []
+        
+        # Handle different row types
+        if "Total" in row_label:
+            # Total row shows breakdown by direction
+            for i, value in enumerate(values):
+                if i < len(headers) and value and value != "0":
+                    header = headers[i]
+                    
+                    # Extract number and percentage from format like "57  (48%)"
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        
+                        if header == "Crosscourt":
+                            sentences.append(f"{player} hit {number} crosscourt shots, which represents {percentage}% of all shots hit by {player}.")
+                        elif header == "Down middle":
+                            sentences.append(f"{player} hit {number} down-the-middle shots, which represents {percentage}% of all shots hit by {player}.")
+                        elif header == "Down the line":
+                            sentences.append(f"{player} hit {number} down-the-line shots, which represents {percentage}% of all shots hit by {player}.")
+                        elif header == "Inside-out":
+                            sentences.append(f"{player} hit {number} inside-out shots, which represents {percentage}% of all shots hit by {player}.")
+                        elif header == "Inside-in":
+                            sentences.append(f"{player} hit {number} inside-in shots, which represents {percentage}% of all shots hit by {player}.")
+                        else:
+                            sentences.append(f"{player} hit {number} {header.lower()} shots, which represents {percentage}% of all shots hit by {player}.")
+                    else:
+                        sentences.append(f"{player} hit {value} {header.lower()} shots.")
+        else:
+            # Other rows (Forehand, Backhand, BH slice) show breakdown by direction for that shot type
+            for i, value in enumerate(values):
+                if i < len(headers) and value and value != "0":
+                    header = headers[i]
+                    
+                    # Extract number and percentage from format like "57  (48%)"
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        
+                        if "Forehand" in row_label:
+                            if header == "Crosscourt":
+                                sentences.append(f"{player} hit {number} forehand crosscourt shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                            elif header == "Down middle":
+                                sentences.append(f"{player} hit {number} forehand down-the-middle shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                            elif header == "Down the line":
+                                sentences.append(f"{player} hit {number} forehand down-the-line shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                            elif header == "Inside-out":
+                                sentences.append(f"{player} hit {number} forehand inside-out shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                            elif header == "Inside-in":
+                                sentences.append(f"{player} hit {number} forehand inside-in shots, which represents {percentage}% of all forehand shots hit by {player}.")
+                        elif "Backhand" in row_label:
+                            if header == "Crosscourt":
+                                sentences.append(f"{player} hit {number} backhand crosscourt shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                            elif header == "Down middle":
+                                sentences.append(f"{player} hit {number} backhand down-the-middle shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                            elif header == "Down the line":
+                                sentences.append(f"{player} hit {number} backhand down-the-line shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                            elif header == "Inside-out":
+                                sentences.append(f"{player} hit {number} backhand inside-out shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                            elif header == "Inside-in":
+                                sentences.append(f"{player} hit {number} backhand inside-in shots, which represents {percentage}% of all backhand shots hit by {player}.")
+                        elif "BH slice" in row_label:
+                            if header == "Crosscourt":
+                                sentences.append(f"{player} hit {number} backhand slice crosscourt shots, which represents {percentage}% of all backhand slice shots hit by {player}.")
+                            elif header == "Down middle":
+                                sentences.append(f"{player} hit {number} backhand slice down-the-middle shots, which represents {percentage}% of all backhand slice shots hit by {player}.")
+                            elif header == "Down the line":
+                                sentences.append(f"{player} hit {number} backhand slice down-the-line shots, which represents {percentage}% of all backhand slice shots hit by {player}.")
+                            elif header == "Inside-out":
+                                sentences.append(f"{player} hit {number} backhand slice inside-out shots, which represents {percentage}% of all backhand slice shots hit by {player}.")
+                            elif header == "Inside-in":
+                                sentences.append(f"{player} hit {number} backhand slice inside-in shots, which represents {percentage}% of all backhand slice shots hit by {player}.")
+                    else:
+                        if "Forehand" in row_label:
+                            sentences.append(f"{player} hit {value} forehand {header.lower()} shots.")
+                        elif "Backhand" in row_label:
+                            sentences.append(f"{player} hit {value} backhand {header.lower()} shots.")
+                        elif "BH slice" in row_label:
+                            sentences.append(f"{player} hit {value} backhand slice {header.lower()} shots.")
+        
+        return sentences
+
+    def _convert_shotdir_table2_row_to_sentences(self, row_label: str, values: List[str], headers: List[str], player: str) -> List[str]:
+        """Convert shot direction table2 row to natural language sentences"""
+        sentences = []
+        
+        # Extract shot type and direction from row label (e.g., "FH crosscourt_table2" -> "forehand crosscourt")
+        shot_type = row_label.lower()
+        
+        # Remove table suffix if present
+        if "_table" in shot_type:
+            shot_type = shot_type.split("_table")[0]
+        
+        # Convert abbreviations
+        if "FH" in shot_type:
+            shot_type = shot_type.replace("FH", "forehand")
+        if "BH" in shot_type:
+            shot_type = shot_type.replace("BH", "backhand")
+        if "fh" in shot_type:
+            shot_type = shot_type.replace("fh", "forehand")
+        if "bh" in shot_type:
+            shot_type = shot_type.replace("bh", "backhand")
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(headers) and value and value != "0":
+                header = headers[i]
+                
+                if header == "Total":
+                    sentences.append(f"{player} hit {value} {shot_type} shots.")
+                elif header == "PtEnding":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} ended {number} points with {shot_type} shots, which represents {percentage}% of all {shot_type} shots hit by {player}.")
+                    else:
+                        sentences.append(f"{player} ended {value} points with {shot_type} shots.")
+                elif header == "Winner":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} hit {number} winners with {shot_type} shots, which represents {percentage}% of all {shot_type} shots hit by {player}.")
+                    else:
+                        sentences.append(f"{player} hit {value} winners with {shot_type} shots.")
+                elif header == "InduceFcd":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} made {number} induced forced errors with {shot_type} shots, which represents {percentage}% of all {shot_type} shots hit by {player}.")
+                    else:
+                        sentences.append(f"{player} made {value} induced forced errors with {shot_type} shots.")
+                elif header == "UnfErr":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} made {number} unforced errors with {shot_type} shots, which represents {percentage}% of all {shot_type} shots hit by {player}.")
+                    else:
+                        sentences.append(f"{player} made {value} unforced errors with {shot_type} shots.")
+                elif header == "inPtsWon":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} won {number} points with {shot_type} shots, which represents {percentage}% of all {shot_type} shots hit by {player}.")
+                    else:
+                        sentences.append(f"{player} won {value} points with {shot_type} shots.")
+                elif header == "inPtsLost":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} lost {number} points with {shot_type} shots, which represents {percentage}% of all {shot_type} shots hit by {player}.")
+                    else:
+                        sentences.append(f"{player} lost {value} points with {shot_type} shots.")
+                else:
+                    sentences.append(f"{player} had {header}: {value} with {shot_type} shots.")
+        
+        return sentences
+
+    def _convert_flat_netpts_to_text(self, netpts_data: Dict[str, Any]) -> List[str]:
+        """Convert flat netpts data to natural language text"""
+        text = []
+        
+        # Group by player
+        netpts1_data = {k: v for k, v in netpts_data.items() if k.startswith('netpts1')}
+        netpts2_data = {k: v for k, v in netpts_data.items() if k.startswith('netpts2')}
+        
+        if netpts1_data:
+            text.append("NETPTS1 STATISTICS:")
+            text.append("-" * 21)
+            text.extend(self._convert_flat_netpts_player_to_text(netpts1_data, "Iga Swiatek"))
+            text.append("")
+        
+        if netpts2_data:
+            text.append("NETPTS2 STATISTICS:")
+            text.append("-" * 21)
+            text.extend(self._convert_flat_netpts_player_to_text(netpts2_data, "Jessica Pegula"))
+            text.append("")
+        
+        return text
+
+    def _convert_flat_netpts_player_to_text(self, netpts_data: Dict[str, Any], player: str) -> List[str]:
+        """Convert flat netpts data for one player to natural language text"""
+        text = []
+        
+        # Find the header row
+        header_key = None
+        for key in netpts_data.keys():
+            if 'NET POINTS' in key:
+                header_key = key
+                break
+        
+        if header_key:
+            headers = netpts_data[header_key].split(' | ')
+            
+            # Process each data row
+            for key, value in netpts_data.items():
+                if key != header_key and 'NET POINTS' not in key:
+                    # Extract the row label
+                    row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                    
+                    # Split the value by | to get individual values
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Convert to sentences using the existing method
+                    sentences = self._convert_netpts_row_to_sentences(row_label, values, headers, player)
+                    text.extend(sentences)
+        
+        return text
+
+    def _convert_flat_serve_to_text(self, serve_data: Dict[str, Any]) -> List[str]:
+        """Convert flat serve data to natural language text"""
+        text = []
+        
+        # Group by player
+        serve1_data = {k: v for k, v in serve_data.items() if k.startswith('serve1')}
+        serve2_data = {k: v for k, v in serve_data.items() if k.startswith('serve2')}
+        
+        # Serve1 Table 1 (Summary)
+        if serve1_data:
+            text.append("SERVE1 STATISTICS (SUMMARY):")
+            text.append("-" * 28)
+            text.extend(self._convert_flat_serve_player_table1_to_text(serve1_data, "Iga Swiatek"))
+            text.append("")
+        
+        # Serve1 Table 2 (Detailed)
+        if serve1_data:
+            text.append("SERVE1 STATISTICS (DETAILED):")
+            text.append("-" * 30)
+            text.extend(self._convert_flat_serve_player_table2_to_text(serve1_data, "Iga Swiatek"))
+            text.append("")
+        
+        # Serve2 Table 1 (Summary)
+        if serve2_data:
+            text.append("SERVE2 STATISTICS (SUMMARY):")
+            text.append("-" * 28)
+            text.extend(self._convert_flat_serve_player_table1_to_text(serve2_data, "Jessica Pegula"))
+            text.append("")
+        
+        # Serve2 Table 2 (Detailed)
+        if serve2_data:
+            text.append("SERVE2 STATISTICS (DETAILED):")
+            text.append("-" * 30)
+            text.extend(self._convert_flat_serve_player_table2_to_text(serve2_data, "Jessica Pegula"))
+            text.append("")
+        
+        return text
+
+    def _convert_flat_serve_player_table1_to_text(self, serve_data: Dict[str, Any], player: str) -> List[str]:
+        """Convert flat serve data table1 (summary) for one player to natural language text"""
+        text = []
+        
+        # TIER 1 (AUTHORITATIVE): Calculate summary totals first
+        total_aces = 0
+        total_double_faults = 0
+        total_points_served = 0
+        total_points_won = 0
+        
+        # Extract authoritative totals ONLY from Deuce Court and Ad Court (non-overlapping categories)
+        for key, value in serve_data.items():
+            if '_table1' in key and ' - ' in key:
+                location_part = key.split(' - ')[1].split('_table1')[0]
+                # Only use Deuce Court and Ad Court as authoritative sources (they don't overlap)
+                if location_part in ['Deuce Court', 'Ad Court']:
+                    values = [v.strip() for v in value.split(' | ')]
+                    if len(values) >= 8:
+                        try:
+                            total_points_served += int(values[0]) if values[0] and values[0] != "0" else 0
+                            if "(" in values[1]:
+                                total_points_won += int(values[1].split('(')[0].strip()) if values[1].split('(')[0].strip() else 0
+                            total_aces += int(values[2].split('(')[0].strip()) if values[2] and "(" in values[2] else (int(values[2]) if values[2] and values[2] != "0" else 0)
+                            total_double_faults += int(values[7].split('(')[0].strip()) if values[7] and "(" in values[7] else (int(values[7]) if values[7] and values[7] != "0" else 0)
+                        except (ValueError, IndexError):
+                            continue
+        
+        # Add authoritative summary (TIER 1)
+        text.append(f"AUTHORITATIVE TOTALS FOR {player.upper()}:")
+        text.append(f"{player} served {total_points_served} total points.")
+        text.append(f"{player} won {total_points_won} total serve points.")
+        text.append(f"{player} hit {total_aces} total aces.")
+        text.append(f"{player} made {total_double_faults} total double faults.")
+        text.append("")
+        text.append("BREAKDOWN BY COURT LOCATION (these sum to totals above, do not add again):")
+        text.append("")
+        
+        # Process each serve breakdown for table1 (summary)
+        for key, value in serve_data.items():
+            # Only process table1 data
+            if '_table1' not in key:
+                continue
+                
+            # Extract the location from the key
+            # Format: "serve1 - Deuce Court_table1"
+            if ' - ' in key and '_table1' in key:
+                location_part = key.split(' - ')[1].split('_table1')[0]
+                
+                # Skip header rows
+                if 'BREAKDOWN' in location_part:
+                    continue
+                
+                # Split the value by | to get individual values
+                values = [v.strip() for v in value.split(' | ')]
+                
+                # Convert location to proper description
+                if 'Deuce Court' in location_part:
+                    location_desc = "to the Deuce court"
+                elif 'Ad Court' in location_part:
+                    location_desc = "to the Ad court"
+                else:
+                    location_desc = location_part.lower()
+                
+                # Extract stats for table1 (summary)
+                if len(values) >= 8:
+                    total_pts = values[0]
+                    won_pts = values[1]
+                    aces = values[2]
+                    unreturned = values[3]
+                    forced_errors = values[4]
+                    won_3_or_less = values[5]
+                    first_serves_in = values[6]
+                    double_faults = values[7]
+                    
+                    # Create detailed descriptions
+                    if total_pts and total_pts != "0":
+                        text.append(f"{player} served {location_desc} {total_pts} times.")
+                        
+                        # Points won
+                        if won_pts and won_pts != "0":
+                            if "(" in won_pts and ")" in won_pts:
+                                percentage = won_pts.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} served {location_desc} and won {won_pts.split('(')[0].strip()} points, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} served {location_desc} and won {won_pts} points, or {won_pts}% of total points served {location_desc} by {player}.")
+                        
+                        # Aces
+                        if aces and aces != "0":
+                            if "(" in aces and ")" in aces:
+                                percentage = aces.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} hit {aces.split('(')[0].strip()} aces served {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} hit {aces} aces served {location_desc}, or {aces}% of total points served {location_desc} by {player}.")
+                        
+                        # Unreturned serves
+                        if unreturned and unreturned != "0":
+                            if "(" in unreturned and ")" in unreturned:
+                                percentage = unreturned.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} had {unreturned.split('(')[0].strip()} unreturned serves served {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} had {unreturned} unreturned serves served {location_desc}, or {unreturned}% of total points served {location_desc} by {player}.")
+                        
+                        # Forced errors
+                        if forced_errors and forced_errors != "0":
+                            if "(" in forced_errors and ")" in forced_errors:
+                                percentage = forced_errors.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} forced {forced_errors.split('(')[0].strip()} errors from her opponent on serves {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} forced {forced_errors} errors from her opponent on serves {location_desc}, or {forced_errors}% of total points served {location_desc} by {player}.")
+                        
+                        # Won in 3 shots or less
+                        if won_3_or_less and won_3_or_less != "0":
+                            if "(" in won_3_or_less and ")" in won_3_or_less:
+                                percentage = won_3_or_less.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} won {won_3_or_less.split('(')[0].strip()} points in 3 shots or less on serves {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} won {won_3_or_less} points in 3 shots or less on serves {location_desc}, or {won_3_or_less}% of total points served {location_desc} by {player}.")
+                        
+                        # First serves in
+                        if first_serves_in and first_serves_in != "0":
+                            if "(" in first_serves_in and ")" in first_serves_in:
+                                percentage = first_serves_in.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} hit in {first_serves_in.split('(')[0].strip()} first serves served {location_desc}, or {percentage}% of first serves served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} hit in {first_serves_in} first serves served {location_desc}, or {first_serves_in}% of first serves served {location_desc} by {player}.")
+                        
+                        # Double faults
+                        if double_faults and double_faults != "0":
+                            if "(" in double_faults and ")" in double_faults:
+                                percentage = double_faults.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} served {location_desc} and had {double_faults.split('(')[0].strip()} double faults, or {percentage}% of serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} served {location_desc} and had {double_faults} double faults, or {double_faults}% of serves {location_desc} by {player}.")
+        
+        return text
+
+    def _convert_flat_serve_player_table2_to_text(self, serve_data: Dict[str, Any], player: str) -> List[str]:
+        """Convert flat serve data table2 (detailed) for one player to natural language text"""
+        text = []
+        
+        # Process each serve breakdown for table2 (detailed)
+        for key, value in serve_data.items():
+            # Only process table2 data
+            if '_table2' not in key:
+                continue
+                
+            # Extract the location from the key
+            # Format: "serve1 - Deuce Court_table2"
+            if ' - ' in key and '_table2' in key:
+                location_part = key.split(' - ')[1].split('_table2')[0]
+                
+                # Skip header rows
+                if 'BREAKDOWN' in location_part:
+                    continue
+                
+                # Split the value by | to get individual values
+                values = [v.strip() for v in value.split(' | ')]
+                
+                # Convert location to proper description
+                if 'Deuce Court' in location_part:
+                    location_desc = "to the Deuce court"
+                elif 'Ad Court' in location_part:
+                    location_desc = "to the Ad court"
+                else:
+                    location_desc = location_part.lower()
+                
+                # Extract stats for table2 (detailed - separates first and second serves)
+                if len(values) >= 12:
+                    # First serve stats
+                    first_pts = values[0]
+                    first_won = values[1]
+                    first_aces = values[2]
+                    first_unreturned = values[3]
+                    first_forced_errors = values[4]
+                    first_won_3_or_less = values[5]
+                    
+                    # Second serve stats
+                    second_pts = values[6]
+                    second_won = values[7]
+                    second_aces = values[8]
+                    second_unreturned = values[9]
+                    second_forced_errors = values[10]
+                    second_won_3_or_less = values[11]
+                    
+                    # First serve details
+                    if first_pts and first_pts != "0":
+                        text.append(f"{player} served {location_desc} {first_pts} first serves.")
+                        
+                        if first_won and first_won != "0":
+                            if "(" in first_won and ")" in first_won:
+                                percentage = first_won.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} won {first_won.split('(')[0].strip()} first serve points {location_desc}, or {percentage}% of first serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} won {first_won} first serve points {location_desc}, or {first_won}% of first serves {location_desc} by {player}.")
+                        
+                        if first_aces and first_aces != "0":
+                            if "(" in first_aces and ")" in first_aces:
+                                percentage = first_aces.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} hit {first_aces.split('(')[0].strip()} aces on first serves {location_desc}, or {percentage}% of first serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} hit {first_aces} aces on first serves {location_desc}, or {first_aces}% of first serves {location_desc} by {player}.")
+                        
+                        if first_won_3_or_less and first_won_3_or_less != "0":
+                            if "(" in first_won_3_or_less and ")" in first_won_3_or_less:
+                                percentage = first_won_3_or_less.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} won {first_won_3_or_less.split('(')[0].strip()} first serve points in 3 shots or less {location_desc}, or {percentage}% of first serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} won {first_won_3_or_less} first serve points in 3 shots or less {location_desc}, or {first_won_3_or_less}% of first serves {location_desc} by {player}.")
+                    
+                    # Second serve details
+                    if second_pts and second_pts != "0":
+                        text.append(f"{player} served {location_desc} {second_pts} second serves.")
+                        
+                        if second_won and second_won != "0":
+                            if "(" in second_won and ")" in second_won:
+                                percentage = second_won.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} won {second_won.split('(')[0].strip()} second serve points {location_desc}, or {percentage}% of second serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} won {second_won} second serve points {location_desc}, or {second_won}% of second serves {location_desc} by {player}.")
+                        
+                        if second_aces and second_aces != "0":
+                            if "(" in second_aces and ")" in second_aces:
+                                percentage = second_aces.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} hit {second_aces.split('(')[0].strip()} aces on second serves {location_desc}, or {percentage}% of second serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} hit {second_aces} aces on second serves {location_desc}, or {second_aces}% of second serves {location_desc} by {player}.")
+                        
+                        if second_won_3_or_less and second_won_3_or_less != "0":
+                            if "(" in second_won_3_or_less and ")" in second_won_3_or_less:
+                                percentage = second_won_3_or_less.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} won {second_won_3_or_less.split('(')[0].strip()} second serve points in 3 shots or less {location_desc}, or {percentage}% of second serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} won {second_won_3_or_less} second serve points in 3 shots or less {location_desc}, or {second_won_3_or_less}% of second serves {location_desc} by {player}.")
+        
+        return text
+
+    def _convert_flat_serve_player_to_text(self, serve_data: Dict[str, Any], player: str) -> List[str]:
+        """Convert flat serve data for one player to natural language text"""
+        text = []
+        
+        # Process each serve breakdown
+        for key, value in serve_data.items():
+            # Extract the location and table type from the key
+            # Format: "serve1 - Deuce Court_table1" or "serve1 - Ad Court_table2"
+            if ' - ' in key and '_table' in key:
+                location_part = key.split(' - ')[1].split('_table')[0]
+                table_type = key.split('_table')[1]
+                
+                # Skip header rows
+                if 'BREAKDOWN' in location_part:
+                    continue
+                
+                # Split the value by | to get individual values
+                values = [v.strip() for v in value.split(' | ')]
+                
+                # Determine serve type based on table type
+                if table_type == '1':
+                    serve_type = "first serves"
+                elif table_type == '2':
+                    serve_type = "second serves"
+                else:
+                    serve_type = "serves"
+                
+                # Convert location to proper description
+                if 'Deuce Court' in location_part:
+                    location_desc = "to the Deuce court"
+                elif 'Ad Court' in location_part:
+                    location_desc = "to the Ad court"
+                else:
+                    location_desc = location_part.lower()
+                
+                # Extract stats (similar to the serve table conversion)
+                if len(values) >= 8:
+                    total_pts = values[0]
+                    won_pts = values[1]
+                    aces = values[2]
+                    unreturned = values[3]
+                    forced_errors = values[4]
+                    won_3_or_less = values[5]
+                    first_serves_in = values[6]
+                    double_faults = values[7]
+                    
+                    # Create detailed descriptions
+                    if total_pts and total_pts != "0":
+                        text.append(f"{player} served {location_desc} {total_pts} times ({serve_type}).")
+                        
+                        # Points won
+                        if won_pts and won_pts != "0":
+                            if "(" in won_pts and ")" in won_pts:
+                                percentage = won_pts.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} served {location_desc} and won {won_pts.split('(')[0].strip()} points, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} served {location_desc} and won {won_pts} points, or {won_pts}% of total points served {location_desc} by {player}.")
+                        
+                        # Aces
+                        if aces and aces != "0":
+                            if "(" in aces and ")" in aces:
+                                percentage = aces.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} hit {aces.split('(')[0].strip()} aces served {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} hit {aces} aces served {location_desc}, or {aces}% of total points served {location_desc} by {player}.")
+                        
+                        # Unreturned serves
+                        if unreturned and unreturned != "0":
+                            if "(" in unreturned and ")" in unreturned:
+                                percentage = unreturned.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} had {unreturned.split('(')[0].strip()} unreturned serves served {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} had {unreturned} unreturned serves served {location_desc}, or {unreturned}% of total points served {location_desc} by {player}.")
+                        
+                        # Forced errors
+                        if forced_errors and forced_errors != "0":
+                            if "(" in forced_errors and ")" in forced_errors:
+                                percentage = forced_errors.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} forced {forced_errors.split('(')[0].strip()} errors from her opponent on serves {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} forced {forced_errors} errors from her opponent on serves {location_desc}, or {forced_errors}% of total points served {location_desc} by {player}.")
+                        
+                        # Points won in 3 shots or less
+                        if won_3_or_less and won_3_or_less != "0":
+                            if "(" in won_3_or_less and ")" in won_3_or_less:
+                                percentage = won_3_or_less.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} won {won_3_or_less.split('(')[0].strip()} points in 3 shots or less on serves {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} won {won_3_or_less} points in 3 shots or less on serves {location_desc}, or {won_3_or_less}% of total points served {location_desc} by {player}.")
+                        
+                        # First serves in
+                        if first_serves_in and first_serves_in != "0":
+                            if "(" in first_serves_in and ")" in first_serves_in:
+                                percentage = first_serves_in.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} hit in {first_serves_in.split('(')[0].strip()} first serves served {location_desc}, or {percentage}% of first serves served {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} hit in {first_serves_in} first serves served {location_desc}, or {first_serves_in}% of first serves served {location_desc} by {player}.")
+                        
+                        # Double faults
+                        if double_faults and double_faults != "0":
+                            if "(" in double_faults and ")" in double_faults:
+                                percentage = double_faults.split("(")[1].split(")")[0].replace("%", "")
+                                text.append(f"{player} served {location_desc} and had {double_faults.split('(')[0].strip()} double faults, or {percentage}% of serves {location_desc} by {player}.")
+                            else:
+                                text.append(f"{player} served {location_desc} and had {double_faults} double faults, or {double_faults}% of serves {location_desc} by {player}.")
+        
+        return text
+
+    def _convert_flat_return_to_text(self, return_data: Dict[str, Any]) -> List[str]:
+        """Convert flat return data to natural language text"""
+        text = []
+        
+        # Group by player
+        return1_data = {k: v for k, v in return_data.items() if k.startswith('return1')}
+        return2_data = {k: v for k, v in return_data.items() if k.startswith('return2')}
+        
+        if return1_data:
+            text.append("RETURN1 STATISTICS (DETAILED):")
+            text.append("-" * 32)
+            text.extend(self._convert_flat_return_player_to_text(return1_data, "Iga Swiatek"))
+            text.append("")
+        
+        if return2_data:
+            text.append("RETURN2 STATISTICS (DETAILED):")
+            text.append("-" * 32)
+            text.extend(self._convert_flat_return_player_to_text(return2_data, "Jessica Pegula"))
+            text.append("")
+        
+        return text
+
+    def _convert_flat_return_player_to_text(self, return_data: Dict[str, Any], player: str) -> List[str]:
+        """Convert flat return data for one player to natural language text"""
+        text = []
+        
+        # TIER 1 (AUTHORITATIVE): Extract totals from "Total" row first
+        total_returns = 0
+        total_points_won = 0
+        total_returnable = 0
+        total_returnable_won = 0
+        total_in_play = 0
+        total_in_play_won = 0
+        total_winners = 0
+        
+        # Find and process the "Total" row as authoritative source
+        for key, value in return_data.items():
+            if ' - ' in key and '_table' in key:
+                return_type_part = key.split(' - ')[1].split('_table')[0]
+                table_type = key.split('_table')[1]
+                
+                # Only process table1 (outcomes) and only the "Total" row
+                if table_type == '1' and return_type_part.lower() == 'total':
+                    values = [v.strip() for v in value.split(' | ')]
+                    if len(values) >= 8:
+                        try:
+                            total_returns = int(values[0]) if values[0] and values[0] != "0" else 0
+                            if "(" in values[1]:
+                                total_points_won = int(values[1].split('(')[0].strip()) if values[1].split('(')[0].strip() else 0
+                            if "(" in values[2]:
+                                total_returnable = int(values[2].split('(')[0].strip()) if values[2].split('(')[0].strip() else 0
+                            if "(" in values[3]:
+                                total_returnable_won = int(values[3].split('(')[0].strip()) if values[3].split('(')[0].strip() else 0
+                            if "(" in values[4]:
+                                total_in_play = int(values[4].split('(')[0].strip()) if values[4].split('(')[0].strip() else 0
+                            if "(" in values[5]:
+                                total_in_play_won = int(values[5].split('(')[0].strip()) if values[5].split('(')[0].strip() else 0
+                            if "(" in values[6]:
+                                total_winners = int(values[6].split('(')[0].strip()) if values[6].split('(')[0].strip() else 0
+                        except (ValueError, IndexError):
+                            continue
+                    break
+        
+        # Add authoritative summary (TIER 1)
+        if total_returns > 0:
+            text.append(f"AUTHORITATIVE TOTALS FOR {player.upper()} RETURNS:")
+            text.append(f"{player} returned {total_returns} total serves.")
+            text.append(f"{player} won {total_points_won} total return points.")
+            text.append(f"{player} faced {total_returnable} total returnable serves (non-aces).")
+            text.append(f"{player} won {total_returnable_won} total points on returnable serves.")
+            text.append(f"{player} got {total_in_play} total returns in play.")
+            text.append(f"{player} won {total_in_play_won} total points when returns were in play.")
+            text.append(f"{player} hit {total_winners} total return winners.")
+            text.append("")
+            text.append("BREAKDOWN BY SERVE TYPE (these sum to totals above, do not add again):")
+            text.append("")
+        
+        # Process each return breakdown
+        for key, value in return_data.items():
+            # Extract the return type and table type from the key
+            # Format: "return1 - vs 1st Svs_table1" or "return1 - Deuce Court_table2"
+            if ' - ' in key and '_table' in key:
+                return_type_part = key.split(' - ')[1].split('_table')[0]
+                table_type = key.split('_table')[1]
+                
+                # Skip header rows
+                if 'OUTCOMES' in return_type_part or 'DEPTH' in return_type_part:
+                    continue
+                
+                # Split the value by | to get individual values
+                values = [v.strip() for v in value.split(' | ')]
+                
+                # Determine return type based on the return_type_part
+                if 'vs 1st Svs' in return_type_part:
+                    return_desc = "first serves"
+                elif 'vs 2nd Svs' in return_type_part:
+                    return_desc = "second serves"
+                elif 'Deuce Court' in return_type_part:
+                    return_desc = "serves from the Deuce court"
+                elif 'Ad Court' in return_type_part:
+                    return_desc = "serves from the Ad court"
+                elif 'Wide serves' in return_type_part:
+                    return_desc = "wide serves"
+                elif 'Body serves' in return_type_part:
+                    return_desc = "body serves"
+                elif 'T serves' in return_type_part:
+                    return_desc = "T serves"
+                elif 'Deuce-Wide' in return_type_part:
+                    return_desc = "wide serves from the Deuce court"
+                elif 'Ad-Wide' in return_type_part:
+                    return_desc = "wide serves from the Ad court"
+                elif 'Deuce-Body' in return_type_part:
+                    return_desc = "body serves from the Deuce court"
+                elif 'Ad-Body' in return_type_part:
+                    return_desc = "body serves from the Ad court"
+                elif 'Deuce-T' in return_type_part:
+                    return_desc = "T serves from the Deuce court"
+                elif 'Ad-T' in return_type_part:
+                    return_desc = "T serves from the Ad court"
+                elif 'Forehand side' in return_type_part:
+                    return_desc = "serves to the forehand side"
+                elif 'Backhand side' in return_type_part:
+                    return_desc = "serves to the backhand side"
+                elif 'Flat/Topspin' in return_type_part:
+                    return_desc = "flat or topspin serves"
+                elif 'Slice/Chip' in return_type_part:
+                    return_desc = "slice or chip serves"
+                elif 'Svc Box' in return_type_part:
+                    return_desc = "serves into the service box"
+                elif 'Beh Svc Ln' in return_type_part:
+                    return_desc = "serves behind the service line"
+                elif 'Back qtr' in return_type_part:
+                    return_desc = "serves to the back quarter"
+                else:
+                    return_desc = return_type_part.lower()
+                
+                # Handle table1 (outcomes) and table2 (depth) differently
+                if table_type == '1':
+                    # Table1: Outcomes data
+                    if len(values) >= 8:
+                        total_pts = values[0]
+                        won_pts = values[1]
+                        returnable = values[2]
+                        returnable_won = values[3]
+                        in_play = values[4]
+                        in_play_won = values[5]
+                        winners = values[6]
+                        avg_rally = values[7]
+                        
+                        # Create detailed descriptions for outcomes
+                        if total_pts and total_pts != "0":
+                            # Remove "total" from the description when return_desc is "total"
+                            if return_desc.lower() == "total":
+                                text.append(f"{player} returned {total_pts} times.")
+                            else:
+                                text.append(f"{player} returned {return_desc} {total_pts} times.")
+                            
+                            # Points won
+                            if won_pts and won_pts != "0":
+                                if "(" in won_pts and ")" in won_pts:
+                                    percentage = won_pts.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} returned {return_desc} and won {won_pts.split('(')[0].strip()} points, or {percentage}% of returns when {player} was returning.")
+                                else:
+                                    text.append(f"{player} returned {return_desc} and won {won_pts} points, or {won_pts}% of returns when {player} was returning.")
+                            
+                            # Returnable serves
+                            if returnable and returnable != "0":
+                                if "(" in returnable and ")" in returnable:
+                                    percentage = returnable.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} got {returnable.split('(')[0].strip()} returnable serves when returning {return_desc}, or {percentage}% of serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} got {returnable} returnable serves when returning {return_desc}, or {returnable}% of serves when {player} was returning.")
+                            
+                            # Points won on returnable serves
+                            if returnable_won and returnable_won != "0":
+                                if "(" in returnable_won and ")" in returnable_won:
+                                    percentage = returnable_won.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} won {returnable_won.split('(')[0].strip()} points on returnable serves when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} won {returnable_won} points on returnable serves when returning {return_desc}, or {returnable_won}% of returnable serves when {player} was returning.")
+                            
+                            # Returns in play
+                            if in_play and in_play != "0":
+                                if "(" in in_play and ")" in in_play:
+                                    percentage = in_play.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} got {in_play.split('(')[0].strip()} returns in play when returning {return_desc}, or {percentage}% of returns when {player} was returning.")
+                                else:
+                                    text.append(f"{player} got {in_play} returns in play when returning {return_desc}, or {in_play}% of returns when {player} was returning.")
+                            
+                            # Points won on returns in play
+                            if in_play_won and in_play_won != "0":
+                                if "(" in in_play_won and ")" in in_play_won:
+                                    percentage = in_play_won.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} won {in_play_won.split('(')[0].strip()} points on returns in play when returning {return_desc}, or {percentage}% of returns in play when {player} was returning.")
+                                else:
+                                    text.append(f"{player} won {in_play_won} points on returns in play when returning {return_desc}, or {in_play_won}% of returns in play when {player} was returning.")
+                            
+                            # Winners
+                            if winners and winners != "0":
+                                if "(" in winners and ")" in winners:
+                                    percentage = winners.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} hit {winners.split('(')[0].strip()} winners when returning {return_desc}, or {percentage}% of returns when {player} was returning.")
+                                else:
+                                    text.append(f"{player} hit {winners} winners when returning {return_desc}, or {winners}% of returns when {player} was returning.")
+                            
+                            # Average rally length
+                            if avg_rally and avg_rally != "0":
+                                text.append(f"{player} had an average rally length of {avg_rally} shots when returning {return_desc}.")
+                
+                elif table_type == '2':
+                    # Table2: Depth data
+                    if len(values) >= 9:
+                        returnable = values[0]
+                        shallow = values[1]
+                        deep = values[2]
+                        very_deep = values[3]
+                        unforced_errors = values[4]
+                        net_approaches = values[5]
+                        deep_returns = values[6]
+                        wide_returns = values[7]
+                        wide_and_deep = values[8]
+                        
+                        # Create detailed descriptions for depth
+                        if returnable and returnable != "0":
+                            # Remove "returning {return_desc}" when return_desc is "total"
+                            if return_desc.lower() == "total":
+                                text.append(f"{player} had {returnable} returnable serves.")
+                            else:
+                                text.append(f"{player} had {returnable} returnable serves when returning {return_desc}.")
+                            
+                            # Shallow returns
+                            if shallow and shallow != "0":
+                                if "(" in shallow and ")" in shallow:
+                                    percentage = shallow.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} hit {shallow.split('(')[0].strip()} shallow returns when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} hit {shallow} shallow returns when returning {return_desc}.")
+                            
+                            # Deep returns
+                            if deep and deep != "0":
+                                if "(" in deep and ")" in deep:
+                                    percentage = deep.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} hit {deep.split('(')[0].strip()} deep returns when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} hit {deep} deep returns when returning {return_desc}.")
+                            
+                            # Very deep returns
+                            if very_deep and very_deep != "0":
+                                if "(" in very_deep and ")" in very_deep:
+                                    percentage = very_deep.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} hit {very_deep.split('(')[0].strip()} very deep returns when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} hit {very_deep} very deep returns when returning {return_desc}.")
+                            
+                            # Unforced errors
+                            if unforced_errors and unforced_errors != "0":
+                                if "(" in unforced_errors and ")" in unforced_errors:
+                                    percentage = unforced_errors.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} made {unforced_errors.split('(')[0].strip()} unforced errors when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} made {unforced_errors} unforced errors when returning {return_desc}.")
+                            
+                            # Net approaches
+                            if net_approaches and net_approaches != "0":
+                                if "(" in net_approaches and ")" in net_approaches:
+                                    percentage = net_approaches.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} made {net_approaches.split('(')[0].strip()} net approaches when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} made {net_approaches} net approaches when returning {return_desc}.")
+                            
+                            # Deep returns (from depth column)
+                            if deep_returns and deep_returns != "0":
+                                if "(" in deep_returns and ")" in deep_returns:
+                                    percentage = deep_returns.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} hit {deep_returns.split('(')[0].strip()} deep returns when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} hit {deep_returns} deep returns when returning {return_desc}.")
+                            
+                            # Wide returns
+                            if wide_returns and wide_returns != "0":
+                                if "(" in wide_returns and ")" in wide_returns:
+                                    percentage = wide_returns.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} hit {wide_returns.split('(')[0].strip()} wide returns when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} hit {wide_returns} wide returns when returning {return_desc}.")
+                            
+                            # Wide and deep returns
+                            if wide_and_deep and wide_and_deep != "0":
+                                if "(" in wide_and_deep and ")" in wide_and_deep:
+                                    percentage = wide_and_deep.split("(")[1].split(")")[0].replace("%", "")
+                                    text.append(f"{player} hit {wide_and_deep.split('(')[0].strip()} wide and deep returns when returning {return_desc}, or {percentage}% of returnable serves when {player} was returning.")
+                                else:
+                                    text.append(f"{player} hit {wide_and_deep} wide and deep returns when returning {return_desc}.")
+        
+        return text
+
+    def _convert_flat_keypoints_to_text(self, keypoints_data: Dict[str, Any]) -> List[str]:
+        """Convert flat key points data to natural language text with hierarchy"""
+        text = []
+        
+        # TIER 1 (AUTHORITATIVE): Extract key point totals as single source of truth
+        iga_keypoints = {}
+        jessica_keypoints = {}
+        
+        # Group by table type
+        table1_data = {k: v for k, v in keypoints_data.items() if '_table1' in k}
+        table2_data = {k: v for k, v in keypoints_data.items() if '_table2' in k}
+        
+        # Extract authoritative totals from both tables
+        if table1_data:
+            iga_keypoints.update(self._extract_keypoints_totals(table1_data, "Iga Swiatek"))
+        if table2_data:
+            iga_keypoints.update(self._extract_keypoints_totals(table2_data, "Iga Swiatek"))
+            
+        if table1_data:
+            jessica_keypoints.update(self._extract_keypoints_totals(table1_data, "Jessica Pegula"))
+        if table2_data:
+            jessica_keypoints.update(self._extract_keypoints_totals(table2_data, "Jessica Pegula"))
+        
+        # Add comprehensive authoritative summary (TIER 1)
+        text.append("AUTHORITATIVE TOTALS FOR KEY POINTS:")
+        text.append("-" * 35)
+        
+        # Extract comprehensive totals for both players
+        iga_comprehensive = self._extract_comprehensive_keypoints_totals(table1_data, table2_data, "Iga Swiatek")
+        jessica_comprehensive = self._extract_comprehensive_keypoints_totals(table1_data, table2_data, "Jessica Pegula")
+        
+        if iga_comprehensive:
+            text.append("IGA SWIATEK KEY POINTS AUTHORITATIVE TOTALS:")
+            text.append(f"Total break points faced: {iga_comprehensive['total_break_points_faced']}")
+            text.append(f"Total game points faced: {iga_comprehensive['total_game_points_faced']}")
+            text.append(f"Break points faced and won while serving: {iga_comprehensive['break_points_faced_serving']} faced, {iga_comprehensive['break_points_won_serving']} won")
+            text.append(f"Break points faced and won when returning: {iga_comprehensive['break_points_faced_returning']} faced, {iga_comprehensive['break_points_won_returning']} won")
+            text.append(f"Game points faced and won while serving: {iga_comprehensive['game_points_faced_serving']} faced, {iga_comprehensive['game_points_won_serving']} won")
+            text.append(f"Game points faced and won when returning: {iga_comprehensive['game_points_faced_returning']} faced, {iga_comprehensive['game_points_won_returning']} won")
+            text.append("")
+        
+        if jessica_comprehensive:
+            text.append("JESSICA PEGULA KEY POINTS AUTHORITATIVE TOTALS:")
+            text.append(f"Total break points faced: {jessica_comprehensive['total_break_points_faced']}")
+            text.append(f"Total game points faced: {jessica_comprehensive['total_game_points_faced']}")
+            text.append(f"Break points faced and won while serving: {jessica_comprehensive['break_points_faced_serving']} faced, {jessica_comprehensive['break_points_won_serving']} won")
+            text.append(f"Break points faced and won when returning: {jessica_comprehensive['break_points_faced_returning']} faced, {jessica_comprehensive['break_points_won_returning']} won")
+            text.append(f"Game points faced and won while serving: {jessica_comprehensive['game_points_faced_serving']} faced, {jessica_comprehensive['game_points_won_serving']} won")
+            text.append(f"Game points faced and won when returning: {jessica_comprehensive['game_points_faced_returning']} faced, {jessica_comprehensive['game_points_won_returning']} won")
+            text.append("")
+        
+        text.append("DETAILED KEY POINTS BREAKDOWN (these are contextual details, not for recalculating totals):")
+        text.append("")
+        
+        # Process detailed breakdowns (TIER 2)
+        if table1_data:
+            text.append("KEY POINTS STATISTICS (SERVES):")
+            text.append("-" * 32)
+            text.extend(self._convert_flat_keypoints_table_to_text(table1_data, "serves"))
+            text.append("")
+        
+        if table2_data:
+            text.append("KEY POINTS STATISTICS (RETURNS):")
+            text.append("-" * 33)
+            text.extend(self._convert_flat_keypoints_table_to_text(table2_data, "returns"))
+            text.append("")
+        
+        return text
+
+    def _extract_keypoints_totals(self, keypoints_data: Dict[str, Any], player: str) -> Dict[str, str]:
+        """Extract authoritative totals from key points statistics"""
+        totals = {}
+        
+        # Find the header row
+        header_key = None
+        for key in keypoints_data.keys():
+            if 'KEY POINTS:' in key:
+                header_key = key
+                break
+        
+        if header_key:
+            headers = [h.strip() for h in keypoints_data[header_key].split(' | ')]
+            
+            # Process each data row to find player-specific totals
+            for key, value in keypoints_data.items():
+                if key != header_key and 'KEY POINTS:' not in key:
+                    # Extract the row label
+                    row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                    
+                    # Check if this row belongs to the target player
+                    if (player == "Iga Swiatek" and ('IS' in row_label or 'Iga' in row_label)) or \
+                       (player == "Jessica Pegula" and ('JP' in row_label or 'Jessica' in row_label)):
+                        
+                        values = [v.strip() for v in value.split(' | ')]
+                        
+                        # Extract totals based on row type
+                        if 'BP Faced' in row_label or 'Break Points' in row_label:
+                            if len(values) >= 1:
+                                totals['break_points_faced'] = values[0]
+                            if len(values) >= 2:
+                                totals['break_points_converted'] = values[1]
+                        elif 'Game Pts' in row_label or 'Game Points' in row_label:
+                            if len(values) >= 1:
+                                totals['game_points'] = values[0]
+                        elif 'Set Points' in row_label:
+                            if len(values) >= 1:
+                                totals['set_points'] = values[0]
+                        elif 'Match Points' in row_label:
+                            if len(values) >= 1:
+                                totals['match_points'] = values[0]
+        
+        return totals
+    
+    def _extract_comprehensive_keypoints_totals(self, serves_data: Dict[str, Any], returns_data: Dict[str, Any], player: str) -> Dict[str, str]:
+        """Extract comprehensive key points totals from both serves and returns tables"""
+        comprehensive = {
+            'total_break_points_faced': '0',
+            'total_game_points_faced': '0',
+            'break_points_faced_serving': '0',
+            'break_points_won_serving': '0',
+            'break_points_faced_returning': '0',
+            'break_points_won_returning': '0',
+            'game_points_faced_serving': '0',
+            'game_points_won_serving': '0',
+            'game_points_faced_returning': '0',
+            'game_points_won_returning': '0'
+        }
+        
+        # Extract from serves table (when player is serving)
+        if serves_data:
+            serves_totals = self._extract_keypoints_from_table(serves_data, player, "serves")
+            comprehensive.update(serves_totals)
+        
+        # Extract from returns table (when player is returning)
+        if returns_data:
+            returns_totals = self._extract_keypoints_from_table(returns_data, player, "returns")
+            comprehensive.update(returns_totals)
+        
+        # Calculate totals
+        try:
+            bp_serving_faced = int(comprehensive['break_points_faced_serving'])
+            bp_returning_faced = int(comprehensive['break_points_faced_returning'])
+            comprehensive['total_break_points_faced'] = str(bp_serving_faced + bp_returning_faced)
+            
+            gp_serving_faced = int(comprehensive['game_points_faced_serving'])
+            gp_returning_faced = int(comprehensive['game_points_faced_returning'])
+            comprehensive['total_game_points_faced'] = str(gp_serving_faced + gp_returning_faced)
+        except (ValueError, TypeError):
+            pass
+        
+        return comprehensive
+    
+    def _extract_keypoints_from_table(self, table_data: Dict[str, Any], player: str, table_type: str) -> Dict[str, str]:
+        """Extract key points data from a specific table (serves or returns)"""
+        totals = {}
+        
+        # Find the header row
+        header_key = None
+        for key in table_data.keys():
+            if 'KEY POINTS:' in key:
+                header_key = key
+                break
+        
+        if not header_key:
+            return totals
+        
+        headers = [h.strip() for h in table_data[header_key].split(' | ')]
+        
+        # Process each data row to find player-specific data
+        for key, value in table_data.items():
+            if key != header_key and 'KEY POINTS:' not in key:
+                # Extract the row label
+                row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                
+                # Check if this row belongs to the target player
+                if (player == "Iga Swiatek" and ('IS' in row_label or 'Iga' in row_label)) or \
+                   (player == "Jessica Pegula" and ('JP' in row_label or 'Jessica' in row_label)):
+                    
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Extract data based on row type and table type
+                    if 'BP Faced' in row_label:
+                        if len(values) >= 1:
+                            if table_type == "serves":
+                                totals['break_points_faced_serving'] = values[0]
+                            else:  # returns
+                                totals['break_points_faced_returning'] = values[0]
+                        if len(values) >= 2:
+                            if table_type == "serves":
+                                totals['break_points_won_serving'] = values[1].split('(')[0].strip()
+                            else:  # returns
+                                totals['break_points_won_returning'] = values[1].split('(')[0].strip()
+                    
+                    elif 'Game Pts' in row_label or 'GP Faced' in row_label:
+                        if len(values) >= 1:
+                            if table_type == "serves":
+                                totals['game_points_faced_serving'] = values[0]
+                            else:  # returns
+                                totals['game_points_faced_returning'] = values[0]
+                        if len(values) >= 2:
+                            if table_type == "serves":
+                                totals['game_points_won_serving'] = values[1].split('(')[0].strip()
+                            else:  # returns
+                                totals['game_points_won_returning'] = values[1].split('(')[0].strip()
+        
+        return totals
+
+    def _convert_flat_keypoints_table_to_text(self, keypoints_data: Dict[str, Any], table_type: str) -> List[str]:
+        """Convert flat key points table data to natural language text"""
+        text = []
+        
+        # Find the header row
+        header_key = None
+        for key in keypoints_data.keys():
+            if 'KEY POINTS:' in key:
+                header_key = key
+                break
+        
+        if header_key:
+            headers = keypoints_data[header_key].split(' | ')
+            
+            # Process each data row
+            for key, value in keypoints_data.items():
+                if key != header_key and 'KEY POINTS:' not in key:
+                    # Extract the row label (remove the prefix like "keypoints - ")
+                    row_label = key.split(' - ', 1)[1].split('_table')[0]
+                    
+                    # Split the value by | to get individual values
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Convert to sentences using the existing method
+                    sentences = self._convert_keypoints_row_to_sentences(row_label, values, headers, table_type)
+                    text.extend(sentences)
+        
+        return text
+
+    def _convert_keypoints_row_to_sentences(self, row_label: str, values: List[str], headers: List[str], table_type: str) -> List[str]:
+        """Convert key points row to natural language sentences"""
+        sentences = []
+        
+        # Determine player from row label
+        if 'IS ' in row_label:
+            player = "Iga Swiatek"
+        elif 'JP ' in row_label:
+            player = "Jessica Pegula"
+        else:
+            player = "Unknown Player"
+        
+        # Determine key point type from row label and table type
+        if table_type == "serves":
+            # When table_type is "serves", the player is serving
+            if 'BP Faced' in row_label:
+                key_point_type = "break points faced when serving"
+            elif 'BP Opps' in row_label:
+                key_point_type = "break point opportunities when serving"
+            elif 'Game Pts' in row_label:
+                key_point_type = "game points when serving"
+            elif 'GP Faced' in row_label:
+                key_point_type = "game points faced when serving"
+            elif 'Svg Deuce' in row_label:
+                key_point_type = "deuce points when serving"
+            elif 'Ret Deuce' in row_label:
+                key_point_type = "deuce points when returning serves"
+            elif 'Total' in row_label:
+                key_point_type = f"total key points ({table_type})"
+            else:
+                key_point_type = "key points"
+        else:
+            # When table_type is "returns", the player is returning
+        if 'BP Faced' in row_label:
+            key_point_type = "break points faced when returning serves"
+        elif 'BP Opps' in row_label:
+            key_point_type = "break point opportunities when returning serves"
+        elif 'Game Pts' in row_label:
+            key_point_type = "game points when returning serves"
+        elif 'GP Faced' in row_label:
+            key_point_type = "game points faced when returning serves"
+        elif 'Svg Deuce' in row_label:
+            key_point_type = "deuce points when serving"
+        elif 'Ret Deuce' in row_label:
+            key_point_type = "deuce points when returning serves"
+        elif 'Total' in row_label:
+            key_point_type = f"total key points ({table_type})"
+        else:
+            key_point_type = "key points"
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(headers) and value and value != "0":
+                header = headers[i]
+                
+                if header == "Pts":
+                    sentences.append(f"{player} played {value} {key_point_type}.")
+                elif header == "PtsW----%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} won {number} {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} won {value} {key_point_type}.")
+                elif header == "1stIn---%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} made {number} first serves in on {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} made {value} first serves in on {key_point_type}.")
+                elif header == "A-------%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} hit {number} aces on {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} hit {value} aces on {key_point_type}.")
+                elif header == "SvWnr---%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} hit {number} serve winners on {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} hit {value} serve winners on {key_point_type}.")
+                elif header == "RlyWnr--%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} hit {number} rally winners on {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} hit {value} rally winners on {key_point_type}.")
+                elif header == "RlyFcd--%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} forced {number} errors on {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} forced {value} errors on {key_point_type}.")
+                elif header == "UFE-----%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} made {number} unforced errors on {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} made {value} unforced errors on {key_point_type}.")
+                elif header == "DF------%":
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        sentences.append(f"{player} made {number} double faults on {key_point_type}, or {percentage}% of {key_point_type} for {player}.")
+                    else:
+                        sentences.append(f"{player} made {value} double faults on {key_point_type}.")
+        
+        return sentences
+
+    def _convert_flat_overview_to_text(self, overview_data: Dict[str, Any]) -> List[str]:
+        """Convert flat overview data to natural language text with hierarchy"""
+        text = []
+        
+        # TIER 1 (AUTHORITATIVE): Extract key totals from Overview as single source of truth
+        iga_serve_stats = {}
+        jessica_serve_stats = {}
+        
+        # Find the header row
+        header_key = None
+        for key in overview_data.keys():
+            if 'STATS OVERVIEW' in key:
+                header_key = key
+                break
+        
+        if header_key:
+            headers = [h.strip() for h in overview_data[header_key].split(' | ')]
+            
+            # Process each player's data to extract authoritative totals
+            for key, value in overview_data.items():
+                if key != header_key and 'STATS OVERVIEW' not in key:
+                    # Extract the player name
+                    player = key.split(' - ', 1)[1] if ' - ' in key else key
+                    
+                    # Split the value by | to get individual values
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Store authoritative totals
+                    if 'Iga Swiatek' in player or 'IS' in player:
+                        iga_serve_stats = self._extract_overview_totals(values, headers)
+                    elif 'Jessica Pegula' in player or 'JP' in player:
+                        jessica_serve_stats = self._extract_overview_totals(values, headers)
+        
+        # Add authoritative summary (TIER 1)
+        text.append("AUTHORITATIVE TOTALS FROM OVERVIEW STATISTICS:")
+        text.append("-" * 45)
+        
+        if iga_serve_stats:
+            text.append("IGA SWIATEK AUTHORITATIVE TOTALS:")
+            text.append(f"First serve percentage: {iga_serve_stats.get('first_serve_pct', 'N/A')}")
+            text.append(f"Second serve won percentage: {iga_serve_stats.get('second_serve_won_pct', 'N/A')}")
+            text.append(f"Ace percentage: {iga_serve_stats.get('ace_pct', 'N/A')}")
+            text.append(f"Double fault percentage: {iga_serve_stats.get('df_pct', 'N/A')}")
+            text.append(f"Break points saved: {iga_serve_stats.get('bp_saved', 'N/A')}")
+            text.append(f"Return points won percentage: {iga_serve_stats.get('return_pct', 'N/A')}")
+            text.append(f"Total winners: {iga_serve_stats.get('winners', 'N/A')}")
+            text.append(f"Total unforced errors: {iga_serve_stats.get('ufe', 'N/A')}")
+            text.append("")
+        
+        if jessica_serve_stats:
+            text.append("JESSICA PEGULA AUTHORITATIVE TOTALS:")
+            text.append(f"First serve percentage: {jessica_serve_stats.get('first_serve_pct', 'N/A')}")
+            text.append(f"Second serve won percentage: {jessica_serve_stats.get('second_serve_won_pct', 'N/A')}")
+            text.append(f"Ace percentage: {jessica_serve_stats.get('ace_pct', 'N/A')}")
+            text.append(f"Double fault percentage: {jessica_serve_stats.get('df_pct', 'N/A')}")
+            text.append(f"Break points saved: {jessica_serve_stats.get('bp_saved', 'N/A')}")
+            text.append(f"Return points won percentage: {jessica_serve_stats.get('return_pct', 'N/A')}")
+            text.append(f"Total winners: {jessica_serve_stats.get('winners', 'N/A')}")
+            text.append(f"Total unforced errors: {jessica_serve_stats.get('ufe', 'N/A')}")
+            text.append("")
+        
+        text.append("DETAILED BREAKDOWN (these are contextual details, not for recalculating totals):")
+        text.append("")
+        
+        # Process detailed breakdowns (TIER 2)
+        if header_key:
+            headers = [h.strip() for h in overview_data[header_key].split(' | ')]
+            
+            for key, value in overview_data.items():
+                if key != header_key and 'STATS OVERVIEW' not in key:
+                    # Extract the player name
+                    player = key.split(' - ', 1)[1] if ' - ' in key else key
+                    
+                    # Split the value by | to get individual values
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Convert to sentences
+                    sentences = self._convert_overview_row_to_sentences(player, values, headers)
+                    text.extend(sentences)
+        
+        return text
+
+    def _extract_overview_totals(self, values: List[str], headers: List[str]) -> Dict[str, str]:
+        """Extract authoritative totals from overview statistics"""
+        totals = {}
+        
+        for i, value in enumerate(values):
+            if i < len(headers) and value and value != "0":
+                header = headers[i]
+                
+                if header == "1stIn":
+                    totals['first_serve_pct'] = value
+                elif header == "2nd%":
+                    totals['second_serve_won_pct'] = value
+                elif header == "A%":
+                    totals['ace_pct'] = value
+                elif header == "DF%":
+                    totals['df_pct'] = value
+                elif header == "BPSaved":
+                    totals['bp_saved'] = value
+                elif header == "RPW%":
+                    totals['return_pct'] = value
+                elif header == "Winners (FH/BH)":
+                    totals['winners'] = value
+                elif header == "UFE (FH/BH)":
+                    totals['ufe'] = value
+        
+        return totals
+
+    def _convert_overview_row_to_sentences(self, player: str, values: List[str], headers: List[str]) -> List[str]:
+        """Convert overview statistics row to natural language sentences"""
+        sentences = []
+        
+        # Convert each value to a sentence
+        for i, value in enumerate(values):
+            if i < len(headers) and value and value != "0":
+                header = headers[i]
+                
+                if header == "A%":
+                    sentences.append(f"{player} had an ace percentage of {value}.")
+                elif header == "DF%":
+                    sentences.append(f"{player} had a double fault percentage of {value}.")
+                elif header == "1stIn":
+                    sentences.append(f"{player} had a first serve percentage of {value}.")
+                elif header == "1st%":
+                    sentences.append(f"{player} won {value} of first serves.")
+                elif header == "2nd%":
+                    sentences.append(f"{player} won {value} of second serves.")
+                elif header == "BPSaved":
+                    sentences.append(f"{player} saved {value} break points.")
+                elif header == "RPW%":
+                    sentences.append(f"{player} won {value} of return points.")
+                elif header == "Winners (FH/BH)":
+                    sentences.append(f"{player} hit {value} winners (forehand/backhand).")
+                elif header == "UFE (FH/BH)":
+                    sentences.append(f"{player} made {value} unforced errors (forehand/backhand).")
+                else:
+                    sentences.append(f"{player} had {header}: {value}.")
+        
+        return sentences
+
+    def _convert_point_log_to_text(self, point_log: List[Dict[str, Any]]) -> List[str]:
+        """Convert point-by-point data to natural language text"""
+        text = []
+        text.append("POINT-BY-POINT NARRATIVE:")
+        text.append("-" * 30)
+        
+        for i, point in enumerate(point_log, 1):
+            # Extract point information
+            point_num = point.get('point', f'Point {i}')
+            score = point.get('score', '')
+            description = point.get('description', '')
+            
+            # Create natural language description
+            if description:
+                text.append(f"{point_num}: {description}")
+            elif score:
+                text.append(f"{point_num}: Score is {score}")
+            else:
+                text.append(f"{point_num}: Point played")
+        
+        return text
+
+    def _convert_other_data_table(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert other data table to natural language text"""
+        text = []
+        text.append("OTHER DATA STATISTICS:")
+        text.append("-" * 20)
+        
+        for row in rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label == 'Match Result' and values:
+                text.append(f"Match result: {values[0]}")
+        
+        return text
+
+    def _convert_serve_table(self, table_name: str, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert serve table to natural language text"""
+        text = []
+        
+        # Determine player
+        if 'serve1' in table_name.lower():
+            player = "Iga Swiatek"
+            text.append("SERVE1 STATISTICS:")
+        elif 'serve2' in table_name.lower():
+            player = "Jessica Pegula"
+            text.append("SERVE2 STATISTICS:")
+        else:
+            player = "Unknown Player"
+            text.append(f"{table_name.upper()} STATISTICS:")
+        
+        text.append("-" * len(text[-1]))
+        
+        # Find header row
+        headers = []
+        data_rows = []
+        
+        for row in rows:
+            label = row.get('label', '')
+            if 'BREAKDOWN' in label:
+                headers = row.get('values', [])
+            else:
+                data_rows.append(row)
+        
+        # Convert data rows
+        for row in data_rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label and values:
+                # Determine serve location and type from the row label
+                serve_location = label.lower()
+                
+                # Convert serve location to proper description
+                if 'deuce court' in serve_location:
+                    location_desc = "to the Deuce court"
+                elif 'ad court' in serve_location:
+                    location_desc = "to the Ad court"
+                elif 'wide serves' in serve_location:
+                    location_desc = "wide"
+                elif 'body serves' in serve_location:
+                    location_desc = "into the body"
+                elif 't serves' in serve_location:
+                    location_desc = "down the T"
+                else:
+                    location_desc = serve_location
+                
+                # Extract all available stats
+                total_pts = values[0] if len(values) > 0 else "0"
+                won_pts = values[1] if len(values) > 1 else "0"
+                aces = values[2] if len(values) > 2 else "0"
+                unreturned = values[3] if len(values) > 3 else "0"
+                forced_errors = values[4] if len(values) > 4 else "0"
+                won_3_or_less = values[5] if len(values) > 5 else "0"
+                first_serves_in = values[6] if len(values) > 6 else "0"
+                double_faults = values[7] if len(values) > 7 else "0"
+                
+                # Create detailed descriptions for each serve location
+                if total_pts and total_pts != "0":
+                    # Total serves
+                    text.append(f"{player} served {location_desc} {total_pts} times.")
+                    
+                    # Points won
+                    if won_pts and won_pts != "0":
+                        if "(" in won_pts and ")" in won_pts:
+                            percentage = won_pts.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} served {location_desc} and won {won_pts.split('(')[0].strip()} points, or {percentage}% of total points served {location_desc} by {player}.")
+                        else:
+                            text.append(f"{player} served {location_desc} and won {won_pts} points, or {won_pts}% of total points served {location_desc} by {player}.")
+                    
+                    # Aces
+                    if aces and aces != "0":
+                        if "(" in aces and ")" in aces:
+                            percentage = aces.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} hit {aces.split('(')[0].strip()} aces served {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                        else:
+                            text.append(f"{player} hit {aces} aces served {location_desc}, or {aces}% of total points served {location_desc} by {player}.")
+                    
+                    # Unreturned serves
+                    if unreturned and unreturned != "0":
+                        if "(" in unreturned and ")" in unreturned:
+                            percentage = unreturned.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} had {unreturned.split('(')[0].strip()} unreturned serves served {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                        else:
+                            text.append(f"{player} had {unreturned} unreturned serves served {location_desc}, or {unreturned}% of total points served {location_desc} by {player}.")
+                    
+                    # Forced errors
+                    if forced_errors and forced_errors != "0":
+                        if "(" in forced_errors and ")" in forced_errors:
+                            percentage = forced_errors.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} forced {forced_errors.split('(')[0].strip()} errors from her opponent on serves {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                        else:
+                            text.append(f"{player} forced {forced_errors} errors from her opponent on serves {location_desc}, or {forced_errors}% of total points served {location_desc} by {player}.")
+                    
+                    # Points won in 3 shots or less
+                    if won_3_or_less and won_3_or_less != "0":
+                        if "(" in won_3_or_less and ")" in won_3_or_less:
+                            percentage = won_3_or_less.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} won {won_3_or_less.split('(')[0].strip()} points in 3 shots or less on serves {location_desc}, or {percentage}% of total points served {location_desc} by {player}.")
+                        else:
+                            text.append(f"{player} won {won_3_or_less} points in 3 shots or less on serves {location_desc}, or {won_3_or_less}% of total points served {location_desc} by {player}.")
+                    
+                    # First serves in
+                    if first_serves_in and first_serves_in != "0":
+                        if "(" in first_serves_in and ")" in first_serves_in:
+                            percentage = first_serves_in.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} hit in {first_serves_in.split('(')[0].strip()} first serves served {location_desc}, or {percentage}% of first serves served {location_desc} by {player}.")
+                        else:
+                            text.append(f"{player} hit in {first_serves_in} first serves served {location_desc}, or {first_serves_in}% of first serves served {location_desc} by {player}.")
+                    
+                    # Double faults
+                    if double_faults and double_faults != "0":
+                        if "(" in double_faults and ")" in double_faults:
+                            percentage = double_faults.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} served {location_desc} and had {double_faults.split('(')[0].strip()} double faults, or {percentage}% of serves {location_desc} by {player}.")
+                        else:
+                            text.append(f"{player} served {location_desc} and had {double_faults} double faults, or {double_faults}% of serves {location_desc} by {player}.")
+        
+        return text
+
+    def _convert_return_table(self, table_name: str, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert return table to natural language text"""
+        text = []
+        
+        # Determine player
+        if 'return1' in table_name.lower():
+            player = "Iga Swiatek"
+            text.append("RETURN1 STATISTICS:")
+        elif 'return2' in table_name.lower():
+            player = "Jessica Pegula"
+            text.append("RETURN2 STATISTICS:")
+        else:
+            player = "Unknown Player"
+            text.append(f"{table_name.upper()} STATISTICS:")
+        
+        text.append("-" * len(text[-1]))
+        
+        # Find header row
+        headers = []
+        data_rows = []
+        
+        for row in rows:
+            label = row.get('label', '')
+            if 'BREAKDOWN' in label:
+                headers = row.get('values', [])
+            else:
+                data_rows.append(row)
+        
+        # Convert data rows
+        for row in data_rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label and values:
+                # Determine return type
+                return_type = label.lower()
+                if '1st serve return' in return_type:
+                    return_desc = "first serves"
+                elif '2nd serve return' in return_type:
+                    return_desc = "second serves"
+                else:
+                    return_desc = return_type
+                
+                # Extract all available stats
+                total_pts = values[0] if len(values) > 0 else "0"
+                won_pts = values[1] if len(values) > 1 else "0"
+                in_play = values[2] if len(values) > 2 else "0"
+                in_play_won = values[3] if len(values) > 3 else "0"
+                winners = values[4] if len(values) > 4 else "0"
+                forced_errors = values[5] if len(values) > 5 else "0"
+                unforced_errors = values[6] if len(values) > 6 else "0"
+                avg_rally = values[7] if len(values) > 7 else "0"
+                
+                # Create detailed descriptions for each return type
+                if total_pts and total_pts != "0":
+                    # Total returns
+                    # Remove "total" from the description when return_desc is "total"
+                    if return_desc.lower() == "total":
+                        text.append(f"{player} returned {total_pts} times.")
+                    else:
+                        text.append(f"{player} returned {return_desc} {total_pts} times.")
+                    
+                    # Points won
+                    if won_pts and won_pts != "0":
+                        if "(" in won_pts and ")" in won_pts:
+                            percentage = won_pts.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} returned {return_desc} and won {won_pts.split('(')[0].strip()} points, or {percentage}% of returns for {return_desc}.")
+                        else:
+                            text.append(f"{player} returned {return_desc} and won {won_pts} points, or {won_pts}% of returns for {return_desc}.")
+                    
+                    # Returns in play
+                    if in_play and in_play != "0":
+                        if "(" in in_play and ")" in in_play:
+                            percentage = in_play.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} got {in_play.split('(')[0].strip()} returns in play, or {percentage}% of returns when {player} was returning.")
+                        else:
+                            text.append(f"{player} got {in_play} returns in play, or {in_play}% of returns when {player} was returning.")
+                    
+                    # Points won on returns in play
+                    if in_play_won and in_play_won != "0":
+                        if "(" in in_play_won and ")" in in_play_won:
+                            percentage = in_play_won.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} won {in_play_won.split('(')[0].strip()} points on returns in play, or {percentage}% of returns in play when {player} was returning.")
+                        else:
+                            text.append(f"{player} won {in_play_won} points on returns in play, or {in_play_won}% of returns in play when {player} was returning.")
+                    
+                    # Winners
+                    if winners and winners != "0":
+                        if "(" in winners and ")" in winners:
+                            percentage = winners.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} hit {winners.split('(')[0].strip()} winners on returns, or {percentage}% of returns when {player} was returning.")
+                        else:
+                            text.append(f"{player} hit {winners} winners on returns, or {winners}% of returns when {player} was returning.")
+                    
+                    # Forced errors
+                    if forced_errors and forced_errors != "0":
+                        if "(" in forced_errors and ")" in forced_errors:
+                            percentage = forced_errors.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} forced {forced_errors.split('(')[0].strip()} errors on returns, or {percentage}% of returns when {player} was returning.")
+                        else:
+                            text.append(f"{player} forced {forced_errors} errors on returns, or {forced_errors}% of returns when {player} was returning.")
+                    
+                    # Unforced errors
+                    if unforced_errors and unforced_errors != "0":
+                        if "(" in unforced_errors and ")" in unforced_errors:
+                            percentage = unforced_errors.split("(")[1].split(")")[0].replace("%", "")
+                            text.append(f"{player} made {unforced_errors.split('(')[0].strip()} unforced errors on returns, or {percentage}% of returns when {player} was returning.")
+                        else:
+                            text.append(f"{player} made {unforced_errors} unforced errors on returns, or {unforced_errors}% of returns when {player} was returning.")
+                    
+                    # Average rally length
+                    if avg_rally and avg_rally != "0":
+                        text.append(f"{player} had an average rally length of {avg_rally} shots when returning {return_desc}.")
+        
+        return text
+
+    def _convert_keypoints_table(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert key points table to natural language text"""
+        text = []
+        text.append("KEY POINTS STATISTICS:")
+        text.append("-" * 22)
+        
+        # Find header row
+        headers = []
+        data_rows = []
+        
+        for row in rows:
+            label = row.get('label', '')
+            if 'KEY POINTS:' in label:
+                headers = row.get('values', [])
+            else:
+                data_rows.append(row)
+        
+        # Convert data rows
+        for row in data_rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label and values:
+                # Determine player
+                if 'IS' in label:
+                    player = "Iga Swiatek"
+                elif 'JP' in label:
+                    player = "Jessica Pegula"
+                else:
+                    player = "Unknown Player"
+                
+                # Extract key stats
+                total_pts = values[0] if len(values) > 0 else "0"
+                won_pct = values[1] if len(values) > 1 else "0%"
+                
+                text.append(f"{player} played {total_pts} key points and won {won_pct} of them.")
+        
+        return text
+
+    def _convert_serveneut_table(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert serve neutral table to natural language text"""
+        text = []
+        text.append("SERVENEUT STATISTICS:")
+        text.append("-" * 20)
+        
+        # Find header row
+        headers = []
+        data_rows = []
+        
+        for row in rows:
+            label = row.get('label', '')
+            if 'SERVE INFLUENCE' in label:
+                headers = row.get('values', [])
+            else:
+                data_rows.append(row)
+        
+        # Convert data rows
+        for row in data_rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label and values:
+                # Determine player
+                if 'IS' in label:
+                    player = "Iga Swiatek"
+                elif 'JP' in label:
+                    player = "Jessica Pegula"
+                else:
+                    player = "Unknown Player"
+                
+                # Determine serve type
+                if '1st Serve' in label:
+                    serve_type = "first serves"
+                elif '2nd Serve' in label:
+                    serve_type = "second serves"
+                else:
+                    serve_type = "serves"
+                
+                # Extract key stats
+                total_pts = values[0] if len(values) > 0 else "0"
+                overall_pct = values[1] if len(values) > 1 else "0%"
+                
+                text.append(f"{player} served {total_pts} {serve_type} and won {overall_pct} of points overall.")
+        
+        return text
+
+    def _convert_rallyoutcomes_table(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert rally outcomes table to natural language text"""
+        text = []
+        text.append("RALLY OUTCOMES STATISTICS:")
+        text.append("-" * 26)
+        
+        # Find header row
+        headers = []
+        data_rows = []
+        
+        for row in rows:
+            label = row.get('label', '')
+            if 'OUTCOMES' in label:
+                headers = row.get('values', [])
+            else:
+                data_rows.append(row)
+        
+        # Convert data rows
+        for row in data_rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label and values and len(values) >= 9:
+                # Determine rally type and player context
+                rally_type = label
+                if 'Total' in label:
+                    rally_type = "total rallies"
+                elif 'All: 1-3' in label:
+                    rally_type = "1-3 shot rallies"
+                elif 'All: 4-6' in label:
+                    rally_type = "4-6 shot rallies"
+                elif 'All: 7-9' in label:
+                    rally_type = "7-9 shot rallies"
+                elif 'All: 10+' in label:
+                    rally_type = "10+ shot rallies"
+                elif 'IS Sv:' in label:
+                    rally_type = "1-3 shot rallies on Iga Swiatek serves" if "1-3" in label else \
+                               "4-6 shot rallies on Iga Swiatek serves" if "4-6" in label else \
+                               "7-9 shot rallies on Iga Swiatek serves" if "7-9" in label else \
+                               "10+ shot rallies on Iga Swiatek serves" if "10+" in label else \
+                               "rallies on Iga Swiatek serves"
+                elif 'JP Sv:' in label:
+                    rally_type = "1-3 shot rallies on Jessica Pegula serves" if "1-3" in label else \
+                               "4-6 shot rallies on Jessica Pegula serves" if "4-6" in label else \
+                               "7-9 shot rallies on Jessica Pegula serves" if "7-9" in label else \
+                               "10+ shot rallies on Jessica Pegula serves" if "10+" in label else \
+                               "rallies on Jessica Pegula serves"
+                
+                # Extract stats for both players
+                total_pts = values[0] if len(values) > 0 else "0"
+                
+                # Iga Swiatek stats (columns 1-4) - strip percentages
+                is_wins = values[1].split('(')[0].strip() if len(values) > 1 and values[1] else "0"
+                is_winners = values[2].split('(')[0].strip() if len(values) > 2 and values[2] else "0"
+                is_forced_errors = values[3].split('(')[0].strip() if len(values) > 3 and values[3] else "0"
+                is_unforced_errors = values[4].split('(')[0].strip() if len(values) > 4 and values[4] else "0"
+                
+                # Jessica Pegula stats (columns 5-8) - strip percentages
+                jp_wins = values[5].split('(')[0].strip() if len(values) > 5 and values[5] else "0"
+                jp_winners = values[6].split('(')[0].strip() if len(values) > 6 and values[6] else "0"
+                jp_forced_errors = values[7].split('(')[0].strip() if len(values) > 7 and values[7] else "0"
+                jp_unforced_errors = values[8].split('(')[0].strip() if len(values) > 8 and values[8] else "0"
+                
+                # Create sentences
+                text.append(f"There were {total_pts} {rally_type} in the match.")
+                
+                # Add player-specific statistics
+                if 'IS Sv:' in label or 'JP Sv:' in label:
+                    # For player-specific rows, focus on that player's stats
+                    if 'IS Sv:' in label:
+                        text.append(f"Iga Swiatek won {is_wins} points and hit {is_winners} winners on {rally_type}.")
+                        text.append(f"Iga Swiatek had {is_forced_errors} forced errors and made {is_unforced_errors} unforced errors on {rally_type}.")
+                    else:  # JP Sv
+                        text.append(f"Jessica Pegula won {jp_wins} points and hit {jp_winners} winners on {rally_type}.")
+                        text.append(f"Jessica Pegula had {jp_forced_errors} forced errors and made {jp_unforced_errors} unforced errors on {rally_type}.")
+                else:
+                    # For total/all rows, show both players' stats
+                    text.append(f"Iga Swiatek won {is_wins} points and hit {is_winners} winners on {rally_type}.")
+                    text.append(f"Iga Swiatek had {is_forced_errors} forced errors and made {is_unforced_errors} unforced errors on {rally_type}.")
+                    text.append(f"Jessica Pegula won {jp_wins} points and hit {jp_winners} winners on {rally_type}.")
+                    text.append(f"Jessica Pegula had {jp_forced_errors} forced errors and made {jp_unforced_errors} unforced errors on {rally_type}.")
+                
+                text.append("")  # Add spacing between sections
+        
+        return text
+
+    def _convert_overview_table(self, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert overview table to natural language text"""
+        text = []
+        text.append("OVERVIEW STATISTICS:")
+        text.append("-" * 20)
+        
+        # Find header row
+        headers = []
+        data_rows = []
+        
+        for row in rows:
+            label = row.get('label', '')
+            if 'STATS OVERVIEW' in label:
+                headers = row.get('values', [])
+            else:
+                data_rows.append(row)
+        
+        # Convert data rows
+        for row in data_rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label and values:
+                # Determine player
+                if 'Iga Swiatek' in label:
+                    player = "Iga Swiatek"
+                elif 'Jessica Pegula' in label:
+                    player = "Jessica Pegula"
+                elif 'IS' in label:
+                    player = "Iga Swiatek"
+                elif 'JP' in label:
+                    player = "Jessica Pegula"
+                else:
+                    player = "Unknown Player"
+                
+                # Extract key stats
+                ace_pct = values[0] if len(values) > 0 else "0%"
+                df_pct = values[1] if len(values) > 1 else "0%"
+                first_serve_pct = values[2] if len(values) > 2 else "0%"
+                first_serve_won_pct = values[3] if len(values) > 3 else "0%"
+                second_serve_won_pct = values[4] if len(values) > 4 else "0%"
+                break_points_saved = values[5] if len(values) > 5 else "0"
+                return_points_won_pct = values[6] if len(values) > 6 else "0%"
+                winners = values[7] if len(values) > 7 else "0"
+                unforced_errors = values[8] if len(values) > 8 else "0"
+                
+                text.append(f"{player} had {ace_pct} aces.")
+                text.append(f"{player} had {df_pct} double faults.")
+                text.append(f"{player} made {first_serve_pct} of first serves.")
+                text.append(f"{player} won {first_serve_won_pct} of first serve points.")
+                text.append(f"{player} won {second_serve_won_pct} of second serve points.")
+                text.append(f"{player} saved {break_points_saved} break points.")
+                text.append(f"{player} won {return_points_won_pct} of return points.")
+                # Parse the winners and unforced errors to extract forehand/backhand breakdowns
+                winners_total = winners.split(" (")[0] if " (" in winners else winners
+                winners_fh_bh = winners.split("(")[1].split(")")[0] if "(" in winners else "0/0"
+                winners_fh, winners_bh = winners_fh_bh.split("/") if "/" in winners_fh_bh else ("0", "0")
+                
+                ufe_total = unforced_errors.split(" (")[0] if " (" in unforced_errors else unforced_errors
+                ufe_fh_bh = unforced_errors.split("(")[1].split(")")[0] if "(" in unforced_errors else "0/0"
+                ufe_fh, ufe_bh = ufe_fh_bh.split("/") if "/" in ufe_fh_bh else ("0", "0")
+                
+                text.append(f"{player} hit {winners_total} winners, {winners_fh} forehand and {winners_bh} backhand.")
+                text.append(f"{player} made {ufe_total} unforced errors, including {ufe_fh} on the forehand and {ufe_bh} on the backhand.")
+        
+        return text
+
+    def _convert_generic_table(self, table_name: str, rows: List[Dict[str, Any]]) -> List[str]:
+        """Convert generic table to natural language text"""
+        text = []
+        text.append(f"{table_name.upper()} STATISTICS:")
+        text.append("-" * len(table_name + " STATISTICS"))
+        
+        for row in rows:
+            label = row.get('label', '')
+            values = row.get('values', [])
+            
+            if label and values:
+                text.append(f"{label}: {', '.join(values)}")
+        
+        return text
