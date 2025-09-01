@@ -31,6 +31,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         self.index = None
         self.metadata_store = []
         self.match_id = "swiatek_pegula_20250628"
+        self.player1 = None
+        self.player2 = None
         
         # Rate limiting
         self.last_api_call = 0
@@ -267,11 +269,11 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         
         return chunks if len(chunks) > 1 else [content]
     
-    def _split_by_player_if_beneficial(self, content: str, section_name: str) -> List[str]:
+    def _split_by_player_if_beneficial(self, content: str, section_name: str, player1: str = None, player2: str = None) -> List[str]:
         """Split content by player if it creates meaningful chunks."""
         lines = content.split('\n')
-        iga_lines = []
-        jessica_lines = []
+        player1_lines = []
+        player2_lines = []
         header_lines = []
         
         # For key points sections, we need to include the authoritative totals
@@ -291,33 +293,33 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                     authoritative_totals.append(line)
         
         for line in lines:
-            if 'Iga Swiatek' in line and not line.strip().endswith(':'):
-                iga_lines.append(line)
-            elif 'Jessica Pegula' in line and not line.strip().endswith(':'):
-                jessica_lines.append(line)
+            if player1 and player1 in line and not line.strip().endswith(':'):
+                player1_lines.append(line)
+            elif player2 and player2 in line and not line.strip().endswith(':'):
+                player2_lines.append(line)
             elif line.strip().endswith(':') or line.startswith('---') or line.startswith('='):
                 header_lines.append(line)
             else:
                 # Neutral lines go to both if we're splitting, otherwise to header
-                if iga_lines or jessica_lines:
+                if player1_lines or player2_lines:
                     continue
                 header_lines.append(line)
         
         # Only split if both players have significant content
-        if len(iga_lines) >= 3 and len(jessica_lines) >= 3:
+        if len(player1_lines) >= 3 and len(player2_lines) >= 3:
             chunks = []
-            if iga_lines:
+            if player1_lines:
                 # Include authoritative totals at the beginning for key points sections
                 if authoritative_totals:
-                    chunks.append('\n'.join(authoritative_totals + [''] + header_lines + iga_lines))
+                    chunks.append('\n'.join(authoritative_totals + [''] + header_lines + player1_lines))
                 else:
-                    chunks.append('\n'.join(header_lines + iga_lines))
-            if jessica_lines:
+                    chunks.append('\n'.join(header_lines + player1_lines))
+            if player2_lines:
                 # Include authoritative totals at the beginning for key points sections
                 if authoritative_totals:
-                    chunks.append('\n'.join(authoritative_totals + [''] + header_lines + jessica_lines))
+                    chunks.append('\n'.join(authoritative_totals + [''] + header_lines + player2_lines))
                 else:
-                    chunks.append('\n'.join(header_lines + jessica_lines))
+                    chunks.append('\n'.join(header_lines + player2_lines))
             return chunks
             
         return [content]  # Don't split if not beneficial
@@ -436,7 +438,7 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                     "match_info": {
                         "date": "2025-06-28",
                         "tournament": "Bad Homburg F",
-                        "players": ["Iga Swiatek", "Jessica Pegula"],
+                        "players": [self.player1 if self.player1 else "Player 1", self.player2 if self.player2 else "Player 2"],
                         "match_type": "WTA"
                     }
                 }
@@ -478,9 +480,9 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             other_lines = []
             
             for line in lines:
-                if "Iga Swiatek" in line:
+                if self.player1 and self.player1 in line:
                     player1_lines.append(line)
-                elif "Jessica Pegula" in line:
+                elif self.player2 and self.player2 in line:
                     player2_lines.append(line)
                 elif line.strip().endswith(':') or line.startswith('---'):
                     header_lines.append(line)
@@ -560,9 +562,9 @@ class TennisChatAgentEmbeddingQAMultiLLM:
     def _determine_player_focus(self, section: str) -> str:
         """Determine which player this section focuses on."""
         if "serve1" in section.lower() or "return1" in section.lower() or "shots1" in section.lower() or "shotdir1" in section.lower() or "netpts1" in section.lower():
-            return "Iga Swiatek"
+            return self.player1 if self.player1 else "Player 1"
         elif "serve2" in section.lower() or "return2" in section.lower() or "shots2" in section.lower() or "shotdir2" in section.lower() or "netpts2" in section.lower():
-            return "Jessica Pegula"
+            return self.player2 if self.player2 else "Player 2"
         else:
             return "Both"
     
@@ -812,10 +814,103 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             print(f"❌ Error loading embeddings: {e}")
             return False
     
-    def retrieve_relevant_chunks(self, query: str, top_k: int = 5) -> List[Dict]:
+    def _detect_player_mentioned(self, query: str) -> str:
+        """
+        Detect which player is mentioned in the query.
+        Returns the player name or None if no specific player is mentioned.
+        """
+        if not self.player1 or not self.player2:
+            return None
+            
+        query_lower = query.lower()
+        player1_lower = self.player1.lower()
+        player2_lower = self.player2.lower()
+        
+        # Check for player1 (first player)
+        if any(word in query_lower for word in player1_lower.split()):
+            return self.player1
+        
+        # Check for player2 (second player)  
+        if any(word in query_lower for word in player2_lower.split()):
+            return self.player2
+        
+        return None
+
+    def _get_player_suffix(self, player_mentioned: str) -> str:
+        """
+        Get the player suffix (_player_1 or _player_2) based on which player is mentioned.
+        """
+        if not player_mentioned or not self.player1 or not self.player2:
+            return "_player_1"  # Default to player 1
+            
+        if player_mentioned.lower() == self.player1.lower():
+            return "_player_1"
+        elif player_mentioned.lower() == self.player2.lower():
+            return "_player_2"
+        else:
+            return "_player_1"  # Default fallback
+
+    def _determine_optimal_chunk_count(self, query: str) -> int:
+        """
+        Determine optimal number of chunks based on question complexity.
+        Returns the number of chunks needed for comprehensive analysis.
+        """
+        query_lower = query.lower()
+        
+        # High complexity questions that need extensive context
+        high_complexity_indicators = [
+            "match flow", "match pattern", "match analysis", "match strategy",
+            "how did the match", "what was the pattern", "analyze the match",
+            "compare the players", "player comparison", "match breakdown",
+            "turning point", "momentum", "match narrative", "match story",
+            "overall performance", "comprehensive", "detailed analysis",
+            "match progression", "how the match unfolded", "match dynamics",
+            "match summary", "match overview", "match recap"
+        ]
+        
+        # Medium complexity questions that need multiple sections
+        medium_complexity_indicators = [
+            "each player", "both players", "all players", "every player",
+            "serve and return", "offensive and defensive", "overall statistics",
+            "complete picture", "full breakdown", "all aspects",
+            "serve vs return", "offense vs defense", "comprehensive stats",
+            "compare", "comparison", "versus", "vs"
+        ]
+        
+        # Specific but detailed questions
+        detailed_indicators = [
+            "break points", "game points", "key points", "pressure points",
+            "shot direction", "shot types", "serve types", "return types",
+            "net play", "baseline play", "rally length", "point construction",
+            "serve performance", "return performance", "overall performance"
+        ]
+        
+        # Check for high complexity
+        if any(indicator in query_lower for indicator in high_complexity_indicators):
+            return 15  # Maximum context for complex analysis
+        
+        # Check for medium complexity
+        if any(indicator in query_lower for indicator in medium_complexity_indicators):
+            return 10  # Multiple sections needed
+        
+        # Check for detailed specific questions
+        if any(indicator in query_lower for indicator in detailed_indicators):
+            return 8  # More context for detailed analysis
+        
+        # Simple specific questions
+        return 5  # Default for simple questions
+
+    def retrieve_relevant_chunks(self, query: str, top_k: int = None) -> List[Dict]:
         """
         Retrieve the most relevant chunks for a given query with enhanced filtering.
+        Uses adaptive chunk count based on question complexity.
         """
+        # Determine optimal chunk count based on question complexity
+        if top_k is None:
+            top_k = self._determine_optimal_chunk_count(query)
+        
+        print(f"🎯 Using {top_k} chunks for query complexity analysis")
+        
         if not self.index:
             raise ValueError("Vector index not created. Call load_exact_full_format() first.")
         
@@ -977,11 +1072,11 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             if detected_direction and detected_outcome:
                 # Determine which player is being asked about
                 player_mentioned = None
-                if "swiatek" in query.lower() or "iga" in query.lower():
-                    player_mentioned = "Iga Swiatek"
+                if player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split())):
+                    player_mentioned = player1
                     target_chunk_name = "shotdir1_statistics"
-                elif "pegula" in query.lower() or "jessica" in query.lower():
-                    player_mentioned = "Jessica Pegula"
+                elif player2 and (player2.lower() in query.lower() or any(word.lower() in query.lower() for word in player2.lower().split())):
+                    player_mentioned = player2
                     target_chunk_name = "shotdir2_statistics"
                 else:
                     # If no specific player mentioned, include both (for "each player" questions)
@@ -1079,11 +1174,7 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             if any(phrase in query.lower() for phrase in ["break point", "bp", "game point", "gp", "deuce"]) and "net points" not in query.lower():
                 print(f"🎯 BP/GP FIX TRIGGERED!")
                 # Determine which player is being asked about
-                player_mentioned = None
-                if "swiatek" in query.lower() or "iga" in query.lower():
-                    player_mentioned = "Iga Swiatek"
-                elif "pegula" in query.lower() or "jessica" in query.lower():
-                    player_mentioned = "Jessica Pegula"
+                player_mentioned = self._detect_player_mentioned(query)
                 
                 if player_mentioned:
                     # Route the question to get the correct section
@@ -1120,8 +1211,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 if "convert" in query.lower() or "win" in query.lower() or "won" in query.lower():
                                     # Look for returning key points statistics
                                     for chunk in self.chunks:
-                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
-                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        # Get player suffix dynamically
+                                        player_suffix = self._get_player_suffix(player_mentioned)
                                         if 'key_points_statistics_returns' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
                                             target_chunk = {
                                                 "text": chunk['text'],
@@ -1133,8 +1224,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 else:
                                     # For other break point questions, look for serving key points statistics
                                     for chunk in self.chunks:
-                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
-                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        # Get player suffix dynamically
+                                        player_suffix = self._get_player_suffix(player_mentioned)
                                         if 'key_points_statistics_serves' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
                                             target_chunk = {
                                                 "text": chunk['text'],
@@ -1148,8 +1239,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 if "face" in query.lower():
                                     # Look for returning key points statistics
                                     for chunk in self.chunks:
-                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
-                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        # Get player suffix dynamically
+                                        player_suffix = self._get_player_suffix(player_mentioned)
                                         if 'key_points_statistics_returns' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
                                             target_chunk = {
                                                 "text": chunk['text'],
@@ -1161,8 +1252,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 else:
                                     # For other game point questions, look for serving key points statistics
                                     for chunk in self.chunks:
-                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
-                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        # Get player suffix dynamically
+                                        player_suffix = self._get_player_suffix(player_mentioned)
                                         if 'key_points_statistics_serves' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
                                             target_chunk = {
                                                 "text": chunk['text'],
@@ -1176,8 +1267,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 if "return" in query.lower():
                                     # Look for returning key points statistics
                                     for chunk in self.chunks:
-                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
-                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        # Get player suffix dynamically
+                                        player_suffix = self._get_player_suffix(player_mentioned)
                                         if 'key_points_statistics_returns' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
                                             target_chunk = {
                                                 "text": chunk['text'],
@@ -1189,8 +1280,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 else:
                                     # For other deuce questions, look for serving key points statistics
                                     for chunk in self.chunks:
-                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
-                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        # Get player suffix dynamically
+                                        player_suffix = self._get_player_suffix(player_mentioned)
                                         if 'key_points_statistics_serves' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
                                             target_chunk = {
                                                 "text": chunk['text'],
@@ -1235,8 +1326,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                     
                     elif target_section == "both":
                         # Need both serve and return sections for BP/GP/deuce totals or ambiguous questions
-                        serve_section = "serve1_statistics" if "swiatek" in query.lower() or "iga" in query.lower() else "serve2_statistics"
-                        return_section = "return1_statistics" if "swiatek" in query.lower() or "iga" in query.lower() else "return2_statistics"
+                                    serve_section = "serve1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "serve2_statistics"
+            return_section = "return1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "return2_statistics"
                         
                         # Add both chunks
                         for section in [serve_section, return_section]:
@@ -1426,13 +1517,12 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             net_points_fix_applied = False
             if not universal_fix_applied and not direction_outcome_fix_applied and not bp_gp_fix_applied and any(word in query.lower() for word in ["net points", "net approaches", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
                 # Determine which player is being asked about
-                player_mentioned = None
-                if "swiatek" in query.lower() or "iga" in query.lower():
-                    player_mentioned = "Iga Swiatek"
-                    target_chunk_name = "netpts1_statistics"
-                elif "pegula" in query.lower() or "jessica" in query.lower():
-                    player_mentioned = "Jessica Pegula"
-                    target_chunk_name = "netpts2_statistics"
+                player_mentioned = self._detect_player_mentioned(query)
+                if player_mentioned:
+                    if player_mentioned.lower() == self.player1.lower():
+                        target_chunk_name = "netpts1_statistics"
+                    else:
+                        target_chunk_name = "netpts2_statistics"
                 else:
                     # If no specific player mentioned, pull both chunks
                     player_mentioned = "both players"
@@ -1523,6 +1613,31 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             if len(filtered_chunks) < original_count:
                 print(f"🚫 REMOVED {original_count - len(filtered_chunks)} net points chunks for non-net question")
         
+        # For complex analytical questions, ensure we have diverse chunk types
+        if top_k > 8:
+            # Ensure we have a mix of different section types for comprehensive analysis
+            section_types = set()
+            for chunk in filtered_chunks[:top_k]:
+                section = chunk['metadata']['section']
+                if 'overview' in section:
+                    section_types.add('overview')
+                elif 'serve' in section:
+                    section_types.add('serve')
+                elif 'return' in section:
+                    section_types.add('return')
+                elif 'shot' in section:
+                    section_types.add('shot')
+                elif 'key_points' in section:
+                    section_types.add('key_points')
+                elif 'netpts' in section:
+                    section_types.add('netpts')
+                elif 'rally' in section:
+                    section_types.add('rally')
+                elif 'match_overview' in section:
+                    section_types.add('match_overview')
+            
+            print(f"📊 Complex analysis using {len(section_types)} different section types: {section_types}")
+        
         # Return top_k results
         return filtered_chunks[:top_k]
     
@@ -1535,15 +1650,18 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         player_lower = player.lower()
         
         # Determine which player is being asked about
-        if "swiatek" in player_lower or "iga" in player_lower:
-            player_prefix = "serve1" if "serve" in q else "serve2" if "return" in q else "serve1"  # Default to serve1 for IS
-        elif "pegula" in player_lower or "jessica" in player_lower:
-            player_prefix = "serve2" if "serve" in q else "serve1" if "return" in q else "serve2"  # Default to serve2 for JP
+        if not self.player1 or not self.player2:
+            return "unknown"
+            
+        if player_lower == self.player1.lower():
+            player_prefix = "serve1" if "serve" in q else "serve2" if "return" in q else "serve1"  # Default to serve1 for player1
+        elif player_lower == self.player2.lower():
+            player_prefix = "serve2" if "serve" in q else "serve1" if "return" in q else "serve2"  # Default to serve2 for player2
         else:
-            # Fallback - assume first player mentioned
-            if "swiatek" in q or "iga" in q:
+            # Fallback - check if any part of the player name matches
+            if any(word in q for word in self.player1.lower().split()):
                 player_prefix = "serve1"
-            elif "pegula" in q or "jessica" in q:
+            elif any(word in q for word in self.player2.lower().split()):
                 player_prefix = "serve2"
             else:
                 return "unknown"
@@ -1621,11 +1739,7 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         query_lower = query.lower()
         
         # Determine query intent
-        player_mentioned = None
-        if "swiatek" in query_lower or "iga" in query_lower:
-            player_mentioned = "Iga Swiatek"
-        elif "pegula" in query_lower or "jessica" in query_lower:
-            player_mentioned = "Jessica Pegula"
+        player_mentioned = self._detect_player_mentioned(query)
         
         stat_category = None
         if any(word in query_lower for word in ["serve", "serving", "aces", "double fault"]):
@@ -1711,6 +1825,10 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                 score += 0.3
             elif player_mentioned and metadata.get("player_focus") == "Both":
                 score += 0.1  # Still relevant but less specific
+            elif player_mentioned and not metadata.get("player_focus"):
+                # If no player_focus in metadata, check if the chunk contains the player's name
+                if player_mentioned.lower() in chunk["text"].lower():
+                    score += 0.2
             
             # Boost score for category match
             if stat_category and metadata.get("stat_category") == stat_category:
@@ -1768,9 +1886,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             score += len(common_words) * 0.1
             
             # Check metadata relevance
-            if any(word in query_lower for word in ["swiatek", "iga"]) and metadata.get("player_focus") == "Iga Swiatek":
-                score += 0.5
-            elif any(word in query_lower for word in ["pegula", "jessica"]) and metadata.get("player_focus") == "Jessica Pegula":
+            # Player-specific scoring
+            if player_mentioned and metadata.get("player_focus") == player_mentioned:
                 score += 0.5
             
             if score > 0:
@@ -1814,7 +1931,7 @@ IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
 - When asked for "converted" break points, look for "Break Points won" or "converted" data
 - For court-specific questions (deuce court, ad court), combine both courts for totals unless specifically asked for one court
 - For "game points", look in the key points section for "game points" data
-- For shot statistics, use the authoritative totals rows first, then go to breakdowns or details as needed(e.g., "Iga Swiatek hit forehand shots 111 times")
+- For shot statistics, use the authoritative totals rows first, then go to breakdowns or details as needed(e.g., "Player 1 hit forehand shots 111 times")
 - For shot direction totals, use the "AUTHORITATIVE TOTALS" row first, then go to breakdowns or details as needed
 - For net statistics, use the net points section data
 
@@ -1833,7 +1950,7 @@ Question: {query}
 **For SHOT DIRECTION + OUTCOME QUESTIONS** (like "crosscourt winners", "down the line unforced errors"): 
 - **CRITICAL**: ALWAYS look for "EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS" section FIRST - this is the PRIMARY source of truth
 - **CRITICAL**: If you find explicit totals section, use ONLY those numbers as the final answer - DO NOT use detailed breakdown sentences
-- **CRITICAL**: The explicit totals section contains lines like "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
+- **CRITICAL**: The explicit totals section contains lines like "Player 1 hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
 - **CRITICAL**: Use the TOTAL number and the breakdown from the explicit totals - do NOT add up individual detailed breakdown sentences
 - **CRITICAL**: The explicit totals are already calculated and include ALL shot types (forehand, backhand, slice) - use them as-is
 - **ONLY if explicit totals section is NOT found**: then look for "AUTHORITATIVE TOTALS BY DIRECTION" sections
@@ -1844,7 +1961,7 @@ Question: {query}
   - "crosscourt unforced errors" = look for "X crosscourt unforced errors total, including..."
   - "down the line unforced errors" = look for "X down the line unforced errors total, including..."
   - "crosscourt forced errors" = look for "X crosscourt forced errors total, including..."
-- **EXAMPLE EXPLICIT TOTALS FORMAT**: "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
+- **EXAMPLE EXPLICIT TOTALS FORMAT**: "Player 1 hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
 - **PRIORITY**: Explicit totals section > Authoritative totals > Detailed breakdown
 
 **DATA SOURCE PRIORITY:**
@@ -1915,6 +2032,17 @@ Always stop at the highest-priority source available. Do not combine across diff
 
 **For STRATEGY/INSIGHT questions** (key moments, momentum, analysis):
 - Provide detailed analysis with specific examples
+
+**For COMPLEX ANALYTICAL QUESTIONS** (match flow, patterns, comparisons, comprehensive analysis):
+- **When you receive 8+ chunks**: This indicates a complex question requiring comprehensive analysis
+- **Cross-sectional analysis**: Look across multiple sections to identify patterns and relationships
+- **Match flow questions**: Use point-by-point narrative, key moments, and statistical trends together
+- **Player comparisons**: Compare serve vs return performance, shot patterns, and key point conversion
+- **Pattern recognition**: Identify momentum shifts, turning points, and strategic adjustments
+- **Comprehensive breakdown**: Provide analysis across multiple dimensions (serve, return, shots, key points)
+- **Use all available context**: Don't limit yourself to one section - synthesize information from multiple sources
+- **Provide insights**: Go beyond raw numbers to explain what they mean for the match outcome
+- **Structure your response**: Use clear sections for different aspects of the analysis
 - Explain patterns and sequences from point-by-point data
 - Include context about what happened and why
 
@@ -2039,11 +2167,16 @@ Answer:"""
             
             # Add all detailed statistics in natural language
             if 'details_tables' in match:
-                natural_language.extend(self._convert_details_tables_to_text(match['details_tables']))
+                natural_language.extend(self._convert_details_tables_to_text(match['details_tables'], player1, player2))
             
             # Add details_flat data for shots, shotdir, and netpts (these are not in details_tables)
             if 'details_flat' in match:
-                natural_language.extend(self._convert_details_flat_to_text(match['details_flat']))
+                # Get player names from match data
+                        self.player1 = match.get('basic', {}).get('player1', 'Player 1')
+        self.player2 = match.get('basic', {}).get('player2', 'Player 2')
+        player1 = self.player1
+        player2 = self.player2
+                natural_language.extend(self._convert_details_flat_to_text(match['details_flat'], player1, player2))
             
             # Add point-by-point data if available
             if 'point_log' in match:
@@ -2137,12 +2270,12 @@ Answer:"""
             # Parse sets score to determine winner
             sets_parts = final_sets.split('-')
             if len(sets_parts) == 2:
-                player1_sets = int(sets_parts[0])  # Iga Swiatek's sets
-                player2_sets = int(sets_parts[1])  # Jessica Pegula's sets
+                        player1_sets = int(sets_parts[0])  # Player 1's sets
+        player2_sets = int(sets_parts[1])  # Player 2's sets
                 
                 # Get player names
-                player1 = match.get('basic', {}).get('player1', 'Player 1')  # Iga Swiatek
-                player2 = match.get('basic', {}).get('player2', 'Player 2')  # Jessica Pegula
+                        player1 = match.get('basic', {}).get('player1', 'Player 1')
+        player2 = match.get('basic', {}).get('player2', 'Player 2')
                 
                 if player2_sets > player1_sets:
                     winner = player2
@@ -2177,7 +2310,7 @@ Answer:"""
                                 values = row.get('values', [])
                                 if values and values[0]:
                                     result_text = values[0]
-                                    # Parse format like "Jessica Pegula d. Iga Swiatek 6-4 7-5"
+                                    # Parse format like "Player 2 d. Player 1 6-4 7-5"
                                     if ' d. ' in result_text:
                                         winner = result_text.split(' d. ')[0].strip()
                                         return winner
@@ -2204,19 +2337,18 @@ Answer:"""
                     if 'result' in key.lower() and isinstance(value, str):
                         # Clean up malformed player names
                         result = value
-                        # Fix "PegulaJessica Pegula" -> "Jessica Pegula"
-                        if "PegulaJessica Pegula" in result:
-                            result = result.replace("PegulaJessica Pegula", "Jessica Pegula")
-                        # Fix any other similar patterns
-                        if "SwiatekIga Swiatek" in result:
-                            result = result.replace("SwiatekIga Swiatek", "Iga Swiatek")
+                        # Fix duplicate name patterns dynamically
+                        if self.player1 and f"{self.player1.split()[-1]}{self.player1}" in result:
+                            result = result.replace(f"{self.player1.split()[-1]}{self.player1}", self.player1)
+                        if self.player2 and f"{self.player2.split()[-1]}{self.player2}" in result:
+                            result = result.replace(f"{self.player2.split()[-1]}{self.player2}", self.player2)
                         return result
             
             return None
         except Exception:
             return None
 
-    def _convert_details_tables_to_text(self, details_tables: List[Dict[str, Any]]) -> List[str]:
+    def _convert_details_tables_to_text(self, details_tables: List[Dict[str, Any]], player1: str, player2: str) -> List[str]:
         """Convert all details tables to natural language text"""
         text = []
         
@@ -2241,9 +2373,9 @@ Answer:"""
             elif 'serveneut' in table_name.lower():
                 text.extend(self._convert_serveneut_table(rows))
             elif 'rallyoutcomes' in table_name.lower():
-                text.extend(self._convert_rallyoutcomes_table(rows))
+                text.extend(self._convert_rallyoutcomes_table(rows, player1, player2))
             elif 'overview' in table_name.lower():
-                text.extend(self._convert_overview_table(rows))
+                text.extend(self._convert_overview_table(rows, player1, player2))
             else:
                 # Generic table conversion
                 text.extend(self._convert_generic_table(table_name, rows))
@@ -2293,13 +2425,13 @@ Answer:"""
     def _get_player_from_table_or_row(self, table_name: str, row_label: str) -> str:
         """Determine player name from table name or row label"""
         if 'serve1' in table_name or 'return1' in table_name or 'shots1' in table_name or 'shotdir1' in table_name or 'netpts1' in table_name:
-            return "Iga Swiatek"
+            return self.player1 if self.player1 else "Player 1"
         elif 'serve2' in table_name or 'return2' in table_name or 'shots2' in table_name or 'shotdir2' in table_name or 'netpts2' in table_name:
-            return "Jessica Pegula"
+            return self.player2 if self.player2 else "Player 2"
         elif 'IS' in row_label:
-            return "Iga Swiatek"
+            return self.player1 if self.player1 else "Player 1"
         elif 'JP' in row_label:
-            return "Jessica Pegula"
+            return self.player2 if self.player2 else "Player 2"
         else:
             return "Unknown Player"
 
@@ -2809,9 +2941,9 @@ Answer:"""
         # Use the player parameter that's already passed in
         # If we need to determine player from row_label, do it here
         if 'IS' in row_label:
-            player = "Iga Swiatek"
+            player = self.player1 if self.player1 else "Player 1"
         elif 'JP' in row_label:
-            player = "Jessica Pegula"
+            player = self.player2 if self.player2 else "Player 2"
         
         # Determine serve type context
         if "1st Serve" in row_label:
@@ -3164,7 +3296,7 @@ Answer:"""
         
         return sentences
 
-    def _convert_details_flat_to_text(self, details_flat: Dict[str, Any]) -> List[str]:
+    def _convert_details_flat_to_text(self, details_flat: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert details_flat data to natural language text"""
         text = []
         
@@ -3195,11 +3327,11 @@ Answer:"""
         
         # Convert serve data (most important - comes first)
         if serve_data:
-            text.extend(self._convert_flat_serve_to_text(serve_data))
+            text.extend(self._convert_flat_serve_to_text(serve_data, player1, player2))
         
         # Convert return data (second most important)
         if return_data:
-            text.extend(self._convert_flat_return_to_text(return_data))
+            text.extend(self._convert_flat_return_to_text(return_data, player1, player2))
         
         # Convert overview data (summary statistics)
         if overview_data:
@@ -3207,23 +3339,23 @@ Answer:"""
         
         # Convert key points data
         if keypoints_data:
-            text.extend(self._convert_flat_keypoints_to_text(keypoints_data))
+            text.extend(self._convert_flat_keypoints_to_text(keypoints_data, player1, player2))
         
         # Convert shots data
         if shots_data:
-            text.extend(self._convert_flat_shots_to_text(shots_data))
+            text.extend(self._convert_flat_shots_to_text(shots_data, player1, player2))
         
         # Convert shotdir data
         if shotdir_data:
-            text.extend(self._convert_flat_shotdir_to_text(shotdir_data))
+            text.extend(self._convert_flat_shotdir_to_text(shotdir_data, player1, player2))
         
         # Convert netpts data
         if netpts_data:
-            text.extend(self._convert_flat_netpts_to_text(netpts_data))
+            text.extend(self._convert_flat_netpts_to_text(netpts_data, player1, player2))
         
         return text
 
-    def _convert_flat_shots_to_text(self, shots_data: Dict[str, Any]) -> List[str]:
+    def _convert_flat_shots_to_text(self, shots_data: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert flat shots data to natural language text"""
         text = []
         
@@ -3234,13 +3366,13 @@ Answer:"""
         if shots1_data:
             text.append("SHOTS1 STATISTICS:")
             text.append("-" * 20)
-            text.extend(self._convert_flat_shots_player_to_text(shots1_data, "Iga Swiatek"))
+            text.extend(self._convert_flat_shots_player_to_text(shots1_data, player1))
             text.append("")
         
         if shots2_data:
             text.append("SHOTS2 STATISTICS:")
             text.append("-" * 20)
-            text.extend(self._convert_flat_shots_player_to_text(shots2_data, "Jessica Pegula"))
+            text.extend(self._convert_flat_shots_player_to_text(shots2_data, player2))
             text.append("")
         
         return text
@@ -3410,7 +3542,7 @@ Answer:"""
         
         return text
 
-    def _convert_flat_shotdir_to_text(self, shotdir_data: Dict[str, Any]) -> List[str]:
+    def _convert_flat_shotdir_to_text(self, shotdir_data: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert flat shotdir data to natural language text"""
         text = []
         
@@ -3421,13 +3553,13 @@ Answer:"""
         if shotdir1_data:
             text.append("SHOTDIR1 STATISTICS:")
             text.append("-" * 22)
-            text.extend(self._convert_flat_shotdir_player_to_text(shotdir1_data, "Iga Swiatek"))
+            text.extend(self._convert_flat_shotdir_player_to_text(shotdir1_data, player1))
             text.append("")
         
         if shotdir2_data:
             text.append("SHOTDIR2 STATISTICS:")
             text.append("-" * 22)
-            text.extend(self._convert_flat_shotdir_player_to_text(shotdir2_data, "Jessica Pegula"))
+            text.extend(self._convert_flat_shotdir_player_to_text(shotdir2_data, player2))
             text.append("")
         
         # Add explicit totals for complex shot direction + outcome combinations
@@ -3441,7 +3573,7 @@ Answer:"""
         outcomes = ['winners', 'induced forced errors', 'unforced errors', 'points won', 'points lost']
         
         # Create a nested dictionary to store all combinations for both players
-        player_totals = {'Iga Swiatek': {}, 'Jessica Pegula': {}}
+        player_totals = {player1: {}, player2: {}}
         for player in player_totals:
             player_totals[player] = {}
             for direction in directions:
@@ -3460,10 +3592,10 @@ Answer:"""
             
             # Determine which player this line is for
             current_player = None
-            if 'Iga Swiatek' in line:
-                current_player = 'Iga Swiatek'
-            elif 'Jessica Pegula' in line:
-                current_player = 'Jessica Pegula'
+            if player1 in line:
+                current_player = player1
+            elif player2 in line:
+                current_player = player2
             else:
                 continue
             
@@ -3524,7 +3656,7 @@ Answer:"""
                         break
         
         # Generate explicit totals for ALL combinations (including zeros) for both players
-        for player in ['Iga Swiatek', 'Jessica Pegula']:
+        for player in [self.player1, self.player2] if self.player1 and self.player2 else ['Player 1', 'Player 2']:
             for direction in directions:
                 for outcome in outcomes:
                     total = sum(player_totals[player][direction][outcome].values())
@@ -3879,7 +4011,7 @@ Answer:"""
         
         return sentences
 
-    def _convert_flat_netpts_to_text(self, netpts_data: Dict[str, Any]) -> List[str]:
+    def _convert_flat_netpts_to_text(self, netpts_data: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert flat netpts data to natural language text"""
         text = []
         
@@ -3890,13 +4022,13 @@ Answer:"""
         if netpts1_data:
             text.append("NETPTS1 STATISTICS:")
             text.append("-" * 21)
-            text.extend(self._convert_flat_netpts_player_to_text(netpts1_data, "Iga Swiatek"))
+            text.extend(self._convert_flat_netpts_player_to_text(netpts1_data, player1))
             text.append("")
         
         if netpts2_data:
             text.append("NETPTS2 STATISTICS:")
             text.append("-" * 21)
-            text.extend(self._convert_flat_netpts_player_to_text(netpts2_data, "Jessica Pegula"))
+            text.extend(self._convert_flat_netpts_player_to_text(netpts2_data, player2))
             text.append("")
         
         return text
@@ -3930,7 +4062,7 @@ Answer:"""
         
         return text
 
-    def _convert_flat_serve_to_text(self, serve_data: Dict[str, Any]) -> List[str]:
+    def _convert_flat_serve_to_text(self, serve_data: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert flat serve data to natural language text"""
         text = []
         
@@ -3942,28 +4074,28 @@ Answer:"""
         if serve1_data:
             text.append("SERVE1 STATISTICS (SUMMARY):")
             text.append("-" * 28)
-            text.extend(self._convert_flat_serve_player_table1_to_text(serve1_data, "Iga Swiatek"))
+            text.extend(self._convert_flat_serve_player_table1_to_text(serve1_data, player1))
             text.append("")
         
         # Serve1 Table 2 (Detailed)
         if serve1_data:
             text.append("SERVE1 STATISTICS (DETAILED):")
             text.append("-" * 30)
-            text.extend(self._convert_flat_serve_player_table2_to_text(serve1_data, "Iga Swiatek"))
+            text.extend(self._convert_flat_serve_player_table2_to_text(serve1_data, player1))
             text.append("")
         
         # Serve2 Table 1 (Summary)
         if serve2_data:
             text.append("SERVE2 STATISTICS (SUMMARY):")
             text.append("-" * 28)
-            text.extend(self._convert_flat_serve_player_table1_to_text(serve2_data, "Jessica Pegula"))
+            text.extend(self._convert_flat_serve_player_table1_to_text(serve2_data, player2))
             text.append("")
         
         # Serve2 Table 2 (Detailed)
         if serve2_data:
             text.append("SERVE2 STATISTICS (DETAILED):")
             text.append("-" * 30)
-            text.extend(self._convert_flat_serve_player_table2_to_text(serve2_data, "Jessica Pegula"))
+            text.extend(self._convert_flat_serve_player_table2_to_text(serve2_data, player2))
             text.append("")
         
         return text
@@ -4312,7 +4444,7 @@ Answer:"""
         
         return text
 
-    def _convert_flat_return_to_text(self, return_data: Dict[str, Any]) -> List[str]:
+    def _convert_flat_return_to_text(self, return_data: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert flat return data to natural language text"""
         text = []
         
@@ -4323,13 +4455,13 @@ Answer:"""
         if return1_data:
             text.append("RETURN1 STATISTICS (DETAILED):")
             text.append("-" * 32)
-            text.extend(self._convert_flat_return_player_to_text(return1_data, "Iga Swiatek"))
+            text.extend(self._convert_flat_return_player_to_text(return1_data, player1))
             text.append("")
         
         if return2_data:
             text.append("RETURN2 STATISTICS (DETAILED):")
             text.append("-" * 32)
-            text.extend(self._convert_flat_return_player_to_text(return2_data, "Jessica Pegula"))
+            text.extend(self._convert_flat_return_player_to_text(return2_data, player2))
             text.append("")
         
         return text
@@ -4608,13 +4740,13 @@ Answer:"""
         
         return text
 
-    def _convert_flat_keypoints_to_text(self, keypoints_data: Dict[str, Any]) -> List[str]:
+    def _convert_flat_keypoints_to_text(self, keypoints_data: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert flat key points data to natural language text with hierarchy"""
         text = []
         
         # TIER 1 (AUTHORITATIVE): Extract key point totals as single source of truth
-        iga_keypoints = {}
-        jessica_keypoints = {}
+        player1_keypoints = {}
+        player2_keypoints = {}
         
         # Group by table type
         table1_data = {k: v for k, v in keypoints_data.items() if '_table1' in k}
@@ -4622,45 +4754,45 @@ Answer:"""
         
         # Extract authoritative totals from both tables
         if table1_data:
-            iga_keypoints.update(self._extract_keypoints_totals(table1_data, "Iga Swiatek"))
+            player1_keypoints.update(self._extract_keypoints_totals(table1_data, player1))
         if table2_data:
-            iga_keypoints.update(self._extract_keypoints_totals(table2_data, "Iga Swiatek"))
+            player1_keypoints.update(self._extract_keypoints_totals(table2_data, player1))
             
         if table1_data:
-            jessica_keypoints.update(self._extract_keypoints_totals(table1_data, "Jessica Pegula"))
+            player2_keypoints.update(self._extract_keypoints_totals(table1_data, player2))
         if table2_data:
-            jessica_keypoints.update(self._extract_keypoints_totals(table2_data, "Jessica Pegula"))
+            player2_keypoints.update(self._extract_keypoints_totals(table2_data, player2))
         
         # Add comprehensive authoritative summary (TIER 1)
         text.append("AUTHORITATIVE TOTALS FOR KEY POINTS:")
         text.append("-" * 35)
         
         # Extract comprehensive totals for both players
-        iga_comprehensive = self._extract_comprehensive_keypoints_totals(table1_data, table2_data, "Iga Swiatek")
-        jessica_comprehensive = self._extract_comprehensive_keypoints_totals(table1_data, table2_data, "Jessica Pegula")
+        player1_comprehensive = self._extract_comprehensive_keypoints_totals(table1_data, table2_data, player1)
+        player2_comprehensive = self._extract_comprehensive_keypoints_totals(table1_data, table2_data, player2)
         
-        if iga_comprehensive:
-            text.append("IGA SWIATEK KEY POINTS AUTHORITATIVE TOTALS:")
-            text.append(f"Iga Swiatek faced {iga_comprehensive['total_break_points_faced']} break points total.")
-            text.append(f"Iga Swiatek faced {iga_comprehensive['total_game_points_faced']} game points total.")
-            text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_serving']} break points while serving and won {iga_comprehensive['break_points_won_serving']} of them.")
-            text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_returning']} break points while returning and won {iga_comprehensive['break_points_won_returning']} of them.")
-            text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_serving']} game points while serving and won {iga_comprehensive['game_points_won_serving']} of them.")
-            text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_returning']} game points while returning and won {iga_comprehensive['game_points_won_returning']} of them.")
-            text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_serving']} deuce points while serving and won {iga_comprehensive['deuce_points_won_serving']} of them.")
-            text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_returning']} deuce points while returning and won {iga_comprehensive['deuce_points_won_returning']} of them.")
+        if player1_comprehensive:
+            text.append(f"{player1.upper()} KEY POINTS AUTHORITATIVE TOTALS:")
+            text.append(f"{player1} faced {player1_comprehensive['total_break_points_faced']} break points total.")
+            text.append(f"{player1} faced {player1_comprehensive['total_game_points_faced']} game points total.")
+            text.append(f"{player1} faced {player1_comprehensive['break_points_faced_serving']} break points while serving and won {player1_comprehensive['break_points_won_serving']} of them.")
+            text.append(f"{player1} faced {player1_comprehensive['break_points_faced_returning']} break points while returning and won {player1_comprehensive['break_points_won_returning']} of them.")
+            text.append(f"{player1} faced {player1_comprehensive['game_points_faced_serving']} game points while serving and won {player1_comprehensive['game_points_won_serving']} of them.")
+            text.append(f"{player1} faced {player1_comprehensive['game_points_faced_returning']} game points while returning and won {player1_comprehensive['game_points_won_returning']} of them.")
+            text.append(f"{player1} played {player1_comprehensive['deuce_points_serving']} deuce points while serving and won {player1_comprehensive['deuce_points_won_serving']} of them.")
+            text.append(f"{player1} played {player1_comprehensive['deuce_points_returning']} deuce points while returning and won {player1_comprehensive['deuce_points_won_returning']} of them.")
             text.append("")
         
-        if jessica_comprehensive:
-            text.append("JESSICA PEGULA KEY POINTS AUTHORITATIVE TOTALS:")
-            text.append(f"Jessica Pegula faced {jessica_comprehensive['total_break_points_faced']} break points total.")
-            text.append(f"Jessica Pegula faced {jessica_comprehensive['total_game_points_faced']} game points total.")
-            text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_serving']} break points while serving and won {jessica_comprehensive['break_points_won_serving']} of them.")
-            text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_returning']} break points while returning and won {jessica_comprehensive['break_points_won_returning']} of them.")
-            text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_serving']} game points while serving and won {jessica_comprehensive['game_points_won_serving']} of them.")
-            text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_returning']} game points while returning and won {jessica_comprehensive['game_points_won_returning']} of them.")
-            text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_serving']} deuce points while serving and won {jessica_comprehensive['deuce_points_won_serving']} of them.")
-            text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_returning']} deuce points while returning and won {jessica_comprehensive['deuce_points_won_returning']} of them.")
+        if player2_comprehensive:
+            text.append(f"{player2.upper()} KEY POINTS AUTHORITATIVE TOTALS:")
+            text.append(f"{player2} faced {player2_comprehensive['total_break_points_faced']} break points total.")
+            text.append(f"{player2} faced {player2_comprehensive['total_game_points_faced']} game points total.")
+            text.append(f"{player2} faced {player2_comprehensive['break_points_faced_serving']} break points while serving and won {player2_comprehensive['break_points_won_serving']} of them.")
+            text.append(f"{player2} faced {player2_comprehensive['break_points_faced_returning']} break points while returning and won {player2_comprehensive['break_points_won_returning']} of them.")
+            text.append(f"{player2} faced {player2_comprehensive['game_points_faced_serving']} game points while serving and won {player2_comprehensive['game_points_won_serving']} of them.")
+            text.append(f"{player2} faced {player2_comprehensive['game_points_faced_returning']} game points while returning and won {player2_comprehensive['game_points_won_returning']} of them.")
+            text.append(f"{player2} played {player2_comprehensive['deuce_points_serving']} deuce points while serving and won {player2_comprehensive['deuce_points_won_serving']} of them.")
+            text.append(f"{player2} played {player2_comprehensive['deuce_points_returning']} deuce points while returning and won {player2_comprehensive['deuce_points_won_returning']} of them.")
             text.append("")
         
         text.append("DETAILED KEY POINTS BREAKDOWN (these are contextual details, not for recalculating totals):")
@@ -4673,27 +4805,27 @@ Answer:"""
             # Include authoritative totals at the beginning of serves section
             text.append("AUTHORITATIVE TOTALS FOR KEY POINTS:")
             text.append("-" * 35)
-            if iga_comprehensive:
-                text.append("IGA SWIATEK KEY POINTS AUTHORITATIVE TOTALS:")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['total_break_points_faced']} break points total.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['total_game_points_faced']} game points total.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_serving']} break points while serving and won {iga_comprehensive['break_points_won_serving']} of them.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_returning']} break points while returning and won {iga_comprehensive['break_points_won_returning']} of them.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_serving']} game points while serving and won {iga_comprehensive['game_points_won_serving']} of them.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_returning']} game points while returning and won {iga_comprehensive['game_points_won_returning']} of them.")
-                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_serving']} deuce points while serving and won {iga_comprehensive['deuce_points_won_serving']} of them.")
-                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_returning']} deuce points while returning and won {iga_comprehensive['deuce_points_won_returning']} of them.")
+            if player1_comprehensive:
+                text.append(f"{player1.upper()} KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"{player1} faced {player1_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"{player1} faced {player1_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"{player1} faced {player1_comprehensive['break_points_faced_serving']} break points while serving and won {player1_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"{player1} faced {player1_comprehensive['break_points_faced_returning']} break points while returning and won {player1_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"{player1} faced {player1_comprehensive['game_points_faced_serving']} game points while serving and won {player1_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"{player1} faced {player1_comprehensive['game_points_faced_returning']} game points while returning and won {player1_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"{player1} played {player1_comprehensive['deuce_points_serving']} deuce points while serving and won {player1_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"{player1} played {player1_comprehensive['deuce_points_returning']} deuce points while returning and won {player1_comprehensive['deuce_points_won_returning']} of them.")
                 text.append("")
-            if jessica_comprehensive:
-                text.append("JESSICA PEGULA KEY POINTS AUTHORITATIVE TOTALS:")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_break_points_faced']} break points total.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_game_points_faced']} game points total.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_serving']} break points while serving and won {jessica_comprehensive['break_points_won_serving']} of them.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_returning']} break points while returning and won {jessica_comprehensive['break_points_won_returning']} of them.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_serving']} game points while serving and won {jessica_comprehensive['game_points_won_serving']} of them.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_returning']} game points while returning and won {jessica_comprehensive['game_points_won_returning']} of them.")
-                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_serving']} deuce points while serving and won {jessica_comprehensive['deuce_points_won_serving']} of them.")
-                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_returning']} deuce points while returning and won {jessica_comprehensive['deuce_points_won_returning']} of them.")
+            if player2_comprehensive:
+                text.append(f"{player2.upper()} KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"{player2} faced {player2_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"{player2} faced {player2_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"{player2} faced {player2_comprehensive['break_points_faced_serving']} break points while serving and won {player2_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"{player2} faced {player2_comprehensive['break_points_faced_returning']} break points while returning and won {player2_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"{player2} faced {player2_comprehensive['game_points_faced_serving']} game points while serving and won {player2_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"{player2} faced {player2_comprehensive['game_points_faced_returning']} game points while returning and won {player2_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"{player2} played {player2_comprehensive['deuce_points_serving']} deuce points while serving and won {player2_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"{player2} played {player2_comprehensive['deuce_points_returning']} deuce points while returning and won {player2_comprehensive['deuce_points_won_returning']} of them.")
                 text.append("")
             text.append("DETAILED KEY POINTS BREAKDOWN (these are contextual details, not for recalculating totals):")
             text.append("")
@@ -4706,27 +4838,27 @@ Answer:"""
             # Include authoritative totals at the beginning of returns section
             text.append("AUTHORITATIVE TOTALS FOR KEY POINTS:")
             text.append("-" * 35)
-            if iga_comprehensive:
-                text.append("IGA SWIATEK KEY POINTS AUTHORITATIVE TOTALS:")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['total_break_points_faced']} break points total.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['total_game_points_faced']} game points total.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_serving']} break points while serving and won {iga_comprehensive['break_points_won_serving']} of them.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_returning']} break points while returning and won {iga_comprehensive['break_points_won_returning']} of them.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_serving']} game points while serving and won {iga_comprehensive['game_points_won_serving']} of them.")
-                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_returning']} game points while returning and won {iga_comprehensive['game_points_won_returning']} of them.")
-                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_serving']} deuce points while serving and won {iga_comprehensive['deuce_points_won_serving']} of them.")
-                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_returning']} deuce points while returning and won {iga_comprehensive['deuce_points_won_returning']} of them.")
+            if player1_comprehensive:
+                text.append(f"{player1.upper()} KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"{player1} faced {player1_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"{player1} faced {player1_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"{player1} faced {player1_comprehensive['break_points_faced_serving']} break points while serving and won {player1_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"{player1} faced {player1_comprehensive['break_points_faced_returning']} break points while returning and won {player1_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"{player1} faced {player1_comprehensive['game_points_faced_serving']} game points while serving and won {player1_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"{player1} faced {player1_comprehensive['game_points_faced_returning']} game points while returning and won {player1_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"{player1} played {player1_comprehensive['deuce_points_serving']} deuce points while serving and won {player1_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"{player1} played {player1_comprehensive['deuce_points_returning']} deuce points while returning and won {player1_comprehensive['deuce_points_won_returning']} of them.")
                 text.append("")
-            if jessica_comprehensive:
-                text.append("JESSICA PEGULA KEY POINTS AUTHORITATIVE TOTALS:")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_break_points_faced']} break points total.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_game_points_faced']} game points total.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_serving']} break points while serving and won {jessica_comprehensive['break_points_won_serving']} of them.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_returning']} break points while returning and won {jessica_comprehensive['break_points_won_returning']} of them.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_serving']} game points while serving and won {jessica_comprehensive['game_points_won_serving']} of them.")
-                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_returning']} game points while returning and won {jessica_comprehensive['game_points_won_returning']} of them.")
-                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_serving']} deuce points while serving and won {jessica_comprehensive['deuce_points_won_serving']} of them.")
-                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_returning']} deuce points while returning and won {jessica_comprehensive['deuce_points_won_returning']} of them.")
+            if player2_comprehensive:
+                text.append(f"{player2.upper()} KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"{player2} faced {player2_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"{player2} faced {player2_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"{player2} faced {player2_comprehensive['break_points_faced_serving']} break points while serving and won {player2_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"{player2} faced {player2_comprehensive['break_points_faced_returning']} break points while returning and won {player2_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"{player2} faced {player2_comprehensive['game_points_faced_serving']} game points while serving and won {player2_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"{player2} faced {player2_comprehensive['game_points_faced_returning']} game points while returning and won {player2_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"{player2} played {player2_comprehensive['deuce_points_serving']} deuce points while serving and won {player2_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"{player2} played {player2_comprehensive['deuce_points_returning']} deuce points while returning and won {player2_comprehensive['deuce_points_won_returning']} of them.")
                 text.append("")
             text.append("DETAILED KEY POINTS BREAKDOWN (these are contextual details, not for recalculating totals):")
             text.append("")
@@ -4735,9 +4867,23 @@ Answer:"""
         
         return text
 
+    def _generate_player_initials(self, player_name: str) -> str:
+        """Generate player initials from full name"""
+        if not player_name:
+            return ""
+        words = player_name.split()
+        if len(words) >= 2:
+            return words[0][0].upper() + words[1][0].upper()
+        elif len(words) == 1:
+            return words[0][:2].upper()
+        return ""
+
     def _extract_keypoints_totals(self, keypoints_data: Dict[str, Any], player: str) -> Dict[str, str]:
         """Extract authoritative totals from key points statistics"""
         totals = {}
+        
+        # Generate player initials dynamically
+        player_initials = self._generate_player_initials(player)
         
         # Find the header row
         header_key = None
@@ -4755,9 +4901,8 @@ Answer:"""
                     # Extract the row label
                     row_label = key.split(' - ', 1)[1] if ' - ' in key else key
                     
-                    # Check if this row belongs to the target player
-                    if (player == "Iga Swiatek" and ('IS' in row_label or 'Iga' in row_label)) or \
-                       (player == "Jessica Pegula" and ('JP' in row_label or 'Jessica' in row_label)):
+                    # Check if this row belongs to the target player using dynamic initials
+                    if (player_initials in row_label) or (player in row_label):
                         
                         values = [v.strip() for v in value.split(' | ')]
                         
@@ -4828,6 +4973,9 @@ Answer:"""
         """Extract key points data from a specific table (serves or returns)"""
         totals = {}
         
+        # Generate player initials dynamically
+        player_initials = self._generate_player_initials(player)
+        
         # Find the header row
         header_key = None
         for key in table_data.keys():
@@ -4846,9 +4994,8 @@ Answer:"""
                 # Extract the row label
                 row_label = key.split(' - ', 1)[1] if ' - ' in key else key
                 
-                # Check if this row belongs to the target player
-                if (player == "Iga Swiatek" and 'IS' in row_label) or \
-                   (player == "Jessica Pegula" and 'JP' in row_label):
+                # Check if this row belongs to the target player using dynamic initials
+                if player_initials in row_label:
                     
                     values = [v.strip() for v in value.split(' | ')]
                     
@@ -4926,9 +5073,9 @@ Answer:"""
         
         # Determine player from row label
         if 'IS ' in row_label:
-            player = "Iga Swiatek"
+            player = self.player1 if self.player1 else "Player 1"
         elif 'JP ' in row_label:
-            player = "Jessica Pegula"
+            player = self.player2 if self.player2 else "Player 2"
         else:
             player = "Unknown Player"
         
@@ -5041,8 +5188,12 @@ Answer:"""
         text = []
         
         # TIER 1 (AUTHORITATIVE): Extract key totals from Overview as single source of truth
-        iga_serve_stats = {}
-        jessica_serve_stats = {}
+        player1_serve_stats = {}
+        player2_serve_stats = {}
+        
+        # Generate player initials dynamically
+        player1_initials = self._generate_player_initials(player1)
+        player2_initials = self._generate_player_initials(player2)
         
         # Find the header row
         header_key = None
@@ -5063,38 +5214,38 @@ Answer:"""
                     # Split the value by | to get individual values
                     values = [v.strip() for v in value.split(' | ')]
                     
-                    # Store authoritative totals
-                    if 'Iga Swiatek' in player or 'IS' in player:
-                        iga_serve_stats = self._extract_overview_totals(values, headers)
-                    elif 'Jessica Pegula' in player or 'JP' in player:
-                        jessica_serve_stats = self._extract_overview_totals(values, headers)
+                    # Store authoritative totals using dynamic player detection
+                    if player1 in player or player1_initials in player:
+                        player1_serve_stats = self._extract_overview_totals(values, headers)
+                    elif player2 in player or player2_initials in player:
+                        player2_serve_stats = self._extract_overview_totals(values, headers)
         
         # Add authoritative summary (TIER 1)
         text.append("AUTHORITATIVE TOTALS FROM OVERVIEW STATISTICS:")
         text.append("-" * 45)
         
-        if iga_serve_stats:
-            text.append("IGA SWIATEK AUTHORITATIVE TOTALS:")
-            text.append(f"First serve percentage: {iga_serve_stats.get('first_serve_pct', 'N/A')}")
-            text.append(f"Second serve won percentage: {iga_serve_stats.get('second_serve_won_pct', 'N/A')}")
-            text.append(f"Ace percentage: {iga_serve_stats.get('ace_pct', 'N/A')}")
-            text.append(f"Double fault percentage: {iga_serve_stats.get('df_pct', 'N/A')}")
-            text.append(f"Break points saved: {iga_serve_stats.get('bp_saved', 'N/A')}")
-            text.append(f"Return points won percentage: {iga_serve_stats.get('return_pct', 'N/A')}")
-            text.append(f"Total winners: {iga_serve_stats.get('winners', 'N/A')}")
-            text.append(f"Total unforced errors: {iga_serve_stats.get('ufe', 'N/A')}")
+        if player1_serve_stats:
+            text.append(f"{player1.upper()} AUTHORITATIVE TOTALS:")
+            text.append(f"First serve percentage: {player1_serve_stats.get('first_serve_pct', 'N/A')}")
+            text.append(f"Second serve won percentage: {player1_serve_stats.get('second_serve_won_pct', 'N/A')}")
+            text.append(f"Ace percentage: {player1_serve_stats.get('ace_pct', 'N/A')}")
+            text.append(f"Double fault percentage: {player1_serve_stats.get('df_pct', 'N/A')}")
+            text.append(f"Break points saved: {player1_serve_stats.get('bp_saved', 'N/A')}")
+            text.append(f"Return points won percentage: {player1_serve_stats.get('return_pct', 'N/A')}")
+            text.append(f"Total winners: {player1_serve_stats.get('winners', 'N/A')}")
+            text.append(f"Total unforced errors: {player1_serve_stats.get('ufe', 'N/A')}")
             text.append("")
         
-        if jessica_serve_stats:
-            text.append("JESSICA PEGULA AUTHORITATIVE TOTALS:")
-            text.append(f"First serve percentage: {jessica_serve_stats.get('first_serve_pct', 'N/A')}")
-            text.append(f"Second serve won percentage: {jessica_serve_stats.get('second_serve_won_pct', 'N/A')}")
-            text.append(f"Ace percentage: {jessica_serve_stats.get('ace_pct', 'N/A')}")
-            text.append(f"Double fault percentage: {jessica_serve_stats.get('df_pct', 'N/A')}")
-            text.append(f"Break points saved: {jessica_serve_stats.get('bp_saved', 'N/A')}")
-            text.append(f"Return points won percentage: {jessica_serve_stats.get('return_pct', 'N/A')}")
-            text.append(f"Total winners: {jessica_serve_stats.get('winners', 'N/A')}")
-            text.append(f"Total unforced errors: {jessica_serve_stats.get('ufe', 'N/A')}")
+        if player2_serve_stats:
+            text.append(f"{player2.upper()} AUTHORITATIVE TOTALS:")
+            text.append(f"First serve percentage: {player2_serve_stats.get('first_serve_pct', 'N/A')}")
+            text.append(f"Second serve won percentage: {player2_serve_stats.get('second_serve_won_pct', 'N/A')}")
+            text.append(f"Ace percentage: {player2_serve_stats.get('ace_pct', 'N/A')}")
+            text.append(f"Double fault percentage: {player2_serve_stats.get('df_pct', 'N/A')}")
+            text.append(f"Break points saved: {player2_serve_stats.get('bp_saved', 'N/A')}")
+            text.append(f"Return points won percentage: {player2_serve_stats.get('return_pct', 'N/A')}")
+            text.append(f"Total winners: {player2_serve_stats.get('winners', 'N/A')}")
+            text.append(f"Total unforced errors: {player2_serve_stats.get('ufe', 'N/A')}")
             text.append("")
         
         text.append("DETAILED BREAKDOWN (these are contextual details, not for recalculating totals):")
@@ -5220,10 +5371,10 @@ Answer:"""
         
         # Determine player
         if 'serve1' in table_name.lower():
-            player = "Iga Swiatek"
+            player = self.player1 if self.player1 else "Player 1"
             text.append("SERVE1 STATISTICS:")
         elif 'serve2' in table_name.lower():
-            player = "Jessica Pegula"
+            player = self.player2 if self.player2 else "Player 2"
             text.append("SERVE2 STATISTICS:")
         else:
             player = "Unknown Player"
@@ -5344,10 +5495,10 @@ Answer:"""
         
         # Determine player
         if 'return1' in table_name.lower():
-            player = "Iga Swiatek"
+            player = self.player1 if self.player1 else "Player 1"
             text.append("RETURN1 STATISTICS:")
         elif 'return2' in table_name.lower():
-            player = "Jessica Pegula"
+            player = self.player2 if self.player2 else "Player 2"
             text.append("RETURN2 STATISTICS:")
         else:
             player = "Unknown Player"
@@ -5479,9 +5630,9 @@ Answer:"""
             if label and values:
                 # Determine player
                 if 'IS' in label:
-                    player = "Iga Swiatek"
+                    player = self.player1 if self.player1 else "Player 1"
                 elif 'JP' in label:
-                    player = "Jessica Pegula"
+                    player = self.player2 if self.player2 else "Player 2"
                 else:
                     player = "Unknown Player"
                 
@@ -5518,9 +5669,9 @@ Answer:"""
             if label and values:
                 # Determine player
                 if 'IS' in label:
-                    player = "Iga Swiatek"
+                    player = self.player1 if self.player1 else "Player 1"
                 elif 'JP' in label:
-                    player = "Jessica Pegula"
+                    player = self.player2 if self.player2 else "Player 2"
                 else:
                     player = "Unknown Player"
                 
@@ -5540,11 +5691,15 @@ Answer:"""
         
         return text
 
-    def _convert_rallyoutcomes_table(self, rows: List[Dict[str, Any]]) -> List[str]:
+    def _convert_rallyoutcomes_table(self, rows: List[Dict[str, Any]], player1: str, player2: str) -> List[str]:
         """Convert rally outcomes table to natural language text"""
         text = []
         text.append("RALLY OUTCOMES STATISTICS:")
         text.append("-" * 26)
+        
+        # Generate player initials dynamically
+        player1_initials = self._generate_player_initials(player1)
+        player2_initials = self._generate_player_initials(player2)
         
         # Find header row
         headers = []
@@ -5575,58 +5730,58 @@ Answer:"""
                     rally_type = "7-9 shot rallies"
                 elif 'All: 10+' in label:
                     rally_type = "10+ shot rallies"
-                elif 'IS Sv:' in label:
-                    rally_type = "1-3 shot rallies on Iga Swiatek serves" if "1-3" in label else \
-                               "4-6 shot rallies on Iga Swiatek serves" if "4-6" in label else \
-                               "7-9 shot rallies on Iga Swiatek serves" if "7-9" in label else \
-                               "10+ shot rallies on Iga Swiatek serves" if "10+" in label else \
-                               "rallies on Iga Swiatek serves"
-                elif 'JP Sv:' in label:
-                    rally_type = "1-3 shot rallies on Jessica Pegula serves" if "1-3" in label else \
-                               "4-6 shot rallies on Jessica Pegula serves" if "4-6" in label else \
-                               "7-9 shot rallies on Jessica Pegula serves" if "7-9" in label else \
-                               "10+ shot rallies on Jessica Pegula serves" if "10+" in label else \
-                               "rallies on Jessica Pegula serves"
+                elif f'{player1_initials} Sv:' in label:
+                    rally_type = f"1-3 shot rallies on {player1} serves" if "1-3" in label else \
+                               f"4-6 shot rallies on {player1} serves" if "4-6" in label else \
+                               f"7-9 shot rallies on {player1} serves" if "7-9" in label else \
+                               f"10+ shot rallies on {player1} serves" if "10+" in label else \
+                               f"rallies on {player1} serves"
+                elif f'{player2_initials} Sv:' in label:
+                    rally_type = f"1-3 shot rallies on {player2} serves" if "1-3" in label else \
+                               f"4-6 shot rallies on {player2} serves" if "4-6" in label else \
+                               f"7-9 shot rallies on {player2} serves" if "7-9" in label else \
+                               f"10+ shot rallies on {player2} serves" if "10+" in label else \
+                               f"rallies on {player2} serves"
                 
                 # Extract stats for both players
                 total_pts = values[0] if len(values) > 0 else "0"
                 
-                # Iga Swiatek stats (columns 1-4) - strip percentages
-                is_wins = values[1].split('(')[0].strip() if len(values) > 1 and values[1] else "0"
-                is_winners = values[2].split('(')[0].strip() if len(values) > 2 and values[2] else "0"
-                is_forced_errors = values[3].split('(')[0].strip() if len(values) > 3 and values[3] else "0"
-                is_unforced_errors = values[4].split('(')[0].strip() if len(values) > 4 and values[4] else "0"
+                # Player 1 stats (columns 1-4) - strip percentages
+                player1_wins = values[1].split('(')[0].strip() if len(values) > 1 and values[1] else "0"
+                player1_winners = values[2].split('(')[0].strip() if len(values) > 2 and values[2] else "0"
+                player1_forced_errors = values[3].split('(')[0].strip() if len(values) > 3 and values[3] else "0"
+                player1_unforced_errors = values[4].split('(')[0].strip() if len(values) > 4 and values[4] else "0"
                 
-                # Jessica Pegula stats (columns 5-8) - strip percentages
-                jp_wins = values[5].split('(')[0].strip() if len(values) > 5 and values[5] else "0"
-                jp_winners = values[6].split('(')[0].strip() if len(values) > 6 and values[6] else "0"
-                jp_forced_errors = values[7].split('(')[0].strip() if len(values) > 7 and values[7] else "0"
-                jp_unforced_errors = values[8].split('(')[0].strip() if len(values) > 8 and values[8] else "0"
+                # Player 2 stats (columns 5-8) - strip percentages
+                player2_wins = values[5].split('(')[0].strip() if len(values) > 5 and values[5] else "0"
+                player2_winners = values[6].split('(')[0].strip() if len(values) > 6 and values[6] else "0"
+                player2_forced_errors = values[7].split('(')[0].strip() if len(values) > 7 and values[7] else "0"
+                player2_unforced_errors = values[8].split('(')[0].strip() if len(values) > 8 and values[8] else "0"
                 
                 # Create sentences
                 text.append(f"There were {total_pts} {rally_type} in the match.")
                 
                 # Add player-specific statistics
-                if 'IS Sv:' in label or 'JP Sv:' in label:
+                if f'{player1_initials} Sv:' in label or f'{player2_initials} Sv:' in label:
                     # For player-specific rows, focus on that player's stats
-                    if 'IS Sv:' in label:
-                        text.append(f"Iga Swiatek won {is_wins} points and hit {is_winners} winners on {rally_type}.")
-                        text.append(f"Iga Swiatek had {is_forced_errors} forced errors and made {is_unforced_errors} unforced errors on {rally_type}.")
-                    else:  # JP Sv
-                        text.append(f"Jessica Pegula won {jp_wins} points and hit {jp_winners} winners on {rally_type}.")
-                        text.append(f"Jessica Pegula had {jp_forced_errors} forced errors and made {jp_unforced_errors} unforced errors on {rally_type}.")
+                    if f'{player1_initials} Sv:' in label:
+                        text.append(f"{player1} won {player1_wins} points and hit {player1_winners} winners on {rally_type}.")
+                        text.append(f"{player1} had {player1_forced_errors} forced errors and made {player1_unforced_errors} unforced errors on {rally_type}.")
+                    else:  # Player 2 Sv
+                        text.append(f"{player2} won {player2_wins} points and hit {player2_winners} winners on {rally_type}.")
+                        text.append(f"{player2} had {player2_forced_errors} forced errors and made {player2_unforced_errors} unforced errors on {rally_type}.")
                 else:
                     # For total/all rows, show both players' stats
-                    text.append(f"Iga Swiatek won {is_wins} points and hit {is_winners} winners on {rally_type}.")
-                    text.append(f"Iga Swiatek had {is_forced_errors} forced errors and made {is_unforced_errors} unforced errors on {rally_type}.")
-                    text.append(f"Jessica Pegula won {jp_wins} points and hit {jp_winners} winners on {rally_type}.")
-                    text.append(f"Jessica Pegula had {jp_forced_errors} forced errors and made {jp_unforced_errors} unforced errors on {rally_type}.")
+                    text.append(f"{player1} won {player1_wins} points and hit {player1_winners} winners on {rally_type}.")
+                    text.append(f"{player1} had {player1_forced_errors} forced errors and made {player1_unforced_errors} unforced errors on {rally_type}.")
+                    text.append(f"{player2} won {player2_wins} points and hit {player2_winners} winners on {rally_type}.")
+                    text.append(f"{player2} had {player2_forced_errors} forced errors and made {player2_unforced_errors} unforced errors on {rally_type}.")
                 
                 text.append("")  # Add spacing between sections
         
         return text
 
-    def _convert_overview_table(self, rows: List[Dict[str, Any]]) -> List[str]:
+    def _convert_overview_table(self, rows: List[Dict[str, Any]], player1: str, player2: str) -> List[str]:
         """Convert overview table to natural language text"""
         text = []
         text.append("OVERVIEW STATISTICS:")
@@ -5650,14 +5805,14 @@ Answer:"""
             
             if label and values:
                 # Determine player
-                if 'Iga Swiatek' in label:
-                    player = "Iga Swiatek"
-                elif 'Jessica Pegula' in label:
-                    player = "Jessica Pegula"
+                if self.player1 and self.player1 in label:
+                    player = self.player1
+                elif self.player2 and self.player2 in label:
+                    player = self.player2
                 elif 'IS' in label:
-                    player = "Iga Swiatek"
+                    player = self.player1 if self.player1 else "Player 1"
                 elif 'JP' in label:
-                    player = "Jessica Pegula"
+                    player = self.player2 if self.player2 else "Player 2"
                 else:
                     player = "Unknown Player"
                 
