@@ -16,12 +16,12 @@ class TennisChatAgentEmbeddingQAMultiLLM:
     Supports Claude, Gemini, and OpenAI for answering questions.
     """
     
-    def __init__(self, llm_provider: str = "claude", api_key: str = None, model: str = None):
+    def __init__(self, llm_provider: str = "openai", api_key: str = None, model: str = None):
         """
         Initialize with specified LLM provider.
         
         Args:
-            llm_provider: "claude", "gemini", or "openai"
+            llm_provider: "openai", "claude", or "gemini"
             api_key: API key for the provider (optional, will use env vars)
         """
         self.llm_provider = llm_provider.lower()
@@ -133,8 +133,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             'SERVE1 STATISTICS (DETAILED):': 'large',
             'SERVE2 STATISTICS (SUMMARY):': 'medium',
             'SERVE2 STATISTICS (DETAILED):': 'large',
-            'RETURN1 STATISTICS (DETAILED):': 'large',
-            'RETURN2 STATISTICS (DETAILED):': 'large',
+            'RETURN1 STATISTICS (DETAILED):': 'return_split',
+            'RETURN2 STATISTICS (DETAILED):': 'return_split',
             'KEY POINTS STATISTICS (SERVES):': 'medium',
             'KEY POINTS STATISTICS (RETURNS):': 'medium',
             'SHOTS1 STATISTICS:': 'large',
@@ -222,6 +222,49 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             for i, chunk in enumerate(point_chunks):
                 sections[f"{section_name}_games_{i+1}"] = chunk
             print(f"  🎾 {section_name}: split by games ({len(point_chunks)} chunks)")
+            
+        elif strategy == 'return_split':
+            # Custom strategy for return statistics: split by outcomes and depth
+            return_chunks = self._split_return_statistics_by_outcomes_and_depth(content, section_name)
+            if len(return_chunks) > 1:
+                for i, chunk in enumerate(return_chunks):
+                    if i == 0:
+                        sections[f"{section_name}_outcomes"] = chunk
+                    else:
+                        sections[f"{section_name}_depth"] = chunk
+                print(f"  🎯 {section_name}: split by outcomes and depth ({len(return_chunks)} chunks)")
+            else:
+                sections[section_name] = content
+                print(f"  📝 {section_name}: kept intact (return_split)")
+    
+    def _split_return_statistics_by_outcomes_and_depth(self, content: str, section_name: str) -> List[str]:
+        """Split return statistics into outcomes and depth sections."""
+        lines = content.split('\n')
+        outcomes_section = []
+        depth_section = []
+        current_section = None
+        
+        for line in lines:
+            # Check for depth section indicators
+            if any(phrase in line.lower() for phrase in [
+                'shallow returns', 'deep returns', 'very deep returns', 
+                'unforced errors when returning', 'net approaches when returning'
+            ]):
+                current_section = 'depth'
+            
+            # Add line to appropriate section
+            if current_section == 'depth':
+                depth_section.append(line)
+            else:
+                outcomes_section.append(line)
+        
+        chunks = []
+        if outcomes_section:
+            chunks.append('\n'.join(outcomes_section))
+        if depth_section:
+            chunks.append('\n'.join(depth_section))
+        
+        return chunks if len(chunks) > 1 else [content]
     
     def _split_by_player_if_beneficial(self, content: str, section_name: str) -> List[str]:
         """Split content by player if it creates meaningful chunks."""
@@ -229,6 +272,22 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         iga_lines = []
         jessica_lines = []
         header_lines = []
+        
+        # For key points sections, we need to include the authoritative totals
+        authoritative_totals = []
+        if 'key_points_statistics' in section_name:
+            # Look for authoritative totals in the content
+            content_lines = content.split('\n')
+            in_authoritative_section = False
+            for line in content_lines:
+                if 'AUTHORITATIVE TOTALS FOR KEY POINTS:' in line:
+                    in_authoritative_section = True
+                    authoritative_totals.append(line)
+                elif in_authoritative_section and line.strip() == '':
+                    # End of authoritative section
+                    break
+                elif in_authoritative_section:
+                    authoritative_totals.append(line)
         
         for line in lines:
             if 'Iga Swiatek' in line and not line.strip().endswith(':'):
@@ -247,9 +306,17 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         if len(iga_lines) >= 3 and len(jessica_lines) >= 3:
             chunks = []
             if iga_lines:
-                chunks.append('\n'.join(header_lines + iga_lines))
+                # Include authoritative totals at the beginning for key points sections
+                if authoritative_totals:
+                    chunks.append('\n'.join(authoritative_totals + [''] + header_lines + iga_lines))
+                else:
+                    chunks.append('\n'.join(header_lines + iga_lines))
             if jessica_lines:
-                chunks.append('\n'.join(header_lines + jessica_lines))
+                # Include authoritative totals at the beginning for key points sections
+                if authoritative_totals:
+                    chunks.append('\n'.join(authoritative_totals + [''] + header_lines + jessica_lines))
+                else:
+                    chunks.append('\n'.join(header_lines + jessica_lines))
             return chunks
             
         return [content]  # Don't split if not beneficial
@@ -631,16 +698,16 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             success_count = 0
             for i, chunk in enumerate(chunks):
                 if chunk.get("embedding") is None:  # Only process chunks that failed with Gemini
-                try:
-                    response = client.embeddings.create(
-                        model="text-embedding-3-small",
-                        input=chunk["text"]
-                    )
-                    chunk["embedding"] = response.data[0].embedding
+                    try:
+                        response = client.embeddings.create(
+                            model="text-embedding-3-small",
+                            input=chunk["text"]
+                        )
+                        chunk["embedding"] = response.data[0].embedding
                         success_count += 1
                         if (i + 1) % 10 == 0:
                             print(f"   Generated {i + 1}/{len(chunks)} embeddings...")
-                except Exception as e:
+                    except Exception as e:
                         print(f"OpenAI embedding error: {e}")
                         chunk["embedding"] = [0.0] * 1536  # OpenAI dimensions
                 else:
@@ -776,20 +843,20 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         
                 # Fallback to OpenAI
         if query_embedding is None:
-        try:
-            from openai import OpenAI
-            openai_key = os.getenv("OPENAI_API_KEY")
-            if not openai_key:
+            try:
+                from openai import OpenAI
+                openai_key = os.getenv("OPENAI_API_KEY")
+                if not openai_key:
                     print("Warning: No OpenAI API key for embeddings. Using metadata-based retrieval.")
                     return self._fallback_metadata_retrieval(query, top_k)
-            
-            client = OpenAI(api_key=openai_key)
-            query_embedding = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=query
-            ).data[0].embedding
-        except Exception as e:
-            print(f"Error generating query embedding: {e}")
+                
+                client = OpenAI(api_key=openai_key)
+                query_embedding = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=query
+                ).data[0].embedding
+            except Exception as e:
+                print(f"Error generating query embedding: {e}")
                 return self._fallback_metadata_retrieval(query, top_k)
         
         # Search for similar chunks (get more than needed for filtering)
@@ -811,6 +878,47 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         # Apply intelligent filtering based on query content
         filtered_chunks = self._filter_chunks_by_query(query, candidates)
         
+
+        
+        # OVERVIEW PRIORITY: For basic statistical questions, prioritize overview_statistics
+        if not self._is_match_insight_question(query) and any(word in query.lower() for word in [
+            # Winners
+            "winner", "winners", "winner forehand", "winner backhand",
+            # Errors
+            "unforced error", "unforced errors", "unforced error forehand", "unforced error backhand",
+            "forced error", "forced errors",
+            # Serve statistics
+            "ace", "aces", "ace percent", "ace percentage",
+            "double fault", "double faults", "double fault percent", "double fault percentage",
+            "first serve", "first serve in", "first serve won", "first serve percentage",
+            "second serve", "second serve won", "second serve percentage",
+            # Break points
+            "break point", "break points", "break points saved", "break points converted",
+            # Return points
+            "return points", "return points won", "rpw", "rpw%",
+            # General
+            "total", "how many", "percentage", "percent"
+        ]):
+            # Find overview_statistics chunk
+            overview_chunk = None
+            for chunk in self.chunks:
+                if 'overview_statistics' in chunk['metadata']['section']:
+                    overview_chunk = {
+                        "text": chunk['text'],
+                        "metadata": chunk['metadata'],
+                        "distance": 0.0,
+                        "relevance_score": 10.0
+                    }
+                    break
+            
+            # Force overview to be the first chunk for basic stats questions
+            if overview_chunk:
+                # Remove any existing overview chunk
+                filtered_chunks = [chunk for chunk in filtered_chunks if 'overview_statistics' not in chunk['metadata']['section']]
+                # Add overview at the very top
+                filtered_chunks.insert(0, overview_chunk)
+                print(f"📊 FORCED overview_statistics to top for basic statistical question")
+        
         # CRITICAL FIX: Always include overview_statistics for statistical questions
         if not self._is_match_insight_question(query):
             # Find overview_statistics chunk
@@ -830,214 +938,637 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                 filtered_chunks.insert(0, overview_chunk)
                 print(f"🔧 FORCED overview_statistics to top of results for statistical question")
             
-                 # DIRECTION + OUTCOME FIX: For questions about shots by direction AND outcome, force include all shot types for that direction/outcome combo
-         direction_outcome_fix_applied = False
-         direction_keywords = {
-             "crosscourt": ["crosscourt", "cross court"],
-             "down the line": ["down the line", "downline", "dtl"],
-             "down the middle": ["down the middle", "middle", "center"],
-             "inside-out": ["inside-out", "inside out"],
-             "inside-in": ["inside-in", "inside in"]
-         }
-         
-         outcome_keywords = {
-             "winner": ["winner", "winners"],
-             "forced error": ["forced error", "forced errors", "induced"],
-             "unforced error": ["unforced error", "unforced errors"],
-             "pts won": ["pts won", "points won", "ptswon"],
-             "pts lost": ["pts lost", "points lost", "ptslost"]
-         }
-         
-         detected_direction = None
-         detected_outcome = None
-         
-         # Check for direction + outcome combinations
-         for direction, dir_keywords in direction_keywords.items():
-             if any(keyword in query.lower() for keyword in dir_keywords):
-                 detected_direction = direction
-                 break
-         
-         for outcome, outcome_keywords_list in outcome_keywords.items():
-             if any(keyword in query.lower() for keyword in outcome_keywords_list):
-                 detected_outcome = outcome
-                 break
-         
-         if detected_direction and detected_outcome and any(word in query.lower() for word in ["shot", "shots", "forehand", "backhand", "slice"]):
-             # Force include both players' shot direction chunks for this specific direction/outcome combo
-             chunk_names = ["shotdir1_statistics", "shotdir2_statistics"]
-             chunk1_found = None
-             chunk2_found = None
-             
-             # Find both chunks
-             for chunk in self.chunks:
-                 if "shotdir1_statistics" in chunk['metadata']['section']:
-                     chunk1_found = {
-                         "text": chunk['text'],
-                         "metadata": chunk['metadata'],
-                         "distance": 0.0,  # Perfect match
-                         "relevance_score": 9.5  # Very high score for specific direction/outcome queries
-                     }
-                 elif "shotdir2_statistics" in chunk['metadata']['section']:
-                     chunk2_found = {
-                         "text": chunk['text'],
-                         "metadata": chunk['metadata'],
-                         "distance": 0.0,  # Perfect match
-                         "relevance_score": 9.5  # Very high score for specific direction/outcome queries
-                     }
-             
-             # Add chunks if not already in results
-             if chunk1_found and not any("shotdir1_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
-                 filtered_chunks.insert(0, chunk1_found)
-                 print(f"🎯 FORCED shotdir1_statistics to top for {detected_direction} {detected_outcome} query")
-             
-             if chunk2_found and not any("shotdir2_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
-                 filtered_chunks.insert(0, chunk2_found)
-                 print(f"🎯 FORCED shotdir2_statistics to top for {detected_direction} {detected_outcome} query")
-             
-             direction_outcome_fix_applied = True
-         
-         # UNIVERSAL FIX: For "each player" or "both players" questions, force include both players' chunks
-         universal_fix_applied = False
-         if any(phrase in query.lower() for phrase in ["each player", "both players", "both player"]):
-            # Define all the split player statistics sections
-            split_sections = {
-                "serve": ["serve1_statistics_summary", "serve2_statistics_summary"],
-                "shots": ["shots1_statistics", "shots2_statistics"],
-                "shotdir": ["shotdir1_statistics", "shotdir2_statistics"],
-                "return": ["return1_statistics", "return2_statistics"],
-                "netpts": ["netpts1_statistics", "netpts2_statistics"],
-                "keypoints": ["keypoints1_statistics", "keypoints2_statistics"]
+
+            
+            # DIRECTION + OUTCOME FIX: For questions about shots by direction AND outcome, force include all shot types for that direction/outcome combo
+            direction_outcome_fix_applied = False
+            direction_keywords = {
+                "crosscourt": ["crosscourt", "cross court"],
+                "down the line": ["down the line", "downline", "dtl"],
+                "down the middle": ["down the middle", "middle", "center"],
+                "inside-out": ["inside-out", "inside out"],
+                "inside-in": ["inside-in", "inside in"]
             }
             
-            # Check which statistic type the question is about (in order of specificity)
-            detected_stat_type = None
+            outcome_keywords = {
+                "winner": ["winner", "winners"],
+                "forced error": ["forced error", "forced errors", "induced"],
+                "unforced error": ["unforced error", "unforced errors"],
+                "pt ending": ["pt ending", "point ending", "ended", "end points"],
+                "pts won": ["pts won", "points won", "ptswon"],
+                "pts lost": ["pts lost", "points lost", "ptslost"]
+            }
             
-            # Check most specific keywords first to avoid conflicts
-            if any(phrase in query.lower() for phrase in ["break point", "break points", "game point", "game points"]):
-                detected_stat_type = "keypoints"
-            elif any(phrase in query.lower() for phrase in ["net points", "net approaches", "volley", "volleys"]):
-                detected_stat_type = "netpts"
-            elif any(phrase in query.lower() for phrase in ["crosscourt", "down the line", "down the middle", "inside-out", "inside-in"]):
-                detected_stat_type = "shotdir"
-            elif any(phrase in query.lower() for phrase in ["winner", "winners", "unforced error", "unforced errors", "forehand", "backhand"]):
-                detected_stat_type = "shots"
-            elif any(phrase in query.lower() for phrase in ["return", "returns", "returnable"]):
-                detected_stat_type = "return"
-            elif any(phrase in query.lower() for phrase in ["ace", "aces", "serve", "serving", "double fault", "double faults", "first serve", "second serve"]):
-                detected_stat_type = "serve"
+            detected_direction = None
+            detected_outcome = None
             
-            # Apply the fix for the detected statistic type
-            if detected_stat_type and detected_stat_type in split_sections:
-                chunk_names = split_sections[detected_stat_type]
-                chunk1_name, chunk2_name = chunk_names
-                chunk1_found = None
-                chunk2_found = None
+            # Check for direction + outcome combinations
+            for direction, dir_keywords in direction_keywords.items():
+                if any(keyword in query.lower() for keyword in dir_keywords):
+                    detected_direction = direction
+                    break
+            
+            for outcome, outcome_keywords_list in outcome_keywords.items():
+                if any(keyword in query.lower() for keyword in outcome_keywords_list):
+                    detected_outcome = outcome
+                    break
+            
+            if detected_direction and detected_outcome:
+                # Determine which player is being asked about
+                player_mentioned = None
+                if "swiatek" in query.lower() or "iga" in query.lower():
+                    player_mentioned = "Iga Swiatek"
+                    target_chunk_name = "shotdir1_statistics"
+                elif "pegula" in query.lower() or "jessica" in query.lower():
+                    player_mentioned = "Jessica Pegula"
+                    target_chunk_name = "shotdir2_statistics"
+                else:
+                    # If no specific player mentioned, include both (for "each player" questions)
+                    player_mentioned = "both"
+                    target_chunk_name = None
                 
-                # Find both chunks
+                if player_mentioned == "both":
+                    # Force include both players' shot direction chunks for "each player" questions
+                    chunk_names = ["shotdir1_statistics", "shotdir2_statistics"]
+                    chunk1_found = None
+                    chunk2_found = None
+                    
+                    # Find both chunks
+                    for chunk in self.chunks:
+                        if "shotdir1_statistics" in chunk['metadata']['section']:
+                            chunk1_found = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 9.5  # Very high score for specific direction/outcome queries
+                            }
+                        elif "shotdir2_statistics" in chunk['metadata']['section']:
+                            chunk2_found = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 9.5  # Very high score for specific direction/outcome queries
+                            }
+                    
+                    # Add chunks if not already in results
+                    if chunk1_found and not any("shotdir1_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
+                        filtered_chunks.insert(0, chunk1_found)
+                        print(f"🎯 FORCED shotdir1_statistics to top for {detected_direction} {detected_outcome} query")
+                    
+                    if chunk2_found and not any("shotdir2_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
+                        filtered_chunks.insert(0, chunk2_found)
+                        print(f"🎯 FORCED shotdir2_statistics to top for {detected_direction} {detected_outcome} query")
+                else:
+                    # Force include only the specific player's shot direction chunk
+                    target_chunk = None
+                    for chunk in self.chunks:
+                        if target_chunk_name in chunk['metadata']['section']:
+                            target_chunk = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 9.5  # Very high score for specific direction/outcome queries
+                            }
+                            break
+                    
+                    # Add chunk if not already in results
+                    if target_chunk and not any(target_chunk_name in chunk['metadata']['section'] for chunk in filtered_chunks):
+                        filtered_chunks.insert(0, target_chunk)
+                        print(f"🎯 FORCED {target_chunk_name} to top for {detected_direction} {detected_outcome} query ({player_mentioned})")
+                
+                direction_outcome_fix_applied = True
+            
+            # BP/GP ROUTING FIX: For break point and game point questions, route to correct data sources
+            bp_gp_fix_applied = False
+            print(f"🔍 DEBUG: Checking BP/GP fix for query: '{query}'")
+            print(f"🔍 DEBUG: Contains break point: {'break point' in query.lower()}")
+            print(f"🔍 DEBUG: Contains net points: {'net points' in query.lower()}")
+            if any(phrase in query.lower() for phrase in ["break point", "bp", "game point", "gp", "deuce"]) and "net points" not in query.lower():
+                print(f"🎯 BP/GP FIX TRIGGERED!")
+                # Determine which player is being asked about
+                player_mentioned = None
+                if "swiatek" in query.lower() or "iga" in query.lower():
+                    player_mentioned = "Iga Swiatek"
+                elif "pegula" in query.lower() or "jessica" in query.lower():
+                    player_mentioned = "Jessica Pegula"
+                
+                if player_mentioned:
+                    # Route the question to get the correct section
+                    target_section = self._route_bp_gp_question(query, player_mentioned)
+                    
+                    if target_section != "unknown" and target_section != "both":
+                        # First, check if overview statistics has the data we need
+                        overview_chunk = None
+                        for chunk in self.chunks:
+                            if 'overview_statistics' in chunk['metadata']['section']:
+                                overview_chunk = {
+                                    "text": chunk['text'],
+                                    "metadata": chunk['metadata'],
+                                    "distance": 0.0,  # Perfect match
+                                    "relevance_score": 10.0  # Highest score for overview data
+                                }
+                                break
+                        
+                        # Add overview chunk if it has BP/GP data and not already in results
+                        if overview_chunk and not any('overview_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                            filtered_chunks.insert(0, overview_chunk)
+                            print(f"🎯 FORCED overview_statistics to top for BP/GP question: {player_mentioned}")
+                            bp_gp_fix_applied = True
+                        
+                        # Also add the specific section chunk as backup
+                        target_chunk = None
+                        
+                        # For break point, game point, and deuce questions, prioritize key points statistics
+                        if "break point" in query.lower() or "bp" in query.lower() or "game point" in query.lower() or "gp" in query.lower() or "deuce" in query.lower():
+                            # Look for key points statistics first
+                            # Determine which key points section to look for based on question type
+                            if "break point" in query.lower() or "bp" in query.lower():
+                                # For break points, use returns data for conversions, serves data for faced/saved
+                                if "convert" in query.lower() or "win" in query.lower() or "won" in query.lower():
+                                    # Look for returning key points statistics
+                                    for chunk in self.chunks:
+                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
+                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        if 'key_points_statistics_returns' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
+                                            target_chunk = {
+                                                "text": chunk['text'],
+                                                "metadata": chunk['metadata'],
+                                                "distance": 0.0,  # Perfect match
+                                                "relevance_score": 9.5  # Higher score for key points data
+                                            }
+                                            break
+                                else:
+                                    # For other break point questions, look for serving key points statistics
+                                    for chunk in self.chunks:
+                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
+                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        if 'key_points_statistics_serves' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
+                                            target_chunk = {
+                                                "text": chunk['text'],
+                                                "metadata": chunk['metadata'],
+                                                "distance": 0.0,  # Perfect match
+                                                "relevance_score": 9.5  # Higher score for key points data
+                                            }
+                                            break
+                            elif "game point" in query.lower() or "gp" in query.lower():
+                                # For game points, use returns data for faced, serves data for won
+                                if "face" in query.lower():
+                                    # Look for returning key points statistics
+                                    for chunk in self.chunks:
+                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
+                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        if 'key_points_statistics_returns' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
+                                            target_chunk = {
+                                                "text": chunk['text'],
+                                                "metadata": chunk['metadata'],
+                                                "distance": 0.0,  # Perfect match
+                                                "relevance_score": 9.5  # Higher score for key points data
+                                            }
+                                            break
+                                else:
+                                    # For other game point questions, look for serving key points statistics
+                                    for chunk in self.chunks:
+                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
+                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        if 'key_points_statistics_serves' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
+                                            target_chunk = {
+                                                "text": chunk['text'],
+                                                "metadata": chunk['metadata'],
+                                                "distance": 0.0,  # Perfect match
+                                                "relevance_score": 9.5  # Higher score for key points data
+                                            }
+                                            break
+                            elif "deuce" in query.lower():
+                                # For deuce points, use returns data for return deuce, serves data for serve deuce
+                                if "return" in query.lower():
+                                    # Look for returning key points statistics
+                                    for chunk in self.chunks:
+                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
+                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        if 'key_points_statistics_returns' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
+                                            target_chunk = {
+                                                "text": chunk['text'],
+                                                "metadata": chunk['metadata'],
+                                                "distance": 0.0,  # Perfect match
+                                                "relevance_score": 9.5  # Higher score for key points data
+                                            }
+                                            break
+                                else:
+                                    # For other deuce questions, look for serving key points statistics
+                                    for chunk in self.chunks:
+                                        # For Jessica Pegula, look for player_2; for Iga Swiatek, look for player_1
+                                        player_suffix = "_player_2" if "pegula" in player_mentioned.lower() or "jessica" in player_mentioned.lower() else "_player_1"
+                                        if 'key_points_statistics_serves' in chunk['metadata']['section'] and player_suffix in chunk['metadata']['section']:
+                                            target_chunk = {
+                                                "text": chunk['text'],
+                                                "metadata": chunk['metadata'],
+                                                "distance": 0.0,  # Perfect match
+                                                "relevance_score": 9.5  # Higher score for key points data
+                                            }
+                                            break
+                        
+                        # If no key points chunk found, fall back to regular statistics
+                        if not target_chunk:
+                            for chunk in self.chunks:
+                                # Handle split return statistics chunks (e.g., return2_statistics_detailed_part_1)
+                                if target_section in chunk['metadata']['section'] or (target_section.replace('_statistics', '') in chunk['metadata']['section'] and 'return' in chunk['metadata']['section']):
+                                    target_chunk = {
+                                        "text": chunk['text'],
+                                        "metadata": chunk['metadata'],
+                                        "distance": 0.0,  # Perfect match
+                                        "relevance_score": 9.0  # High score for BP/GP questions
+                                    }
+                                    break
+                        
+                        # Add the chunk if not already in results
+                        if target_chunk:
+                            # For key points chunks, use the actual chunk section name
+                            if 'key_points_statistics' in target_chunk['metadata']['section']:
+                                key_points_section = target_chunk['metadata']['section']
+                                # Remove any existing instance first
+                                filtered_chunks = [chunk for chunk in filtered_chunks if key_points_section not in chunk['metadata']['section']]
+                                
+                                # Set maximum priority and force to top
+                                target_chunk['relevance_score'] = 10.0
+                                filtered_chunks.insert(0, target_chunk)
+                                print(f"🎯 FORCED {key_points_section} to top with max priority for BP/GP question: {player_mentioned}")
+                                bp_gp_fix_applied = True
+                            else:
+                                # For regular statistics chunks, use target_section
+                                if not any(target_section in chunk['metadata']['section'] for chunk in filtered_chunks):
+                                    filtered_chunks.insert(0, target_chunk)
+                                    print(f"🎯 FORCED {target_section} to top for BP/GP question: {player_mentioned}")
+                                    bp_gp_fix_applied = True
+                    
+                    elif target_section == "both":
+                        # Need both serve and return sections for BP/GP/deuce totals or ambiguous questions
+                        serve_section = "serve1_statistics" if "swiatek" in query.lower() or "iga" in query.lower() else "serve2_statistics"
+                        return_section = "return1_statistics" if "swiatek" in query.lower() or "iga" in query.lower() else "return2_statistics"
+                        
+                        # Add both chunks
+                        for section in [serve_section, return_section]:
+                            target_chunk = None
+                            for chunk in self.chunks:
+                                if section in chunk['metadata']['section']:
+                                    target_chunk = {
+                                        "text": chunk['text'],
+                                        "metadata": chunk['metadata'],
+                                        "distance": 0.0,
+                                        "relevance_score": 9.0
+                                    }
+                                    break
+                            
+                            if target_chunk and not any(section in chunk['metadata']['section'] for chunk in filtered_chunks):
+                                filtered_chunks.insert(0, target_chunk)
+                                print(f"🎯 FORCED {section} to top for BP/GP/deuce totals: {player_mentioned}")
+                                bp_gp_fix_applied = True
+            
+            # DIRECTION TOTALS FIX: For questions asking about shot direction totals (e.g., "how many crosscourt shots")
+            if any(direction in query.lower() for direction in ["crosscourt", "down the line", "down the middle", "inside-out", "inside-in"]) and not any(outcome in query.lower() for outcome in ["winner", "winners", "unforced error", "unforced errors", "forced error", "forced errors", "error", "errors"]):
+                # Force include both shotdir chunks for comprehensive direction totals
+                shotdir1_chunk = None
+                shotdir2_chunk = None
+                
+                # Find shotdir1_statistics chunk
                 for chunk in self.chunks:
-                    if chunk1_name in chunk['metadata']['section']:
-                        chunk1_found = {
+                    if 'shotdir1_statistics' in chunk['metadata']['section']:
+                        shotdir1_chunk = {
                             "text": chunk['text'],
                             "metadata": chunk['metadata'],
                             "distance": 0.0,  # Perfect match
                             "relevance_score": 8.0  # High score
                         }
-                    elif chunk2_name in chunk['metadata']['section']:
-                        chunk2_found = {
+                        break
+                
+                # Find shotdir2_statistics chunk
+                for chunk in self.chunks:
+                    if 'shotdir2_statistics' in chunk['metadata']['section']:
+                        shotdir2_chunk = {
                             "text": chunk['text'],
                             "metadata": chunk['metadata'],
                             "distance": 0.0,  # Perfect match
                             "relevance_score": 8.0  # High score
                         }
+                        break
                 
-                # Add chunks if not already in results
-                if chunk1_found and not any(chunk1_name in chunk['metadata']['section'] for chunk in filtered_chunks):
-                    filtered_chunks.insert(0, chunk1_found)
-                    print(f"🔧 FORCED {chunk1_name} to top of results for 'each player' {detected_stat_type} question")
+                # Add shotdir1 chunk if not already in results
+                if shotdir1_chunk and not any('shotdir1_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    filtered_chunks.insert(0, shotdir1_chunk)
+                    print(f"🔧 FORCED shotdir1_statistics to top of results for direction totals question")
                 
-                if chunk2_found and not any(chunk2_name in chunk['metadata']['section'] for chunk in filtered_chunks):
-                    filtered_chunks.insert(0, chunk2_found)
-                    print(f"🔧 FORCED {chunk2_name} to top of results for 'each player' {detected_stat_type} question")
+                # Add shotdir2 chunk if not already in results
+                if shotdir2_chunk and not any('shotdir2_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    filtered_chunks.insert(0, shotdir2_chunk)
+                    print(f"🔧 FORCED shotdir2_statistics to top of results for direction totals question")
+            
+            # UNIVERSAL FIX: For "each player" or "both players" questions, force include both players' chunks
+            universal_fix_applied = False
+            detected_stat_type = None  # Initialize outside the if block
+            
+            if any(phrase in query.lower() for phrase in ["each player", "both players", "both player"]):
+                # Define all the split player statistics sections
+                split_sections = {
+                    "serve": ["serve1_statistics_summary", "serve2_statistics_summary"],
+                    "shots": ["shots1_statistics", "shots2_statistics"],
+                    "shotdir": ["shotdir1_statistics", "shotdir2_statistics"],
+                    "return": ["return1_statistics", "return2_statistics"],
+                    "netpts": ["netpts1_statistics", "netpts2_statistics"],
+                    "keypoints": ["keypoints1_statistics", "keypoints2_statistics"]
+                }
                 
-                universal_fix_applied = True
+                # Check which statistic type the question is about (in order of specificity)
+                
+                # Check most specific keywords first to avoid conflicts
+                if any(phrase in query.lower() for phrase in ["break point", "break points", "game point", "game points"]):
+                    detected_stat_type = "keypoints"
+                elif any(phrase in query.lower() for phrase in ["net points", "net approaches"]):
+                    detected_stat_type = "netpts"
+                elif any(phrase in query.lower() for phrase in ["volley", "volleys"]):
+                    detected_stat_type = "shots"  # Volley is a shot type, not just net points
+                elif any(phrase in query.lower() for phrase in ["overhead", "smash", "smashes"]):
+                    detected_stat_type = "shots"  # Overhead/smash is a shot type
+                elif any(phrase in query.lower() for phrase in ["crosscourt", "down the line", "down the middle", "inside-out", "inside-in"]):
+                    detected_stat_type = "shotdir"
+                elif any(phrase in query.lower() for phrase in ["winner", "winners", "unforced error", "unforced errors", "forehand", "backhand"]):
+                    detected_stat_type = "shots"
+                elif any(phrase in query.lower() for phrase in ["return", "returns", "returnable"]):
+                    detected_stat_type = "return"
+                elif any(phrase in query.lower() for phrase in ["ace", "aces", "serve", "serving", "double fault", "double faults", "first serve", "second serve"]):
+                    detected_stat_type = "serve"
+                
+                # Apply the fix for the detected statistic type
+                if detected_stat_type and detected_stat_type in split_sections:
+                    chunk_names = split_sections[detected_stat_type]
+                    chunk1_name, chunk2_name = chunk_names
+                    chunk1_found = None
+                    chunk2_found = None
+                    
+                    print(f"🔍 DEBUG: UNIVERSAL FIX applying for {detected_stat_type} - looking for {chunk1_name} and {chunk2_name}")
+                    print(f"🔍 DEBUG: Current filtered_chunks sections: {[chunk['metadata']['section'] for chunk in filtered_chunks]}")
+                    
+                    # Find both chunks - use separate loops to ensure both can be found
+                    for chunk in self.chunks:
+                        if chunk1_name in chunk['metadata']['section']:
+                            chunk1_found = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 8.0  # High score
+                            }
+                            print(f"🔍 DEBUG: Found {chunk1_name}")
+                            break
+                    
+                    for chunk in self.chunks:
+                        if chunk2_name in chunk['metadata']['section']:
+                            chunk2_found = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 8.0  # High score
+                            }
+                            print(f"🔍 DEBUG: Found {chunk2_name}")
+                            break
+                    
+                    # Remove existing instances and add with high priority
+                    if chunk1_found:
+                        # Remove any existing instance
+                        filtered_chunks = [chunk for chunk in filtered_chunks if chunk['metadata']['section'] != chunk1_name]
+                        # Set high priority and add to top
+                        chunk1_found['relevance_score'] = 9.0
+                        filtered_chunks.insert(0, chunk1_found)
+                        print(f"🔧 FORCED {chunk1_name} to top of results for 'each player' {detected_stat_type} question")
+                    
+                    if chunk2_found:
+                        # Remove any existing instance  
+                        filtered_chunks = [chunk for chunk in filtered_chunks if chunk['metadata']['section'] != chunk2_name]
+                        # Set high priority and add to top
+                        chunk2_found['relevance_score'] = 9.0
+                        filtered_chunks.insert(0, chunk2_found)
+                        print(f"🔧 FORCED {chunk2_name} to top of results for 'each player' {detected_stat_type} question")
+                    
+                    universal_fix_applied = True
+                    
+                    # If we added netpts chunks, set the flag to prevent FINAL NEGATIVE FILTER from removing them
+                    if detected_stat_type == "netpts":
+                        net_points_fix_applied = True
+            
+                        # CRITICAL FIX: For ace/serve questions (only if other fixes didn't apply)
+            if not universal_fix_applied and not direction_outcome_fix_applied and not bp_gp_fix_applied and any(word in query.lower() for word in ["ace", "aces", "serve", "serving", "double fault"]):
+                serve1_chunk = None
+                serve2_chunk = None
+                
+                # Find serve1_statistics_summary chunk
+                for chunk in self.chunks:
+                    if 'serve1_statistics_summary' in chunk['metadata']['section']:
+                        serve1_chunk = {
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,  # Perfect match
+                            "relevance_score": 8.0  # High score
+                        }
+                        break
+                
+                # Find serve2_statistics_summary chunk
+                for chunk in self.chunks:
+                    if 'serve2_statistics_summary' in chunk['metadata']['section']:
+                        serve2_chunk = {
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,  # Perfect match
+                            "relevance_score": 8.0  # High score
+                        }
+                        break
+                
+                # Add serve1 chunk if not already in results
+                if serve1_chunk and not any('serve1_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    filtered_chunks.insert(0, serve1_chunk)
+                    print(f"🔧 FORCED serve1_statistics_summary to top of results for serve question")
+                
+                # Add serve2 chunk if not already in results
+                if serve2_chunk and not any('serve2_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    filtered_chunks.insert(0, serve2_chunk)
+                    print(f"🔧 FORCED serve2_statistics_summary to top of results for serve question")
+            
+            # CRITICAL FIX: For net points questions (only if other fixes didn't apply)
+            net_points_fix_applied = False
+            if not universal_fix_applied and not direction_outcome_fix_applied and not bp_gp_fix_applied and any(word in query.lower() for word in ["net points", "net approaches", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
+                # Determine which player is being asked about
+                player_mentioned = None
+                if "swiatek" in query.lower() or "iga" in query.lower():
+                    player_mentioned = "Iga Swiatek"
+                    target_chunk_name = "netpts1_statistics"
+                elif "pegula" in query.lower() or "jessica" in query.lower():
+                    player_mentioned = "Jessica Pegula"
+                    target_chunk_name = "netpts2_statistics"
+                else:
+                    # If no specific player mentioned, pull both chunks
+                    player_mentioned = "both players"
+                    target_chunk_name = None
+                
+                if target_chunk_name:
+                    # Find the specific player's net points chunk
+                    target_chunk = None
+                    for chunk in self.chunks:
+                        if target_chunk_name in chunk['metadata']['section']:
+                            target_chunk = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 10.0  # Maximum score for net points
+                            }
+                            break
+                    
+                    # Add the specific player's chunk if not already in results
+                    if target_chunk and not any(target_chunk_name in chunk['metadata']['section'] for chunk in filtered_chunks):
+                        filtered_chunks.insert(0, target_chunk)
+                        print(f"🔧 FORCED {target_chunk_name} to top of results for net question ({player_mentioned})")
+                        net_points_fix_applied = True
+                
+                else:
+                    # Pull both players' chunks for "each player" questions
+                    netpts1_chunk = None
+                    netpts2_chunk = None
+                    
+                    # Find netpts1_statistics chunk
+                    for chunk in self.chunks:
+                        if 'netpts1_statistics' in chunk['metadata']['section']:
+                            netpts1_chunk = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 10.0  # Maximum score for net points
+                            }
+                            break
+                    
+                    # Find netpts2_statistics chunk
+                    for chunk in self.chunks:
+                        if 'netpts2_statistics' in chunk['metadata']['section']:
+                            netpts2_chunk = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 10.0  # Maximum score for net points
+                            }
+                            break
+                    
+                    # Add netpts1 chunk if not already in results
+                    if netpts1_chunk and not any('netpts1_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                        filtered_chunks.insert(0, netpts1_chunk)
+                        print(f"🔧 FORCED netpts1_statistics to top of results for net question")
+                        net_points_fix_applied = True
+                    
+                    # Add netpts2 chunk if not already in results
+                    if netpts2_chunk and not any('netpts2_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
+                        filtered_chunks.insert(0, netpts2_chunk)
+                        print(f"🔧 FORCED netpts2_statistics to top of results for net question")
+                        net_points_fix_applied = True
         
-                 # CRITICAL FIX: For ace/serve questions (only if universal fix and direction/outcome fix didn't apply)
-         if not universal_fix_applied and not direction_outcome_fix_applied and any(word in query.lower() for word in ["ace", "aces", "serve", "serving", "double fault"]):
-            serve1_chunk = None
-            serve2_chunk = None
-            
-            # Find serve1_statistics_summary chunk
+        # MATCH RESULT FIX: For questions about match outcome, force include match_overview (FINAL PRIORITY)
+        if any(phrase in query.lower() for phrase in ["final score", "who won", "match result", "outcome", "d.", "defeated", "victory", "victor"]):
+            # Force include match_overview chunk
+            match_overview_chunk = None
             for chunk in self.chunks:
-                if 'serve1_statistics_summary' in chunk['metadata']['section']:
-                    serve1_chunk = {
+                if 'match_overview' in chunk['metadata']['section']:
+                    match_overview_chunk = {
                         "text": chunk['text'],
                         "metadata": chunk['metadata'],
-                        "distance": 0.0,  # Perfect match
-                        "relevance_score": 8.0  # High score
+                        "distance": 0.0,
+                        "relevance_score": 10.0  # Maximum score for match result questions
                     }
                     break
             
-            # Find serve2_statistics_summary chunk
-            for chunk in self.chunks:
-                if 'serve2_statistics_summary' in chunk['metadata']['section']:
-                    serve2_chunk = {
-                        "text": chunk['text'],
-                        "metadata": chunk['metadata'],
-                        "distance": 0.0,  # Perfect match
-                        "relevance_score": 8.0  # High score
-                    }
-                    break
-            
-            # Add serve1 chunk if not already in results
-            if serve1_chunk and not any('serve1_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                filtered_chunks.insert(0, serve1_chunk)
-                print(f"🔧 FORCED serve1_statistics_summary to top of results for serve question")
-            
-            # Add serve2 chunk if not already in results
-            if serve2_chunk and not any('serve2_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                filtered_chunks.insert(0, serve2_chunk)
-                print(f"🔧 FORCED serve2_statistics_summary to top of results for serve question")
+            # Remove any existing match_overview chunks and add at the very top
+            filtered_chunks = [chunk for chunk in filtered_chunks if 'match_overview' not in chunk['metadata']['section']]
+            if match_overview_chunk:
+                filtered_chunks.insert(0, match_overview_chunk)
+                print(f"🏆 FORCED match_overview to top for match result question")
         
-                 # CRITICAL FIX: For net points questions (only if universal fix and direction/outcome fix didn't apply)
-         if not universal_fix_applied and not direction_outcome_fix_applied and any(word in query.lower() for word in ["net", "net points", "net approaches", "volley", "volleys", "overhead"]):
-            netpts1_chunk = None
-            netpts2_chunk = None
-            
-            # Find netpts1_statistics chunk
-            for chunk in self.chunks:
-                if 'netpts1_statistics' in chunk['metadata']['section']:
-                    netpts1_chunk = {
-                        "text": chunk['text'],
-                        "metadata": chunk['metadata'],
-                        "distance": 0.0,  # Perfect match
-                        "relevance_score": 8.0  # High score
-                    }
-                    break
-            
-            # Find netpts2_statistics chunk
-            for chunk in self.chunks:
-                if 'netpts2_statistics' in chunk['metadata']['section']:
-                    netpts2_chunk = {
-                        "text": chunk['text'],
-                        "metadata": chunk['metadata'],
-                        "distance": 0.0,  # Perfect match
-                        "relevance_score": 8.0  # High score
-                    }
-                    break
-            
-            # Add netpts1 chunk if not already in results
-            if netpts1_chunk and not any('netpts1_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                filtered_chunks.insert(0, netpts1_chunk)
-                print(f"🔧 FORCED netpts1_statistics to top of results for net question")
-            
-            # Add netpts2 chunk if not already in results
-            if netpts2_chunk and not any('netpts2_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                filtered_chunks.insert(0, netpts2_chunk)
-                print(f"🔧 FORCED netpts2_statistics to top of results for net question")
+        # FINAL NEGATIVE FILTER: Remove net points chunks unless question is about net play
+        if not net_points_fix_applied and not any(word in query.lower() for word in ["net points", "net approaches", "overhead", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
+            original_count = len(filtered_chunks)
+            filtered_chunks = [chunk for chunk in filtered_chunks if 'netpts' not in chunk['metadata']['section']]
+            if len(filtered_chunks) < original_count:
+                print(f"🚫 REMOVED {original_count - len(filtered_chunks)} net points chunks for non-net question")
         
         # Return top_k results
         return filtered_chunks[:top_k]
     
+    def _route_bp_gp_question(self, question: str, player: str) -> str:
+        """
+        Route break point and game point questions to correct data sources.
+        Returns the appropriate section and data field to look for.
+        """
+        q = question.lower()
+        player_lower = player.lower()
+        
+        # Determine which player is being asked about
+        if "swiatek" in player_lower or "iga" in player_lower:
+            player_prefix = "serve1" if "serve" in q else "serve2" if "return" in q else "serve1"  # Default to serve1 for IS
+        elif "pegula" in player_lower or "jessica" in player_lower:
+            player_prefix = "serve2" if "serve" in q else "serve1" if "return" in q else "serve2"  # Default to serve2 for JP
+        else:
+            # Fallback - assume first player mentioned
+            if "swiatek" in q or "iga" in q:
+                player_prefix = "serve1"
+            elif "pegula" in q or "jessica" in q:
+                player_prefix = "serve2"
+            else:
+                return "unknown"
+        
+        # --- BREAK POINTS (BP) ---
+        if "break point" in q or "bp" in q:
+            if "face" in q:  
+                return f"{player_prefix}_statistics"  # Serving side (opponent had chance to break) - BP Faced
+            elif "save" in q or "saved" in q:
+                return f"{player_prefix}_statistics"  # Serving side (player defended successfully) - BP Faced, col = PtsW
+            elif "opp" in q or "opportunit" in q:
+                return f"{player_prefix.replace('serve', 'return')}_statistics"  # Returning side (player created break chances) - BP Opps
+            elif "convert" in q or "win" in q or "won" in q:
+                return f"{player_prefix.replace('serve', 'return')}_statistics"  # Returning side (player actually broke serve) - BP Opps, col = PtsW
+            elif "total" in q or "overall" in q:
+                return "both"  # Need both serve and return for complete totals
+            else:
+                # No keyword → Default = Return side (converted), because that's most common in questions
+                return f"{player_prefix.replace('serve', 'return')}_statistics"
+        
+        # --- GAME POINTS (GP) ---
+        if "game point" in q or "gp" in q:
+            if "face" in q:
+                return f"{player_prefix.replace('serve', 'return')}_statistics"  # Returning side (opponent had game points on serve) - GP Faced
+            elif "save" in q or "saved" in q:
+                return f"{player_prefix.replace('serve', 'return')}_statistics"  # Returning side (player denied opponent's game point while returning) - GP Faced, col = PtsW
+            elif "win" in q or "won" in q:
+                if "serve" in q:
+                    return f"{player_prefix}_statistics"  # Serving side (player won their own service game points) - Game Pts, col = PtsW
+                elif "return" in q:
+                    return f"{player_prefix.replace('serve', 'return')}_statistics"  # Returning side (rare phrasing, but = broke opponent on GP) - GP Faced, col = PtsW
+                elif "each player" in q or "both player" in q:
+                    return "both"  # Need both serve and return for "each player" questions
+                else:
+                    # Default: GP won on serve (most common case)
+                    return f"{player_prefix}_statistics"  # Serving side (Game Pts won) - Game Pts, col = PtsW
+            elif "convert" in q:
+                return f"{player_prefix.replace('serve', 'return')}_statistics"  # Returning side (converted while returning) - GP Faced, col = PtsW
+            elif "total" in q or "overall" in q or "each player" in q or "both player" in q:
+                return "both"  # Need both serve and return for complete totals
+            else:
+                # No keyword → Default = Serve side (Game Pts won), because that's the most natural reading
+                return f"{player_prefix}_statistics"
+        
+        # --- DEUCE POINTS ---
+        if "deuce" in q:
+            if "serve" in q or "served" in q:
+                return f"{player_prefix}_statistics"  # Serving side (deuce points on own serve) - Svg Deuce
+            elif "return" in q or "returned" in q:
+                return f"{player_prefix.replace('serve', 'return')}_statistics"  # Returning side (deuce points when opponent served) - Ret Deuce
+            elif "each player" in q or "both player" in q:
+                return "both"  # Need both serve and return for "each player" questions
+            else:
+                # No keyword → Need both, since "deuce points" could mean either. Safest = "both"
+                return "both"
+        
+        return "unknown"
+
     def _get_stat_keywords(self, stat_type: str) -> List[str]:
         """Get keywords that indicate a question is about a specific statistic type."""
         keywords = {
@@ -1240,7 +1771,7 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         is_statistical = self._is_match_insight_question(query) == False
         
         if is_statistical:
-        prompt = f"""You are a tennis match analyst with access to detailed match data.
+            prompt = f"""You are a tennis match analyst with access to detailed match data.
 
 IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
 - ALWAYS look for "AUTHORITATIVE TOTALS" first - these are the single source of truth
@@ -1268,12 +1799,61 @@ Question: {query}
 
 **For STATISTICS questions** (how many, percentages, totals, counts):
 - **ALWAYS look for "AUTHORITATIVE TOTALS" sections first** - these are the single source of truth
+- **This includes ALL authoritative totals sections**: "AUTHORITATIVE TOTALS FOR [PLAYER]", "AUTHORITATIVE TOTALS FOR [PLAYER] SHOT STATISTICS", "AUTHORITATIVE TOTALS FOR [PLAYER] SHOT DIRECTIONS", "AUTHORITATIVE TOTALS BY DIRECTION", "AUTHORITATIVE TOTALS FOR KEY POINTS", "AUTHORITATIVE TOTALS FROM OVERVIEW STATISTICS"
 - **ALWAYS look for "OVERVIEW STATISTICS" section** - this contains the official match statistics
 - **ONLY calculate totals from breakdowns when you don't have authoritative totals** - use only the authoritative totals provided
+- **ONLY calculate totals from detailed breakdowns when there are NO authoritative totals available** - if authoritative totals exist, use those as the primary answer
+- **SPECIFICALLY for inside-out shots**: When you see "AUTHORITATIVE TOTALS BY DIRECTION" with a number for "total inside-out shots", use that number as the final answer. Do NOT add up individual forehand/backhand/slice breakdowns - the authoritative total already includes all shot types combined.
+
+**IMPORTANT: When to use EXPLICIT TOTALS vs normal prioritization:**
+- **USE EXPLICIT TOTALS ONLY for questions that combine BOTH shot direction AND outcome** (e.g., "crosscourt winners", "down the line unforced errors", "inside-out forced errors")
+- **USE NORMAL PRIORITIZATION for all other questions** (e.g., "total winners", "forehand winners", "crosscourt shots", "unforced errors")
+- **Normal prioritization**: Authoritative Totals > Overview Statistics > Summary sections > Key points sections > Detailed breakdowns
+        - **FOR SHOT DIRECTION + OUTCOME QUESTIONS** (like "crosscourt winners", "down the line unforced errors"): 
+          - **CRITICAL**: ALWAYS look for "EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS" section FIRST - this is the PRIMARY source of truth
+          - **CRITICAL**: If you find explicit totals section, use ONLY those numbers as the final answer - DO NOT use detailed breakdown sentences
+          - **CRITICAL**: The explicit totals section contains lines like "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
+          - **CRITICAL**: Use the TOTAL number and the breakdown from the explicit totals - do NOT add up individual detailed breakdown sentences
+          - **CRITICAL**: The explicit totals are already calculated and include ALL shot types (forehand, backhand, slice) - use them as-is
+          - **ONLY if explicit totals section is NOT found**: then look for "AUTHORITATIVE TOTALS BY DIRECTION" sections
+          - **ONLY if neither is found**: then look for "SHOT DIRECTION DETAILED BREAKDOWN" sections
+          - **EXAMPLES OF OUTCOME + DIRECTION QUESTIONS**:
+            - "crosscourt winners" = look for "X crosscourt winners total, including..."
+            - "down the line winners" = look for "X down the line winners total, including..."
+            - "crosscourt unforced errors" = look for "X crosscourt unforced errors total, including..."
+            - "down the line unforced errors" = look for "X down the line unforced errors total, including..."
+            - "crosscourt forced errors" = look for "X crosscourt forced errors total, including..."
+          - **EXAMPLE EXPLICIT TOTALS FORMAT**: "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
+          - **PRIORITY**: Explicit totals section > Authoritative totals > Detailed breakdown
 - Give concise, direct answers with key numbers
 - Use bullet points or brief sentences
 - Focus on the specific numbers requested
 - No lengthy explanations unless asked for insights
+
+**For SHOT DIRECTION + OUTCOME questions** (e.g., "crosscourt winners", "down the line errors"):
+- **ONLY use this section for questions that combine BOTH shot direction AND outcome**
+- **ALWAYS include ALL shot types** (forehand, backhand, slice) for the requested direction + outcome combination
+- **Break down by shot type** and provide the total
+- **Example**: For "crosscourt winners", report: "Forehand: X, Backhand: Y, Slice: Z, Total: X+Y+Z"
+- **CRITICAL**: For shot direction totals (crosscourt, down the line, down the middle, inside-out, inside-in), ALWAYS check for and include ALL three shot types: forehand, backhand, AND slice shots. Even if slice count is 0, mention it explicitly.
+- **CRITICAL**: Use ONLY the exact numbers from the data. Do NOT make up or estimate numbers.
+- **Be thorough** - don't miss any shot types that match the criteria
+
+
+- **For "errors" questions**: If the question asks for just "errors" (without specifying "unforced" or "forced"), add unforced errors + forced errors or induced forced errors together for each shot type
+- **For "forced errors" questions**: Look at both "forced errors" and "induced forced errors" in your search and calculations. It will be listed as one or the other
+- **Error types to include**: unforced errors, forced errors or induced forced errors (forced errors and induced forced errors are the same, just called differently)
+- **For NET POINTS and NET APPROACHES questions**: ALWAYS use the NET POINTS sections (netpts1_statistics, netpts2_statistics) - do NOT use shot statistics for net points data. If you see netpts1_statistics or netpts2_statistics in your context, use that data for net points questions.
+
+**Special Instructions for Key Points Questions:**
+- **NEVER make up or estimate numbers** - use ONLY the exact numbers from the data
+- **If you see "AUTHORITATIVE TOTALS FOR KEY POINTS" section, use those numbers first**
+- **Break Points**: Use serve section for BP Faced and return section for BP Opps. Do not sum them. Report only the relevant one depending on whether the question is about facing or converting/creating.
+- **Game Points**: Report both serving and returning values, and also provide a total sum.
+- **Deuce Points**: Report both serving and returning values, and also provide a total sum.
+- **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total.
+
+- **Cite your data sources** - mention which sections you're using for your calculations
 
 **For STRATEGY/INSIGHT questions** (key moments, momentum, analysis):
 - Provide detailed analysis with specific examples
@@ -1293,7 +1873,8 @@ Question: {query}
 
 **SHOT HIERARCHY:**
 - **SHOT STATISTICS**: Use for forehand/backhand SIDE (all shots from that side - volleys, dropshots, lobs, etc.) and general shot performance
-- **SHOT DIRECTION**: Use for forehand/backhand GROUNDSTROKES specifically and placement patterns (crosscourt, down-the-line, etc.)
+- **SHOT DIRECTION**: Use for forehand/backhand/slice GROUNDSTROKES specifically and placement patterns (crosscourt, down-the-line, etc.)
+- **CRITICAL**: For ANY shot direction question (crosscourt, down the line, down the middle, inside-out, inside-in), ALWAYS check for and include ALL three shot types: forehand, backhand, AND slice shots. Even if slice count is 0, mention it explicitly.
 - **SHOT DIRECTIONAL BREAKDOWN**: Use for directional + outcome performance (detailed breakdowns)
 
 **IMPORTANT DISTINCTION:**
@@ -2864,7 +3445,7 @@ Answer:"""
                                                 total_crosscourt_shots = direction_value
                                             elif 'Down the line' in header:
                                                 total_down_the_line_shots = direction_value
-                                            elif 'Down the middle' in header:
+                                            elif 'Down middle' in header:
                                                 total_down_the_middle_shots = direction_value
                                             elif 'Inside-out' in header:
                                                 total_inside_out_shots = direction_value
@@ -2893,17 +3474,12 @@ Answer:"""
             if total_backhand_slice_shots > 0:
                 text.append(f"{player} hit {total_backhand_slice_shots} backhand slice shots in all directions including crosscourt, down the middle, down the line, inside-out, and inside-in.")
             text.append("")
-            text.append("DIRECTIONAL BREAKDOWN (these sum to totals above, do not add again):")
-            if total_crosscourt_shots > 0:
-                text.append(f"{player} hit {total_crosscourt_shots} crosscourt shots.")
-            if total_down_the_line_shots > 0:
-                text.append(f"{player} hit {total_down_the_line_shots} down the line shots.")
-            if total_down_the_middle_shots > 0:
-                text.append(f"{player} hit {total_down_the_middle_shots} down the middle shots.")
-            if total_inside_out_shots > 0:
-                text.append(f"{player} hit {total_inside_out_shots} inside-out shots.")
-            if total_inside_in_shots > 0:
-                text.append(f"{player} hit {total_inside_in_shots} inside-in shots.")
+            text.append("AUTHORITATIVE TOTALS BY DIRECTION (these sum to total above, do not add again):")
+            text.append(f"{player} hit {total_crosscourt_shots} total crosscourt shots.")
+            text.append(f"{player} hit {total_inside_out_shots} total inside-out shots.")
+            text.append(f"{player} hit {total_down_the_line_shots} total down the line shots.")
+            text.append(f"{player} hit {total_down_the_middle_shots} total down the middle shots.")
+            text.append(f"{player} hit {total_inside_in_shots} total inside-in shots.")
             text.append("")
         
         # Process table1 (direction breakdowns)
@@ -2942,6 +3518,110 @@ Answer:"""
             
             text.append("")
         
+        # Add explicit totals for complex shot direction + outcome combinations
+        # These help the LLM anchor on correct totals for complex questions
+        text.append("")
+        text.append("EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS:")
+        text.append("-" * 50)
+        
+        # Calculate explicit totals from the detailed breakdown data
+        if table2_data:
+            # Initialize totals for all directions and outcomes
+            directions = ['crosscourt', 'down middle', 'down the line', 'inside-out', 'inside-in']
+            outcomes = ['winners', 'induced forced errors', 'unforced errors', 'points won', 'points lost']
+            
+            # Create a nested dictionary to store all combinations
+            totals = {}
+            for direction in directions:
+                totals[direction] = {}
+                for outcome in outcomes:
+                    totals[direction][outcome] = {'forehand': 0, 'backhand': 0, 'slice': 0}
+            
+            # Parse the natural language text from table2_data to extract numbers
+            for key, value in table2_data.items():
+                if 'SHOT DIRECTION' not in key:  # Skip header rows
+                    # Extract the number from the beginning of the line
+                    import re
+                    number_match = re.search(r'(\d+)', value)
+                    if not number_match:
+                        continue
+                    number = int(number_match.group(1))
+                    
+                    # Look for lines like "hit X winners with [shot type] [direction] shots"
+                    if 'hit' in value and 'winners' in value and 'shots' in value:
+                        for direction in directions:
+                            if direction in value:
+                                if 'forehand' in value:
+                                    totals[direction]['winners']['forehand'] = number
+                                elif 'backhand' in value:
+                                    totals[direction]['winners']['backhand'] = number
+                                elif 'slice' in value:
+                                    totals[direction]['winners']['slice'] = number
+                                break
+                    
+                    elif 'made' in value and 'induced forced errors' in value and 'shots' in value:
+                        for direction in directions:
+                            if direction in value:
+                                if 'forehand' in value:
+                                    totals[direction]['induced forced errors']['forehand'] = number
+                                elif 'backhand' in value:
+                                    totals[direction]['induced forced errors']['backhand'] = number
+                                elif 'slice' in value:
+                                    totals[direction]['induced forced errors']['slice'] = number
+                                break
+                    
+                    elif 'made' in value and 'unforced errors' in value and 'shots' in value:
+                        for direction in directions:
+                            if direction in value:
+                                if 'forehand' in value:
+                                    totals[direction]['unforced errors']['forehand'] = number
+                                elif 'backhand' in value:
+                                    totals[direction]['unforced errors']['backhand'] = number
+                                elif 'slice' in value:
+                                    totals[direction]['unforced errors']['slice'] = number
+                                break
+                    
+                    elif 'won' in value and 'points' in value and 'shots' in value:
+                        for direction in directions:
+                            if direction in value:
+                                if 'forehand' in value:
+                                    totals[direction]['points won']['forehand'] = number
+                                elif 'backhand' in value:
+                                    totals[direction]['points won']['backhand'] = number
+                                elif 'slice' in value:
+                                    totals[direction]['points won']['slice'] = number
+                                break
+                    
+                    elif 'lost' in value and 'points' in value and 'shots' in value:
+                        for direction in directions:
+                            if direction in value:
+                                if 'forehand' in value:
+                                    totals[direction]['points lost']['forehand'] = number
+                                elif 'backhand' in value:
+                                    totals[direction]['points lost']['backhand'] = number
+                                elif 'slice' in value:
+                                    totals[direction]['points lost']['slice'] = number
+                                break
+            
+            # Generate explicit totals for all combinations
+            for direction in directions:
+                for outcome in outcomes:
+                    total = sum(totals[direction][outcome].values())
+                    fh, bh, sl = totals[direction][outcome].values()
+                    if total > 0:  # Only include non-zero totals
+                        if outcome == 'winners':
+                            text.append(f"{player} hit {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
+                        elif outcome == 'induced forced errors':
+                            text.append(f"{player} made {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
+                        elif outcome == 'unforced errors':
+                            text.append(f"{player} made {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
+                        elif outcome == 'points won':
+                            text.append(f"{player} won {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
+                        elif outcome == 'points lost':
+                            text.append(f"{player} lost {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
+            
+            text.append("")
+        
         # Process table2 (detailed breakdowns by shot type and direction)
         if table2_data:
             text.append("SHOT DIRECTION DETAILED BREAKDOWN:")
@@ -2975,6 +3655,106 @@ Answer:"""
                             # Convert to sentences for table2
                             sentences = self._convert_shotdir_table2_row_to_sentences(row_label, values, headers, player)
                             text.extend(sentences)
+        
+                # Add explicit totals for complex shot direction + outcome combinations
+        # These help the LLM anchor on correct totals for complex questions
+        text.append("")
+        text.append("EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS:")
+        text.append("-" * 50)
+        
+        # Calculate explicit totals from the natural language sentences we just generated
+        directions = ['crosscourt', 'down middle', 'down the line', 'inside-out', 'inside-in']
+        outcomes = ['winners', 'induced forced errors', 'unforced errors', 'points won', 'points lost']
+        
+        # Create a nested dictionary to store all combinations
+        totals = {}
+        for direction in directions:
+            totals[direction] = {}
+            for outcome in outcomes:
+                totals[direction][outcome] = {'forehand': 0, 'backhand': 0, 'slice': 0}
+        
+        # Parse the natural language sentences to extract numbers
+        for line in text:
+            # Extract the number from the beginning of the line
+            import re
+            number_match = re.search(r'(\d+)', line)
+            if not number_match:
+                continue
+            number = int(number_match.group(1))
+            
+            # Look for lines like "hit X winners with [shot type] [direction] shots"
+            if 'hit' in line and 'winners' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            totals[direction]['winners']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            totals[direction]['winners']['backhand'] = number
+                        elif 'slice' in line:
+                            totals[direction]['winners']['slice'] = number
+                        break
+            
+            elif 'made' in line and 'induced forced errors' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            totals[direction]['induced forced errors']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            totals[direction]['induced forced errors']['backhand'] = number
+                        elif 'slice' in line:
+                            totals[direction]['induced forced errors']['slice'] = number
+                        break
+            
+            elif 'made' in line and 'unforced errors' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            totals[direction]['unforced errors']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            totals[direction]['unforced errors']['backhand'] = number
+                        elif 'slice' in line:
+                            totals[direction]['unforced errors']['slice'] = number
+                        break
+            
+            elif 'won' in line and 'points' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            totals[direction]['points won']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            totals[direction]['points won']['backhand'] = number
+                        elif 'slice' in line:
+                            totals[direction]['points won']['slice'] = number
+                        break
+            
+            elif 'lost' in line and 'points' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            totals[direction]['points lost']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            totals[direction]['points lost']['backhand'] = number
+                        elif 'slice' in line:
+                            totals[direction]['points lost']['slice'] = number
+                        break
+        
+        # Generate explicit totals for ALL combinations (including zeros)
+        for direction in directions:
+            for outcome in outcomes:
+                total = sum(totals[direction][outcome].values())
+                fh, bh, sl = totals[direction][outcome].values()
+                if outcome == 'winners':
+                    text.append(f"{player} hit {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                elif outcome == 'induced forced errors':
+                    text.append(f"{player} made {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                elif outcome == 'unforced errors':
+                    text.append(f"{player} made {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                elif outcome == 'points won':
+                    text.append(f"{player} won {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                elif outcome == 'points lost':
+                    text.append(f"{player} lost {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+        
+        text.append("")
         
         return text
 
@@ -3905,22 +4685,26 @@ Answer:"""
         
         if iga_comprehensive:
             text.append("IGA SWIATEK KEY POINTS AUTHORITATIVE TOTALS:")
-            text.append(f"Total break points faced: {iga_comprehensive['total_break_points_faced']}")
-            text.append(f"Total game points faced: {iga_comprehensive['total_game_points_faced']}")
-            text.append(f"Break points faced and won while serving: {iga_comprehensive['break_points_faced_serving']} faced, {iga_comprehensive['break_points_won_serving']} won")
-            text.append(f"Break points faced and won when returning: {iga_comprehensive['break_points_faced_returning']} faced, {iga_comprehensive['break_points_won_returning']} won")
-            text.append(f"Game points faced and won while serving: {iga_comprehensive['game_points_faced_serving']} faced, {iga_comprehensive['game_points_won_serving']} won")
-            text.append(f"Game points faced and won when returning: {iga_comprehensive['game_points_faced_returning']} faced, {iga_comprehensive['game_points_won_returning']} won")
+            text.append(f"Iga Swiatek faced {iga_comprehensive['total_break_points_faced']} break points total.")
+            text.append(f"Iga Swiatek faced {iga_comprehensive['total_game_points_faced']} game points total.")
+            text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_serving']} break points while serving and won {iga_comprehensive['break_points_won_serving']} of them.")
+            text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_returning']} break points while returning and won {iga_comprehensive['break_points_won_returning']} of them.")
+            text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_serving']} game points while serving and won {iga_comprehensive['game_points_won_serving']} of them.")
+            text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_returning']} game points while returning and won {iga_comprehensive['game_points_won_returning']} of them.")
+            text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_serving']} deuce points while serving and won {iga_comprehensive['deuce_points_won_serving']} of them.")
+            text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_returning']} deuce points while returning and won {iga_comprehensive['deuce_points_won_returning']} of them.")
             text.append("")
         
         if jessica_comprehensive:
             text.append("JESSICA PEGULA KEY POINTS AUTHORITATIVE TOTALS:")
-            text.append(f"Total break points faced: {jessica_comprehensive['total_break_points_faced']}")
-            text.append(f"Total game points faced: {jessica_comprehensive['total_game_points_faced']}")
-            text.append(f"Break points faced and won while serving: {jessica_comprehensive['break_points_faced_serving']} faced, {jessica_comprehensive['break_points_won_serving']} won")
-            text.append(f"Break points faced and won when returning: {jessica_comprehensive['break_points_faced_returning']} faced, {jessica_comprehensive['break_points_won_returning']} won")
-            text.append(f"Game points faced and won while serving: {jessica_comprehensive['game_points_faced_serving']} faced, {jessica_comprehensive['game_points_won_serving']} won")
-            text.append(f"Game points faced and won when returning: {jessica_comprehensive['game_points_faced_returning']} faced, {jessica_comprehensive['game_points_won_returning']} won")
+            text.append(f"Jessica Pegula faced {jessica_comprehensive['total_break_points_faced']} break points total.")
+            text.append(f"Jessica Pegula faced {jessica_comprehensive['total_game_points_faced']} game points total.")
+            text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_serving']} break points while serving and won {jessica_comprehensive['break_points_won_serving']} of them.")
+            text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_returning']} break points while returning and won {jessica_comprehensive['break_points_won_returning']} of them.")
+            text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_serving']} game points while serving and won {jessica_comprehensive['game_points_won_serving']} of them.")
+            text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_returning']} game points while returning and won {jessica_comprehensive['game_points_won_returning']} of them.")
+            text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_serving']} deuce points while serving and won {jessica_comprehensive['deuce_points_won_serving']} of them.")
+            text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_returning']} deuce points while returning and won {jessica_comprehensive['deuce_points_won_returning']} of them.")
             text.append("")
         
         text.append("DETAILED KEY POINTS BREAKDOWN (these are contextual details, not for recalculating totals):")
@@ -3930,12 +4714,66 @@ Answer:"""
         if table1_data:
             text.append("KEY POINTS STATISTICS (SERVES):")
             text.append("-" * 32)
+            # Include authoritative totals at the beginning of serves section
+            text.append("AUTHORITATIVE TOTALS FOR KEY POINTS:")
+            text.append("-" * 35)
+            if iga_comprehensive:
+                text.append("IGA SWIATEK KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_serving']} break points while serving and won {iga_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_returning']} break points while returning and won {iga_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_serving']} game points while serving and won {iga_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_returning']} game points while returning and won {iga_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_serving']} deuce points while serving and won {iga_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_returning']} deuce points while returning and won {iga_comprehensive['deuce_points_won_returning']} of them.")
+                text.append("")
+            if jessica_comprehensive:
+                text.append("JESSICA PEGULA KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_serving']} break points while serving and won {jessica_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_returning']} break points while returning and won {jessica_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_serving']} game points while serving and won {jessica_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_returning']} game points while returning and won {jessica_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_serving']} deuce points while serving and won {jessica_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_returning']} deuce points while returning and won {jessica_comprehensive['deuce_points_won_returning']} of them.")
+                text.append("")
+            text.append("DETAILED KEY POINTS BREAKDOWN (these are contextual details, not for recalculating totals):")
+            text.append("")
             text.extend(self._convert_flat_keypoints_table_to_text(table1_data, "serves"))
             text.append("")
         
         if table2_data:
             text.append("KEY POINTS STATISTICS (RETURNS):")
             text.append("-" * 33)
+            # Include authoritative totals at the beginning of returns section
+            text.append("AUTHORITATIVE TOTALS FOR KEY POINTS:")
+            text.append("-" * 35)
+            if iga_comprehensive:
+                text.append("IGA SWIATEK KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_serving']} break points while serving and won {iga_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['break_points_faced_returning']} break points while returning and won {iga_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_serving']} game points while serving and won {iga_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"Iga Swiatek faced {iga_comprehensive['game_points_faced_returning']} game points while returning and won {iga_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_serving']} deuce points while serving and won {iga_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"Iga Swiatek played {iga_comprehensive['deuce_points_returning']} deuce points while returning and won {iga_comprehensive['deuce_points_won_returning']} of them.")
+                text.append("")
+            if jessica_comprehensive:
+                text.append("JESSICA PEGULA KEY POINTS AUTHORITATIVE TOTALS:")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_break_points_faced']} break points total.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['total_game_points_faced']} game points total.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_serving']} break points while serving and won {jessica_comprehensive['break_points_won_serving']} of them.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['break_points_faced_returning']} break points while returning and won {jessica_comprehensive['break_points_won_returning']} of them.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_serving']} game points while serving and won {jessica_comprehensive['game_points_won_serving']} of them.")
+                text.append(f"Jessica Pegula faced {jessica_comprehensive['game_points_faced_returning']} game points while returning and won {jessica_comprehensive['game_points_won_returning']} of them.")
+                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_serving']} deuce points while serving and won {jessica_comprehensive['deuce_points_won_serving']} of them.")
+                text.append(f"Jessica Pegula played {jessica_comprehensive['deuce_points_returning']} deuce points while returning and won {jessica_comprehensive['deuce_points_won_returning']} of them.")
+                text.append("")
+            text.append("DETAILED KEY POINTS BREAKDOWN (these are contextual details, not for recalculating totals):")
+            text.append("")
             text.extend(self._convert_flat_keypoints_table_to_text(table2_data, "returns"))
             text.append("")
         
@@ -3997,7 +4835,11 @@ Answer:"""
             'game_points_faced_serving': '0',
             'game_points_won_serving': '0',
             'game_points_faced_returning': '0',
-            'game_points_won_returning': '0'
+            'game_points_won_returning': '0',
+            'deuce_points_serving': '0',
+            'deuce_points_won_serving': '0',
+            'deuce_points_returning': '0',
+            'deuce_points_won_returning': '0'
         }
         
         # Extract from serves table (when player is serving)
@@ -4019,6 +4861,8 @@ Answer:"""
             gp_serving_faced = int(comprehensive['game_points_faced_serving'])
             gp_returning_faced = int(comprehensive['game_points_faced_returning'])
             comprehensive['total_game_points_faced'] = str(gp_serving_faced + gp_returning_faced)
+            
+            # Deuce points should be extracted from the data above
         except (ValueError, TypeError):
             pass
         
@@ -4047,13 +4891,13 @@ Answer:"""
                 row_label = key.split(' - ', 1)[1] if ' - ' in key else key
                 
                 # Check if this row belongs to the target player
-                if (player == "Iga Swiatek" and ('IS' in row_label or 'Iga' in row_label)) or \
-                   (player == "Jessica Pegula" and ('JP' in row_label or 'Jessica' in row_label)):
+                if (player == "Iga Swiatek" and 'IS' in row_label) or \
+                   (player == "Jessica Pegula" and 'JP' in row_label):
                     
                     values = [v.strip() for v in value.split(' | ')]
                     
                     # Extract data based on row type and table type
-                    if 'BP Faced' in row_label:
+                    if 'BP Faced' in row_label or 'BP Opps' in row_label:
                         if len(values) >= 1:
                             if table_type == "serves":
                                 totals['break_points_faced_serving'] = values[0]
@@ -4076,6 +4920,18 @@ Answer:"""
                                 totals['game_points_won_serving'] = values[1].split('(')[0].strip()
                             else:  # returns
                                 totals['game_points_won_returning'] = values[1].split('(')[0].strip()
+                    
+                    elif 'Svg Deuce' in row_label or 'Ret Deuce' in row_label:
+                        if len(values) >= 1:
+                            if table_type == "serves":
+                                totals['deuce_points_serving'] = values[0]
+                            else:  # returns
+                                totals['deuce_points_returning'] = values[0]
+                        if len(values) >= 2:
+                            if table_type == "serves":
+                                totals['deuce_points_won_serving'] = values[1].split('(')[0].strip()
+                            else:  # returns
+                                totals['deuce_points_won_returning'] = values[1].split('(')[0].strip()
         
         return totals
 
@@ -4141,22 +4997,22 @@ Answer:"""
                 key_point_type = "key points"
         else:
             # When table_type is "returns", the player is returning
-        if 'BP Faced' in row_label:
-            key_point_type = "break points faced when returning serves"
-        elif 'BP Opps' in row_label:
-            key_point_type = "break point opportunities when returning serves"
-        elif 'Game Pts' in row_label:
-            key_point_type = "game points when returning serves"
-        elif 'GP Faced' in row_label:
-            key_point_type = "game points faced when returning serves"
-        elif 'Svg Deuce' in row_label:
-            key_point_type = "deuce points when serving"
-        elif 'Ret Deuce' in row_label:
-            key_point_type = "deuce points when returning serves"
-        elif 'Total' in row_label:
-            key_point_type = f"total key points ({table_type})"
-        else:
-            key_point_type = "key points"
+            if 'BP Faced' in row_label:
+                key_point_type = "break points faced when returning serves"
+            elif 'BP Opps' in row_label:
+                key_point_type = "break point opportunities when returning serves"
+            elif 'Game Pts' in row_label:
+                key_point_type = "game points when returning serves"
+            elif 'GP Faced' in row_label:
+                key_point_type = "game points faced when returning serves"
+            elif 'Svg Deuce' in row_label:
+                key_point_type = "deuce points when serving"
+            elif 'Ret Deuce' in row_label:
+                key_point_type = "deuce points when returning serves"
+            elif 'Total' in row_label:
+                key_point_type = f"total key points ({table_type})"
+            else:
+                key_point_type = "key points"
         
         # Convert each value to a sentence
         for i, value in enumerate(values):
@@ -4881,6 +5737,8 @@ Answer:"""
         
         return text
 
+
+
     def _convert_generic_table(self, table_name: str, rows: List[Dict[str, Any]]) -> List[str]:
         """Convert generic table to natural language text"""
         text = []
@@ -4895,3 +5753,5 @@ Answer:"""
                 text.append(f"{label}: {', '.join(values)}")
         
         return text
+
+
