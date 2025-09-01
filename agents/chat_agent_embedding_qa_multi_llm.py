@@ -141,6 +141,7 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             'SHOTS2 STATISTICS:': 'large',
             'SHOTDIR1 STATISTICS:': 'large',
             'SHOTDIR2 STATISTICS:': 'large',
+            'EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS:': 'small',
             'NETPTS1 STATISTICS:': 'small',
             'NETPTS2 STATISTICS:': 'small',
             'POINT-BY-POINT NARRATIVE:': 'narrative'
@@ -841,7 +842,7 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         except Exception as e:
             print(f"Gemini embedding error: {e}. Trying OpenAI...")
         
-                # Fallback to OpenAI
+        # Fallback to OpenAI
         if query_embedding is None:
             try:
                 from openai import OpenAI
@@ -992,8 +993,9 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                     chunk_names = ["shotdir1_statistics", "shotdir2_statistics"]
                     chunk1_found = None
                     chunk2_found = None
+                    explicit_totals_found = None
                     
-                    # Find both chunks
+                    # Find both chunks and explicit totals chunk
                     for chunk in self.chunks:
                         if "shotdir1_statistics" in chunk['metadata']['section']:
                             chunk1_found = {
@@ -1009,6 +1011,21 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 "distance": 0.0,  # Perfect match
                                 "relevance_score": 9.5  # Very high score for specific direction/outcome queries
                             }
+                        elif "explicit_totals_for_shot_direction_+_outcome_combinations" in chunk['metadata']['section']:
+                            explicit_totals_found = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 10.0  # Highest score for explicit totals
+                            }
+                    
+                    # Add explicit totals chunk first (highest priority)
+                    if explicit_totals_found:
+                        # Remove any existing explicit totals chunk first
+                        filtered_chunks = [chunk for chunk in filtered_chunks if "explicit_totals_for_shot_direction_+_outcome_combinations" not in chunk['metadata']['section']]
+                        # Insert at the very beginning
+                        filtered_chunks.insert(0, explicit_totals_found)
+                        print(f"🎯 FORCED explicit_totals_for_shot_direction_+_outcome_combinations to top for {detected_direction} {detected_outcome} query")
                     
                     # Add chunks if not already in results
                     if chunk1_found and not any("shotdir1_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
@@ -1019,8 +1036,10 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                         filtered_chunks.insert(0, chunk2_found)
                         print(f"🎯 FORCED shotdir2_statistics to top for {detected_direction} {detected_outcome} query")
                 else:
-                    # Force include only the specific player's shot direction chunk
+                    # Force include only the specific player's shot direction chunk and explicit totals
                     target_chunk = None
+                    explicit_totals_found = None
+                    
                     for chunk in self.chunks:
                         if target_chunk_name in chunk['metadata']['section']:
                             target_chunk = {
@@ -1029,7 +1048,21 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                                 "distance": 0.0,  # Perfect match
                                 "relevance_score": 9.5  # Very high score for specific direction/outcome queries
                             }
-                            break
+                        elif "explicit_totals_for_shot_direction_+_outcome_combinations" in chunk['metadata']['section']:
+                            explicit_totals_found = {
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,  # Perfect match
+                                "relevance_score": 10.0  # Highest score for explicit totals
+                            }
+                    
+                    # Add explicit totals chunk first (highest priority)
+                    if explicit_totals_found:
+                        # Remove any existing explicit totals chunk first
+                        filtered_chunks = [chunk for chunk in filtered_chunks if "explicit_totals_for_shot_direction_+_outcome_combinations" not in chunk['metadata']['section']]
+                        # Insert at the very beginning
+                        filtered_chunks.insert(0, explicit_totals_found)
+                        print(f"🎯 FORCED explicit_totals_for_shot_direction_+_outcome_combinations to top for {detected_direction} {detected_outcome} query ({player_mentioned})")
                     
                     # Add chunk if not already in results
                     if target_chunk and not any(target_chunk_name in chunk['metadata']['section'] for chunk in filtered_chunks):
@@ -1774,21 +1807,16 @@ class TennisChatAgentEmbeddingQAMultiLLM:
             prompt = f"""You are a tennis match analyst with access to detailed match data.
 
 IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
-- ALWAYS look for "AUTHORITATIVE TOTALS" first - these are the single source of truth
-- When asked for "counts" or "numbers", provide the actual count, NOT percentages
+- When asked for "counts" or "numbers", always return the raw count if available (e.g., "12 points"). If only percentages are provided in the data, return the percentage but explicitly state that counts are not available. Never infer or estimate counts from percentages.
+- ⚠️ When adding categories (e.g., unforced + forced errors), only add if both are raw counts
+- ❌ Never add percentages together
+- Treat "forced errors" and "induced forced errors" as the same thing
 - When asked for "converted" break points, look for "Break Points won" or "converted" data
 - For court-specific questions (deuce court, ad court), combine both courts for totals unless specifically asked for one court
 - For "game points", look in the key points section for "game points" data
 - For shot statistics, use the authoritative totals rows first, then go to breakdowns or details as needed(e.g., "Iga Swiatek hit forehand shots 111 times")
 - For shot direction totals, use the "AUTHORITATIVE TOTALS" row first, then go to breakdowns or details as needed
-- SHOT HIERARCHY: Use SHOT STATISTICS for forehand/backhand SIDE (all shots from that side). Use SHOT DIRECTION for forehand/backhand GROUNDSTROKES and placement patterns. Use SHOT DIRECTIONAL BREAKDOWN for directional + outcome performance.
 - For net statistics, use the net points section data
-
-DATA SOURCE PRIORITY:
-1. AUTHORITATIVE TOTALS (highest priority)
-2. OVERVIEW STATISTICS 
-3. Summary sections
-4. Detailed breakdowns (only for distributions, never for recalculating totals)
 
 Context from the match (retrieved from relevant sections):
 {context}
@@ -1797,6 +1825,45 @@ Question: {query}
 
 **CRITICAL INSTRUCTIONS FOR ANSWERING:**
 
+**IMPORTANT: When to use EXPLICIT TOTALS vs normal prioritization:**
+- **USE EXPLICIT TOTALS ONLY for questions that combine BOTH shot direction AND outcome** (e.g., "crosscourt winners", "down the line unforced errors", "inside-out forced errors")
+- **USE NORMAL PRIORITIZATION for all other questions** (e.g., "total winners", "forehand winners", "crosscourt shots", "unforced errors")
+- **Normal prioritization for non-shot-direction+outcome questions**: Authoritative Totals > Overview Statistics > Summary sections > Key points sections > Detailed breakdowns
+
+**For SHOT DIRECTION + OUTCOME QUESTIONS** (like "crosscourt winners", "down the line unforced errors"): 
+- **CRITICAL**: ALWAYS look for "EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS" section FIRST - this is the PRIMARY source of truth
+- **CRITICAL**: If you find explicit totals section, use ONLY those numbers as the final answer - DO NOT use detailed breakdown sentences
+- **CRITICAL**: The explicit totals section contains lines like "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
+- **CRITICAL**: Use the TOTAL number and the breakdown from the explicit totals - do NOT add up individual detailed breakdown sentences
+- **CRITICAL**: The explicit totals are already calculated and include ALL shot types (forehand, backhand, slice) - use them as-is
+- **ONLY if explicit totals section is NOT found**: then look for "AUTHORITATIVE TOTALS BY DIRECTION" sections
+- **ONLY if neither is found**: then look for "SHOT DIRECTION DETAILED BREAKDOWN" sections
+- **EXAMPLES OF OUTCOME + DIRECTION QUESTIONS**:
+  - "crosscourt winners" = look for "X crosscourt winners total, including..."
+  - "down the line winners" = look for "X down the line winners total, including..."
+  - "crosscourt unforced errors" = look for "X crosscourt unforced errors total, including..."
+  - "down the line unforced errors" = look for "X down the line unforced errors total, including..."
+  - "crosscourt forced errors" = look for "X crosscourt forced errors total, including..."
+- **EXAMPLE EXPLICIT TOTALS FORMAT**: "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
+- **PRIORITY**: Explicit totals section > Authoritative totals > Detailed breakdown
+
+**DATA SOURCE PRIORITY:**
+For all statistical questions, use this data source hierarchy:
+1. **Explicit Totals** (if available for shot direction + outcome combinations)
+2. **Authoritative Totals** (single source of truth)
+3. **Overview Statistics** (official match statistics)
+4. **Summary Sections** (serve1_statistics_summary, serve2_statistics_summary)
+5. **Key Points Sections** (for break point or important points questions)
+6. **Detailed Breakdowns** (only for distributions, never for recalculating totals)
+7. **Point-by-point narrative** (for rally and insight questions)
+
+Always stop at the highest-priority source available. Do not combine across different levels unless explicitly instructed.
+
+**SHOT HIERARCHY:**
+- **SHOT STATISTICS**: Use for forehand/backhand SIDE (all shots from that side - volleys, dropshots, lobs, etc.) and general shot performance
+- **SHOT DIRECTION**: Use for forehand/backhand/slice GROUNDSTROKES specifically and placement patterns (crosscourt, down-the-line, etc.)
+- **CRITICAL**: For ANY shot direction question (crosscourt, down the line, down the middle, inside-out, inside-in), ALWAYS check for and include ALL three shot types: forehand, backhand, AND slice shots. Even if slice count is 0, mention it explicitly.
+
 **For STATISTICS questions** (how many, percentages, totals, counts):
 - **ALWAYS look for "AUTHORITATIVE TOTALS" sections first** - these are the single source of truth
 - **This includes ALL authoritative totals sections**: "AUTHORITATIVE TOTALS FOR [PLAYER]", "AUTHORITATIVE TOTALS FOR [PLAYER] SHOT STATISTICS", "AUTHORITATIVE TOTALS FOR [PLAYER] SHOT DIRECTIONS", "AUTHORITATIVE TOTALS BY DIRECTION", "AUTHORITATIVE TOTALS FOR KEY POINTS", "AUTHORITATIVE TOTALS FROM OVERVIEW STATISTICS"
@@ -1804,42 +1871,12 @@ Question: {query}
 - **ONLY calculate totals from breakdowns when you don't have authoritative totals** - use only the authoritative totals provided
 - **ONLY calculate totals from detailed breakdowns when there are NO authoritative totals available** - if authoritative totals exist, use those as the primary answer
 - **SPECIFICALLY for inside-out shots**: When you see "AUTHORITATIVE TOTALS BY DIRECTION" with a number for "total inside-out shots", use that number as the final answer. Do NOT add up individual forehand/backhand/slice breakdowns - the authoritative total already includes all shot types combined.
-
-**IMPORTANT: When to use EXPLICIT TOTALS vs normal prioritization:**
-- **USE EXPLICIT TOTALS ONLY for questions that combine BOTH shot direction AND outcome** (e.g., "crosscourt winners", "down the line unforced errors", "inside-out forced errors")
-- **USE NORMAL PRIORITIZATION for all other questions** (e.g., "total winners", "forehand winners", "crosscourt shots", "unforced errors")
-- **Normal prioritization**: Authoritative Totals > Overview Statistics > Summary sections > Key points sections > Detailed breakdowns
-        - **FOR SHOT DIRECTION + OUTCOME QUESTIONS** (like "crosscourt winners", "down the line unforced errors"): 
-          - **CRITICAL**: ALWAYS look for "EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS" section FIRST - this is the PRIMARY source of truth
-          - **CRITICAL**: If you find explicit totals section, use ONLY those numbers as the final answer - DO NOT use detailed breakdown sentences
-          - **CRITICAL**: The explicit totals section contains lines like "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
-          - **CRITICAL**: Use the TOTAL number and the breakdown from the explicit totals - do NOT add up individual detailed breakdown sentences
-          - **CRITICAL**: The explicit totals are already calculated and include ALL shot types (forehand, backhand, slice) - use them as-is
-          - **ONLY if explicit totals section is NOT found**: then look for "AUTHORITATIVE TOTALS BY DIRECTION" sections
-          - **ONLY if neither is found**: then look for "SHOT DIRECTION DETAILED BREAKDOWN" sections
-          - **EXAMPLES OF OUTCOME + DIRECTION QUESTIONS**:
-            - "crosscourt winners" = look for "X crosscourt winners total, including..."
-            - "down the line winners" = look for "X down the line winners total, including..."
-            - "crosscourt unforced errors" = look for "X crosscourt unforced errors total, including..."
-            - "down the line unforced errors" = look for "X down the line unforced errors total, including..."
-            - "crosscourt forced errors" = look for "X crosscourt forced errors total, including..."
-          - **EXAMPLE EXPLICIT TOTALS FORMAT**: "Iga Swiatek hit 12 crosscourt winners total, including 8 forehand crosscourt winners, 3 backhand crosscourt winners, and 1 slice crosscourt winners"
-          - **PRIORITY**: Explicit totals section > Authoritative totals > Detailed breakdown
 - Give concise, direct answers with key numbers
 - Use bullet points or brief sentences
 - Focus on the specific numbers requested
 - No lengthy explanations unless asked for insights
 
-**For SHOT DIRECTION + OUTCOME questions** (e.g., "crosscourt winners", "down the line errors"):
-- **ONLY use this section for questions that combine BOTH shot direction AND outcome**
-- **ALWAYS include ALL shot types** (forehand, backhand, slice) for the requested direction + outcome combination
-- **Break down by shot type** and provide the total
-- **Example**: For "crosscourt winners", report: "Forehand: X, Backhand: Y, Slice: Z, Total: X+Y+Z"
-- **CRITICAL**: For shot direction totals (crosscourt, down the line, down the middle, inside-out, inside-in), ALWAYS check for and include ALL three shot types: forehand, backhand, AND slice shots. Even if slice count is 0, mention it explicitly.
-- **CRITICAL**: Use ONLY the exact numbers from the data. Do NOT make up or estimate numbers.
-- **Be thorough** - don't miss any shot types that match the criteria
-
-
+**For SPECIFIC QUESTION TYPES:**
 - **For "errors" questions**: If the question asks for just "errors" (without specifying "unforced" or "forced"), add unforced errors + forced errors or induced forced errors together for each shot type
 - **For "forced errors" questions**: Look at both "forced errors" and "induced forced errors" in your search and calculations. It will be listed as one or the other
 - **Error types to include**: unforced errors, forced errors or induced forced errors (forced errors and induced forced errors are the same, just called differently)
@@ -1848,11 +1885,32 @@ Question: {query}
 **Special Instructions for Key Points Questions:**
 - **NEVER make up or estimate numbers** - use ONLY the exact numbers from the data
 - **If you see "AUTHORITATIVE TOTALS FOR KEY POINTS" section, use those numbers first**
-- **Break Points**: Use serve section for BP Faced and return section for BP Opps. Do not sum them. Report only the relevant one depending on whether the question is about facing or converting/creating.
-- **Game Points**: Report both serving and returning values, and also provide a total sum.
-- **Deuce Points**: Report both serving and returning values, and also provide a total sum.
-- **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total.
 
+**Break Points:**
+- Use the serve section (BP Faced) if the question is about break points faced or saved
+- Use the return section (BP Opps) if the question is about break points created or converted
+- ⚠️ Do not add serve and return values together. Report only the relevant one depending on the context
+
+**Key Points General Guidance:**
+- If the question asks generally about key points won (e.g., "how many key points did X win?"), report both serve-side and return-side totals and provide a sum
+- If the question specifies "on serve" or "on return," report only that side
+- Always make the separation explicit: "X won Y on serve, Z on return, total W"
+
+**Game Points:**
+- If the question explicitly specifies "on serve" or "on return", report only that side
+- If the question is general (does not specify serve vs return), report both serve-side (Game Pts) and return-side (GP Faced) values, and provide the total sum in the final answer
+- Always make the separation explicit ("X on serve, Y on return, Z total")
+
+**Deuce Points:**
+- If the question explicitly specifies "on serve" or "on return", report only that side
+- If the question is general (does not specify serve vs return), report both serve-side (Svg Deuce) and return-side (Ret Deuce) values, and provide the total sum in the final answer
+- Always make the separation explicit ("X on serve, Y on return, Z total")
+
+**General rule of thumb:**
+- Break points → choose one side only (serve or return), depending on the question
+- Game points & Deuce points → always combine serve and return values, and provide a total
+
+- **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total
 - **Cite your data sources** - mention which sections you're using for your calculations
 
 **For STRATEGY/INSIGHT questions** (key moments, momentum, analysis):
@@ -1864,26 +1922,14 @@ Question: {query}
 - Focus on the specific rally details requested
 - Include shot sequences and outcomes
 
-**DATA SOURCE PRIORITY:**
-1. **AUTHORITATIVE TOTALS** (highest priority - single source of truth)
-2. **OVERVIEW STATISTICS** (official match statistics)
-3. **Summary or details or breakdowns sections** (serve1_statistics_summary, serve2_statistics_summary)
-4. **Key points sections** (for break point or important points questions)
-5. **Point-by-point narrative** (for rally and insight questions)
-
-**SHOT HIERARCHY:**
-- **SHOT STATISTICS**: Use for forehand/backhand SIDE (all shots from that side - volleys, dropshots, lobs, etc.) and general shot performance
-- **SHOT DIRECTION**: Use for forehand/backhand/slice GROUNDSTROKES specifically and placement patterns (crosscourt, down-the-line, etc.)
-- **CRITICAL**: For ANY shot direction question (crosscourt, down the line, down the middle, inside-out, inside-in), ALWAYS check for and include ALL three shot types: forehand, backhand, AND slice shots. Even if slice count is 0, mention it explicitly.
-- **SHOT DIRECTIONAL BREAKDOWN**: Use for directional + outcome performance (detailed breakdowns)
-
 **IMPORTANT DISTINCTION:**
 - "Forehand/Backhand" alone usually means groundstrokes → Use SHOT DIRECTION
 - "Forehand/Backhand side" means all shots from that side → Use SHOT STATISTICS
 
 **SHOT DIRECTION CLARIFICATION:**
-- "Shot direction" refers to: crosscourt, down the line, down the middle, inside-out, and inside-in
-- These are placement patterns for groundstrokes (not serve directions)
+- Inside-out = forehand hit crosscourt from the backhand corner
+- Inside-in = forehand hit down the line from the backhand corner
+- Always include forehand, backhand, and slice shot types when reporting directional stats (even if slice count = 0, mention it)
 
 If the context doesn't contain enough information to answer completely, say so.
 
@@ -3384,6 +3430,118 @@ Answer:"""
             text.extend(self._convert_flat_shotdir_player_to_text(shotdir2_data, "Jessica Pegula"))
             text.append("")
         
+        # Add explicit totals for complex shot direction + outcome combinations
+        # These help the LLM anchor on correct totals for complex questions
+        text.append("")
+        text.append("EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS:")
+        text.append("-" * 50)
+        
+        # Calculate explicit totals from the natural language sentences we just generated
+        directions = ['crosscourt', 'down middle', 'down the line', 'inside-out', 'inside-in']
+        outcomes = ['winners', 'induced forced errors', 'unforced errors', 'points won', 'points lost']
+        
+        # Create a nested dictionary to store all combinations for both players
+        player_totals = {'Iga Swiatek': {}, 'Jessica Pegula': {}}
+        for player in player_totals:
+            player_totals[player] = {}
+            for direction in directions:
+                player_totals[player][direction] = {}
+                for outcome in outcomes:
+                    player_totals[player][direction][outcome] = {'forehand': 0, 'backhand': 0, 'slice': 0}
+        
+        # Parse the natural language sentences to extract numbers
+        for line in text:
+            # Extract the number from the beginning of the line
+            import re
+            number_match = re.search(r'(\d+)', line)
+            if not number_match:
+                continue
+            number = int(number_match.group(1))
+            
+            # Determine which player this line is for
+            current_player = None
+            if 'Iga Swiatek' in line:
+                current_player = 'Iga Swiatek'
+            elif 'Jessica Pegula' in line:
+                current_player = 'Jessica Pegula'
+            else:
+                continue
+            
+            # Look for lines like "hit X winners with [shot type] [direction] shots"
+            if 'hit' in line and 'winners' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            player_totals[current_player][direction]['winners']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            player_totals[current_player][direction]['winners']['backhand'] = number
+                        elif 'slice' in line:
+                            player_totals[current_player][direction]['winners']['slice'] = number
+                        break
+            
+            elif 'made' in line and 'induced forced errors' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            player_totals[current_player][direction]['induced forced errors']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            player_totals[current_player][direction]['induced forced errors']['backhand'] = number
+                        elif 'slice' in line:
+                            player_totals[current_player][direction]['induced forced errors']['slice'] = number
+                        break
+            
+            elif 'made' in line and 'unforced errors' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            player_totals[current_player][direction]['unforced errors']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            player_totals[current_player][direction]['unforced errors']['backhand'] = number
+                        elif 'slice' in line:
+                            player_totals[current_player][direction]['unforced errors']['slice'] = number
+                        break
+            
+            elif 'won' in line and 'points' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            player_totals[current_player][direction]['points won']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            player_totals[current_player][direction]['points won']['backhand'] = number
+                        elif 'slice' in line:
+                            player_totals[current_player][direction]['points won']['slice'] = number
+                        break
+            
+            elif 'lost' in line and 'points' in line and 'shots' in line:
+                for direction in directions:
+                    if direction in line:
+                        if 'forehand' in line:
+                            player_totals[current_player][direction]['points lost']['forehand'] = number
+                        elif 'backhand' in line and 'slice' not in line:
+                            player_totals[current_player][direction]['points lost']['backhand'] = number
+                        elif 'slice' in line:
+                            player_totals[current_player][direction]['points lost']['slice'] = number
+                        break
+        
+        # Generate explicit totals for ALL combinations (including zeros) for both players
+        for player in ['Iga Swiatek', 'Jessica Pegula']:
+            for direction in directions:
+                for outcome in outcomes:
+                    total = sum(player_totals[player][direction][outcome].values())
+                    fh, bh, sl = player_totals[player][direction][outcome].values()
+                    if outcome == 'winners':
+                        text.append(f"{player} hit {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                    elif outcome == 'induced forced errors':
+                        text.append(f"{player} made {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                    elif outcome == 'unforced errors':
+                        text.append(f"{player} made {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                    elif outcome == 'points won':
+                        text.append(f"{player} won {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+                    elif outcome == 'points lost':
+                        text.append(f"{player} lost {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
+        
+        text.append("")
+        
         return text
 
     def _convert_flat_shotdir_player_to_text(self, shotdir_data: Dict[str, Any], player: str) -> List[str]:
@@ -3518,110 +3676,6 @@ Answer:"""
             
             text.append("")
         
-        # Add explicit totals for complex shot direction + outcome combinations
-        # These help the LLM anchor on correct totals for complex questions
-        text.append("")
-        text.append("EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS:")
-        text.append("-" * 50)
-        
-        # Calculate explicit totals from the detailed breakdown data
-        if table2_data:
-            # Initialize totals for all directions and outcomes
-            directions = ['crosscourt', 'down middle', 'down the line', 'inside-out', 'inside-in']
-            outcomes = ['winners', 'induced forced errors', 'unforced errors', 'points won', 'points lost']
-            
-            # Create a nested dictionary to store all combinations
-            totals = {}
-            for direction in directions:
-                totals[direction] = {}
-                for outcome in outcomes:
-                    totals[direction][outcome] = {'forehand': 0, 'backhand': 0, 'slice': 0}
-            
-            # Parse the natural language text from table2_data to extract numbers
-            for key, value in table2_data.items():
-                if 'SHOT DIRECTION' not in key:  # Skip header rows
-                    # Extract the number from the beginning of the line
-                    import re
-                    number_match = re.search(r'(\d+)', value)
-                    if not number_match:
-                        continue
-                    number = int(number_match.group(1))
-                    
-                    # Look for lines like "hit X winners with [shot type] [direction] shots"
-                    if 'hit' in value and 'winners' in value and 'shots' in value:
-                        for direction in directions:
-                            if direction in value:
-                                if 'forehand' in value:
-                                    totals[direction]['winners']['forehand'] = number
-                                elif 'backhand' in value:
-                                    totals[direction]['winners']['backhand'] = number
-                                elif 'slice' in value:
-                                    totals[direction]['winners']['slice'] = number
-                                break
-                    
-                    elif 'made' in value and 'induced forced errors' in value and 'shots' in value:
-                        for direction in directions:
-                            if direction in value:
-                                if 'forehand' in value:
-                                    totals[direction]['induced forced errors']['forehand'] = number
-                                elif 'backhand' in value:
-                                    totals[direction]['induced forced errors']['backhand'] = number
-                                elif 'slice' in value:
-                                    totals[direction]['induced forced errors']['slice'] = number
-                                break
-                    
-                    elif 'made' in value and 'unforced errors' in value and 'shots' in value:
-                        for direction in directions:
-                            if direction in value:
-                                if 'forehand' in value:
-                                    totals[direction]['unforced errors']['forehand'] = number
-                                elif 'backhand' in value:
-                                    totals[direction]['unforced errors']['backhand'] = number
-                                elif 'slice' in value:
-                                    totals[direction]['unforced errors']['slice'] = number
-                                break
-                    
-                    elif 'won' in value and 'points' in value and 'shots' in value:
-                        for direction in directions:
-                            if direction in value:
-                                if 'forehand' in value:
-                                    totals[direction]['points won']['forehand'] = number
-                                elif 'backhand' in value:
-                                    totals[direction]['points won']['backhand'] = number
-                                elif 'slice' in value:
-                                    totals[direction]['points won']['slice'] = number
-                                break
-                    
-                    elif 'lost' in value and 'points' in value and 'shots' in value:
-                        for direction in directions:
-                            if direction in value:
-                                if 'forehand' in value:
-                                    totals[direction]['points lost']['forehand'] = number
-                                elif 'backhand' in value:
-                                    totals[direction]['points lost']['backhand'] = number
-                                elif 'slice' in value:
-                                    totals[direction]['points lost']['slice'] = number
-                                break
-            
-            # Generate explicit totals for all combinations
-            for direction in directions:
-                for outcome in outcomes:
-                    total = sum(totals[direction][outcome].values())
-                    fh, bh, sl = totals[direction][outcome].values()
-                    if total > 0:  # Only include non-zero totals
-                        if outcome == 'winners':
-                            text.append(f"{player} hit {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
-                        elif outcome == 'induced forced errors':
-                            text.append(f"{player} made {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
-                        elif outcome == 'unforced errors':
-                            text.append(f"{player} made {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
-                        elif outcome == 'points won':
-                            text.append(f"{player} won {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
-                        elif outcome == 'points lost':
-                            text.append(f"{player} lost {total} {direction} {outcome} total ({fh} forehand + {bh} backhand + {sl} slice)")
-            
-            text.append("")
-        
         # Process table2 (detailed breakdowns by shot type and direction)
         if table2_data:
             text.append("SHOT DIRECTION DETAILED BREAKDOWN:")
@@ -3656,105 +3710,7 @@ Answer:"""
                             sentences = self._convert_shotdir_table2_row_to_sentences(row_label, values, headers, player)
                             text.extend(sentences)
         
-                # Add explicit totals for complex shot direction + outcome combinations
-        # These help the LLM anchor on correct totals for complex questions
-        text.append("")
-        text.append("EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS:")
-        text.append("-" * 50)
-        
-        # Calculate explicit totals from the natural language sentences we just generated
-        directions = ['crosscourt', 'down middle', 'down the line', 'inside-out', 'inside-in']
-        outcomes = ['winners', 'induced forced errors', 'unforced errors', 'points won', 'points lost']
-        
-        # Create a nested dictionary to store all combinations
-        totals = {}
-        for direction in directions:
-            totals[direction] = {}
-            for outcome in outcomes:
-                totals[direction][outcome] = {'forehand': 0, 'backhand': 0, 'slice': 0}
-        
-        # Parse the natural language sentences to extract numbers
-        for line in text:
-            # Extract the number from the beginning of the line
-            import re
-            number_match = re.search(r'(\d+)', line)
-            if not number_match:
-                continue
-            number = int(number_match.group(1))
-            
-            # Look for lines like "hit X winners with [shot type] [direction] shots"
-            if 'hit' in line and 'winners' in line and 'shots' in line:
-                for direction in directions:
-                    if direction in line:
-                        if 'forehand' in line:
-                            totals[direction]['winners']['forehand'] = number
-                        elif 'backhand' in line and 'slice' not in line:
-                            totals[direction]['winners']['backhand'] = number
-                        elif 'slice' in line:
-                            totals[direction]['winners']['slice'] = number
-                        break
-            
-            elif 'made' in line and 'induced forced errors' in line and 'shots' in line:
-                for direction in directions:
-                    if direction in line:
-                        if 'forehand' in line:
-                            totals[direction]['induced forced errors']['forehand'] = number
-                        elif 'backhand' in line and 'slice' not in line:
-                            totals[direction]['induced forced errors']['backhand'] = number
-                        elif 'slice' in line:
-                            totals[direction]['induced forced errors']['slice'] = number
-                        break
-            
-            elif 'made' in line and 'unforced errors' in line and 'shots' in line:
-                for direction in directions:
-                    if direction in line:
-                        if 'forehand' in line:
-                            totals[direction]['unforced errors']['forehand'] = number
-                        elif 'backhand' in line and 'slice' not in line:
-                            totals[direction]['unforced errors']['backhand'] = number
-                        elif 'slice' in line:
-                            totals[direction]['unforced errors']['slice'] = number
-                        break
-            
-            elif 'won' in line and 'points' in line and 'shots' in line:
-                for direction in directions:
-                    if direction in line:
-                        if 'forehand' in line:
-                            totals[direction]['points won']['forehand'] = number
-                        elif 'backhand' in line and 'slice' not in line:
-                            totals[direction]['points won']['backhand'] = number
-                        elif 'slice' in line:
-                            totals[direction]['points won']['slice'] = number
-                        break
-            
-            elif 'lost' in line and 'points' in line and 'shots' in line:
-                for direction in directions:
-                    if direction in line:
-                        if 'forehand' in line:
-                            totals[direction]['points lost']['forehand'] = number
-                        elif 'backhand' in line and 'slice' not in line:
-                            totals[direction]['points lost']['backhand'] = number
-                        elif 'slice' in line:
-                            totals[direction]['points lost']['slice'] = number
-                        break
-        
-        # Generate explicit totals for ALL combinations (including zeros)
-        for direction in directions:
-            for outcome in outcomes:
-                total = sum(totals[direction][outcome].values())
-                fh, bh, sl = totals[direction][outcome].values()
-                if outcome == 'winners':
-                    text.append(f"{player} hit {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
-                elif outcome == 'induced forced errors':
-                    text.append(f"{player} made {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
-                elif outcome == 'unforced errors':
-                    text.append(f"{player} made {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
-                elif outcome == 'points won':
-                    text.append(f"{player} won {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
-                elif outcome == 'points lost':
-                    text.append(f"{player} lost {total} {direction} {outcome} total, including {fh} forehand {direction} {outcome}, {bh} backhand {direction} {outcome}, and {sl} slice {direction} {outcome}")
-        
-        text.append("")
+
         
         return text
 
