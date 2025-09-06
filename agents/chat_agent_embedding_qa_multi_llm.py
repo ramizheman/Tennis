@@ -81,9 +81,9 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         
     def load_exact_full_format(self, file_path: str = "EXACT_FULL_FORMAT.md") -> None:
         """
-        Load and process the EXACT_FULL_FORMAT.md file into chunks with embeddings.
+        Load and process the specified natural language file into chunks with embeddings.
         """
-        print("Loading EXACT_FULL_FORMAT.md...")
+        print(f"Loading {file_path}...")
         
         # Read the file
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -120,7 +120,7 @@ class TennisChatAgentEmbeddingQAMultiLLM:
         
     def _split_into_sections(self, content: str) -> Dict[str, str]:
         """
-        Split the EXACT_FULL_FORMAT.md content using improved semantic + size-aware chunking.
+        Split the natural language content using improved semantic + size-aware chunking.
         Creates optimal chunks based on content type and size for better searchability.
         """
         sections = {}
@@ -1326,8 +1326,8 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                     
                     elif target_section == "both":
                         # Need both serve and return sections for BP/GP/deuce totals or ambiguous questions
-                                    serve_section = "serve1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "serve2_statistics"
-            return_section = "return1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "return2_statistics"
+                        serve_section = "serve1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "serve2_statistics"
+                        return_section = "return1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "return2_statistics"
                         
                         # Add both chunks
                         for section in [serve_section, return_section]:
@@ -1414,7 +1414,9 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                 elif any(phrase in query.lower() for phrase in ["crosscourt", "down the line", "down the middle", "inside-out", "inside-in"]):
                     detected_stat_type = "shotdir"
                 elif any(phrase in query.lower() for phrase in ["winner", "winners", "unforced error", "unforced errors", "forehand", "backhand"]):
-                    detected_stat_type = "shots"
+                    # Only set to shots if we haven't already detected a more specific type
+                    if not detected_stat_type:
+                        detected_stat_type = "shots"
                 elif any(phrase in query.lower() for phrase in ["return", "returns", "returnable"]):
                     detected_stat_type = "return"
                 elif any(phrase in query.lower() for phrase in ["ace", "aces", "serve", "serving", "double fault", "double faults", "first serve", "second serve"]):
@@ -1513,9 +1515,10 @@ class TennisChatAgentEmbeddingQAMultiLLM:
                     filtered_chunks.insert(0, serve2_chunk)
                     print(f"🔧 FORCED serve2_statistics_summary to top of results for serve question")
             
-            # CRITICAL FIX: For net points questions (only if other fixes didn't apply)
+            # CRITICAL FIX: For net points questions (always apply for net points questions)
+            print(f"🔍 DEBUG: About to check net points fix section")
             net_points_fix_applied = False
-            if not universal_fix_applied and not direction_outcome_fix_applied and not bp_gp_fix_applied and any(word in query.lower() for word in ["net points", "net approaches", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
+            if any(word in query.lower() for word in ["net points", "net approaches", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
                 # Determine which player is being asked about
                 player_mentioned = self._detect_player_mentioned(query)
                 if player_mentioned:
@@ -2160,29 +2163,44 @@ Answer:"""
         # Handle the actual JSON structure with matches array
         if 'matches' in match_data and match_data['matches']:
             match = match_data['matches'][0]  # Get the first match
+        else:
+            # Direct match object passed
+            match = match_data
             
-            # Add match overview information
-            natural_language.extend(self._get_match_overview_text(match))
-            natural_language.append("")
-            
-            # Add all detailed statistics in natural language
-            if 'details_tables' in match:
-                natural_language.extend(self._convert_details_tables_to_text(match['details_tables'], player1, player2))
-            
-            # Add details_flat data for shots, shotdir, and netpts (these are not in details_tables)
-            if 'details_flat' in match:
-                # Get player names from match data
-                        self.player1 = match.get('basic', {}).get('player1', 'Player 1')
+        # Get player names from match data first
+        print(f"DEBUG: About to get player names from match")
+        self.player1 = match.get('basic', {}).get('player1', 'Player 1')
         self.player2 = match.get('basic', {}).get('player2', 'Player 2')
         player1 = self.player1
         player2 = self.player2
-                natural_language.extend(self._convert_details_flat_to_text(match['details_flat'], player1, player2))
-            
-            # Add point-by-point data if available
-            if 'point_log' in match:
-                natural_language.extend(self._convert_point_log_to_text(match['point_log']))
-            elif 'pointlog_rows' in match:
-                natural_language.extend(self._convert_point_log_to_text(match['pointlog_rows']))
+        print(f"DEBUG: Player names extracted: {player1}, {player2}")
+        
+        # Add match overview information
+        print(f"DEBUG: About to call _get_match_overview_text")
+        natural_language.extend(self._get_match_overview_text(match))
+        natural_language.append("")
+        print(f"DEBUG: Match overview text added")
+        
+        # Add all detailed statistics in natural language
+        if 'details_tables' in match:
+            print(f"DEBUG: About to call _convert_details_tables_to_text")
+            natural_language.extend(self._convert_details_tables_to_text(match['details_tables'], player1, player2))
+            print(f"DEBUG: Details tables text added")
+        
+        # Add details_flat data for shots, shotdir, and netpts (these are not in details_tables)
+        if 'details_flat' in match:
+            print(f"DEBUG: About to call _convert_details_flat_to_text")
+            natural_language.extend(self._convert_details_flat_to_text(match['details_flat'], player1, player2))
+            print(f"DEBUG: Details flat text added")
+        
+        # Add point-by-point data if available
+        if 'point_log' in match:
+            print(f"DEBUG: About to call _convert_point_log_to_text with point_log")
+            natural_language.extend(self._convert_point_log_to_text(match['point_log']))
+        elif 'pointlog_rows' in match:
+            print(f"DEBUG: About to call _convert_point_log_to_text with pointlog_rows, count: {len(match['pointlog_rows'])}")
+            natural_language.extend(self._convert_point_log_to_text(match['pointlog_rows']))
+            print(f"DEBUG: Point log text added")
             
         # Post-process to move rally outcomes to the end for optimal embedding order
         final_text = "\n".join(natural_language)
@@ -2270,12 +2288,12 @@ Answer:"""
             # Parse sets score to determine winner
             sets_parts = final_sets.split('-')
             if len(sets_parts) == 2:
-                        player1_sets = int(sets_parts[0])  # Player 1's sets
-        player2_sets = int(sets_parts[1])  # Player 2's sets
+                player1_sets = int(sets_parts[0])  # Player 1's sets
+                player2_sets = int(sets_parts[1])  # Player 2's sets
                 
                 # Get player names
-                        player1 = match.get('basic', {}).get('player1', 'Player 1')
-        player2 = match.get('basic', {}).get('player2', 'Player 2')
+                player1 = match.get('basic', {}).get('player1', 'Player 1')
+                player2 = match.get('basic', {}).get('player2', 'Player 2')
                 
                 if player2_sets > player1_sets:
                     winner = player2
@@ -3335,7 +3353,7 @@ Answer:"""
         
         # Convert overview data (summary statistics)
         if overview_data:
-            text.extend(self._convert_flat_overview_to_text(overview_data))
+            text.extend(self._convert_flat_overview_to_text(overview_data, player1, player2))
         
         # Convert key points data
         if keypoints_data:
@@ -5183,7 +5201,7 @@ Answer:"""
         
         return sentences
 
-    def _convert_flat_overview_to_text(self, overview_data: Dict[str, Any]) -> List[str]:
+    def _convert_flat_overview_to_text(self, overview_data: Dict[str, Any], player1: str, player2: str) -> List[str]:
         """Convert flat overview data to natural language text with hierarchy"""
         text = []
         
