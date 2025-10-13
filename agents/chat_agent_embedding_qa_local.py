@@ -2209,14 +2209,14 @@ Answer:"""
                                 match_result = match_result[len(last_name):]
                                 break
             
-            if match_result:
+            if match_result and match_result != "Unknown":
                 text.append(f"Final Score: {match_result}")
             else:
                 final_score = self._extract_final_score(match)
                 if final_score:
                     text.append(f"Final Score: {final_score['winner']} defeated {final_score['loser']} {final_score['score']}")
                 else:
-                    text.append("Final score not available in the data.")
+                    text.append("Final Score: Unknown")
         
         return text
 

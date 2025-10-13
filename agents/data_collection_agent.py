@@ -177,8 +177,10 @@ class TennisDataCollector:
             
             # Extract match result from the page
             match_result = self._extract_match_result(soup)
+            print(f"DEBUG _extract_match_result returned: {repr(match_result)}")
             if match_result:
                 stats['Match Result'] = match_result
+                print(f"DEBUG Stored in stats: {repr(stats['Match Result'])}")
             else:
                 # If we couldn't extract it from the page, try to find it in the JavaScript data later
                 stats['Match Result'] = 'Unknown'
@@ -335,7 +337,34 @@ class TennisDataCollector:
                     # Also look for any JavaScript variable that might contain point-by-point data
                     point_log_patterns = re.findall(r'var\s+(\w+)\s*=\s*[\'\"](.*?point.*?log.*?)[\'\"]', script_text, re.DOTALL | re.IGNORECASE)
                     for var_name, point_log_data in point_log_patterns:
-                        stats[f"point_log - {var_name}"] = point_log_data.strip()
+                        # Parse the HTML table instead of storing raw HTML
+                        if '<table' in point_log_data:
+                            try:
+                                table_soup = BeautifulSoup(point_log_data, 'html.parser')
+                                tables = table_soup.find_all('table')
+                                for table_idx, table in enumerate(tables):
+                                    rows = table.find_all('tr')
+                                    for row in rows:
+                                        cells = row.find_all(['td', 'th'])
+                                        if len(cells) >= 2:
+                                            key = clean_unicode_text(cells[0].get_text(strip=True))
+                                            if key and len(key) < 50:
+                                                values = []
+                                                for cell in cells[1:]:
+                                                    cell_text = clean_unicode_text(cell.get_text(strip=True))
+                                                    if cell_text:
+                                                        values.append(cell_text)
+                                                
+                                                if values:
+                                                    table_suffix = f"_table{table_idx+1}" if len(tables) > 1 else ""
+                                                    data_key = f"{var_name} - {key}{table_suffix}"
+                                                    stats[data_key] = " | ".join(values)
+                            except Exception as e:
+                                print(f"Error parsing point_log table: {e}")
+                                # Fallback to storing raw data if parsing fails
+                                stats[f"point_log - {var_name}"] = point_log_data.strip()
+                        else:
+                            stats[f"point_log - {var_name}"] = point_log_data.strip()
                     
                     # NOTE: We intentionally avoid scraping generic <table> blobs into
                     # a fabricated 'point_by_point' section here, because it caused
@@ -343,11 +372,8 @@ class TennisDataCollector:
                     # The canonical point-by-point narrative is parsed from 'var pointlog'
                     # above into 'Point-by-point - {server} {sets} {games} {points}'.
                     
-                    # Also look for simple key-value patterns in JavaScript
-                    simple_patterns = re.findall(r'(\w+)\s*[:=]\s*[\'\"]([^\'\"]+)[\'\"]', script_text)
-                    for key, value in simple_patterns:
-                        if value.strip() and len(key) < 30 and len(value) < 100:
-                            stats[f"js - {key}"] = value.strip()
+                    # Skip simple key-value patterns that create garbage HTML attribute entries
+                    # This was creating entries like "js - serve": "<table id=" which is useless
             
             # Look for point-by-point description data in the main page content
             # This data might be directly in the HTML, not in JavaScript
@@ -378,7 +404,35 @@ class TennisDataCollector:
                             # Look for any data that might be loaded for pointlog
                             point_data_patterns = re.findall(r'var\s+(\w+)\s*=\s*[\'"](.*?point.*?log.*?)[\'"]', script_text, re.DOTALL | re.IGNORECASE)
                             for var_name, point_data in point_data_patterns:
-                                stats[f"pointlog_js - {var_name}"] = point_data.strip()
+                                # Parse the HTML table instead of storing raw HTML
+                                if '<table' in point_data:
+                                    try:
+                                        table_soup = BeautifulSoup(point_data, 'html.parser')
+                                        tables = table_soup.find_all('table')
+                                        for table_idx, table in enumerate(tables):
+                                            rows = table.find_all('tr')
+                                            for row in rows:
+                                                cells = row.find_all(['td', 'th'])
+                                                if len(cells) >= 2:
+                                                    key = clean_unicode_text(cells[0].get_text(strip=True))
+                                                    if key and len(key) < 50:
+                                                        values = []
+                                                        for cell in cells[1:]:
+                                                            cell_text = clean_unicode_text(cell.get_text(strip=True))
+                                                            if cell_text:
+                                                                values.append(cell_text)
+                                                        
+                                                        if values:
+                                                            table_suffix = f"_table{table_idx+1}" if len(tables) > 1 else ""
+                                                            data_key = f"{var_name} - {key}{table_suffix}"
+                                                            stats[data_key] = " | ".join(values)
+                                    except Exception as e:
+                                        print(f"Error parsing pointlog_js table: {e}")
+                                        # Skip storing raw data to avoid garbage
+                                else:
+                                    # Only store non-HTML data
+                                    if not any(tag in point_data for tag in ['<table', '<div', '<span', '<td', '<th']):
+                                        stats[f"pointlog_js - {var_name}"] = point_data.strip()
                             
                             # Look for AJAX calls or data loading for pointlog
                             ajax_patterns = re.findall(r'\.get\([\'"](.*?point.*?)[\'"]', script_text, re.IGNORECASE)
@@ -627,34 +681,50 @@ class TennisDataCollector:
         """
         try:
             # Look for common patterns where match results are displayed
-            # Pattern 1: Look for text with score format (e.g., "6-4, 6-2, 6-1")
-            score_pattern = re.compile(r'\d+-\d+(?:\s*,\s*\d+-\d+)*')
+            # Pattern 1: Look for text with score format including tiebreaks (e.g., "6-4", "6-7(5)", "6-3")
+            score_pattern = re.compile(r'\d+-\d+(?:\(\d+\))?(?:\s+\d+-\d+(?:\(\d+\))?)*')
             
             # Look in various elements where results might be displayed
-            for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'div', 'span', 'p']):
+            # Search in priority order: b/strong tags first (most likely to have full result), then others
+            best_result = None
+            max_sets = 0
+            
+            for element in soup.find_all(['b', 'strong', 'h1', 'h2', 'h3', 'h4', 'div', 'span', 'p']):
                 text = clean_unicode_text(element.get_text(strip=True))
                 if text:
                     # Look for score patterns
                     scores = score_pattern.findall(text)
-                    if scores:
+                    if scores and len(text) > 20:  # Avoid short fragments
                         # Check if this looks like a match result
                         if any(keyword in text.lower() for keyword in ['won', 'defeated', 'beat', 'final', 'result', 'd.']):
-                            return text.strip()
-                        # If it's just a score, try to find context
-                        elif len(scores) >= 2:  # Multiple sets suggest a match result
-                            return text.strip()
+                            print(f"DEBUG FOUND match result in <{element.name}>: {repr(text)}")
+                            print(f"DEBUG Length: {len(text)}, Number of sets: {len(scores)}")
+                            # Keep the result with the MOST sets (most complete)
+                            if len(scores) > max_sets:
+                                best_result = text.strip()
+                                max_sets = len(scores)
+                        # If it's just scores, try to find context
+                        elif len(scores) >= 3:  # At least 3 sets suggest a complete match result
+                            print(f"DEBUG FOUND multiple scores ({len(scores)} sets) in <{element.name}>: {repr(text)}")
+                            if len(scores) > max_sets:
+                                best_result = text.strip()
+                                max_sets = len(scores)
             
-            # Pattern 2: Look for specific result text patterns
+            if best_result:
+                print(f"DEBUG BEST result has {max_sets} sets: {repr(best_result)}")
+                return best_result
+            
+            # Pattern 2: Look for specific result text patterns with tiebreak support
             result_patterns = [
-                r'(\w+\s+\w+)\s+d\.\s+(\w+\s+\w+)\s+(\d+-\d+(?:\s+\d+-\d+)*)',  # Jessica Pegula d. Iga Swiatek 6-4 7-5
-                r'(\w+\s+\w+)\s+(?:won|defeated|beat)\s+(\w+\s+\w+)\s+(\d+-\d+(?:\s*,\s*\d+-\d+)*)',
-                r'(\d+-\d+(?:\s*,\s*\d+-\d+)*)\s+(?:won by|defeated by)\s+(\w+\s+\w+)',
-                r'Final:\s+(\w+\s+\w+)\s+(\d+-\d+(?:\s*,\s*\d+-\d+)*)',
-                r'Result:\s+(\w+\s+\w+)\s+(\d+-\d+(?:\s*,\s*\d+-\d+)*)'
+                r'(\w+\s+\w+)\s+d\.\s+(\w+\s+\w+)\s+((?:\d+-\d+(?:\(\d+\))?(?:\s+|$))+)',  # Carlos Alcaraz d. Jannik Sinner 6-3 6-7(7) 6-7(0) 7-5 6-3
+                r'(\w+\s+\w+)\s+(?:won|defeated|beat)\s+(\w+\s+\w+)\s+((?:\d+-\d+(?:\(\d+\))?(?:\s+|$))+)',
+                r'((?:\d+-\d+(?:\(\d+\))?(?:\s+|$))+)\s+(?:won by|defeated by)\s+(\w+\s+\w+)',
+                r'Final:\s+(\w+\s+\w+)\s+((?:\d+-\d+(?:\(\d+\))?(?:\s+|$))+)',
+                r'Result:\s+(\w+\s+\w+)\s+((?:\d+-\d+(?:\(\d+\))?(?:\s+|$))+)'
             ]
             
             for pattern in result_patterns:
-                for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'div', 'span', 'p']):
+                for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'div', 'span', 'p', 'b', 'strong']):
                     text = clean_unicode_text(element.get_text(strip=True))
                     if text:
                         match = re.search(pattern, text, re.IGNORECASE)

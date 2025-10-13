@@ -48,10 +48,10 @@ class TennisChatInterface:
         else:
             raise ValueError("llm_provider must be 'openai', 'claude', or 'gemini'")
         
-    def search_matches(self, player1: str, player2: str) -> Tuple[str, List[str]]:
+    def search_matches(self, player1: str, player2: str):
         """Search for matches between two players (without scraping details)"""
         if not player1.strip() or not player2.strip():
-            return "Please enter both player names.", []
+            return gr.update(choices=[], value=None)
         
         try:
             # Initialize the data collection agent to search for matches
@@ -65,12 +65,12 @@ class TennisChatInterface:
             print(f"DEBUG: search_player_matches returned {len(matches)} matches")
             
             if not matches:
-                return f"No matches found between {player1} and {player2}.", []
+                return gr.update(choices=[f"No matches found between {player1} and {player2}."], value=None)
             
             # Store all matches for the interface
             self.matches = matches
             
-            # Create match options for dropdown from all matches
+            # Create match options for radio list
             match_options = []
             for i, match in enumerate(self.matches):
                 date = match.get('date', 'N/A')
@@ -81,27 +81,14 @@ class TennisChatInterface:
                 match_text = f"{date} - {tournament}: {p1} vs {p2}"
                 match_options.append(match_text)
             
-            # System handles player detection automatically
-            
-            # Create a detailed search result message showing all matches
-            result_message = f"Found {len(self.matches)} matches between {player1} and {player2}:\n\n"
-            for i, match in enumerate(self.matches):
-                date = match.get('date', 'N/A')
-                tournament = match.get('tournament', 'N/A')
-                p1 = match.get('player1', 'Player 1')
-                p2 = match.get('player2', 'Player 2')
-                result_message += f"{i+1}. {date} - {tournament}: {p1} vs {p2}\n"
-            
-            result_message += f"\n[SUCCESS] Select a match from the dropdown and click 'Load Match' to scrape data!"
-            
-            print(f"DEBUG: Created {len(match_options)} dropdown options")
+            print(f"DEBUG: Created {len(match_options)} match options")
             print(f"DEBUG: First option: {match_options[0] if match_options else 'None'}")
             
-            # Return the dropdown updates using gr.update()
-            return result_message, gr.update(choices=match_options, value=None)
+            # Return Radio update with all matches
+            return gr.update(choices=match_options, value=None)
             
         except Exception as e:
-            return f"Error searching for matches: {str(e)}", []
+            return gr.update(choices=[f"Error: {str(e)}"], value=None)
     
     def load_match(self, match_selection) -> str:
         """Load a specific match by scraping its data"""
@@ -272,60 +259,72 @@ class TennisChatInterface:
     def create_interface(self):
         """Create the Gradio interface"""
         
-        with gr.Blocks(title="Tennis Match Chat Assistant", theme=gr.themes.Soft()) as interface:
+        with gr.Blocks(title="Tennis Match Chat Assistant", theme=gr.themes.Soft(), css="""
+            .two-column-radio {
+                column-count: 2 !important;
+                column-gap: 20px !important;
+                column-fill: auto !important;
+            }
+            .two-column-radio label {
+                display: block !important;
+                width: 100% !important;
+                margin-bottom: 8px !important;
+                margin-top: 0 !important;
+                padding-top: 0 !important;
+                break-inside: avoid !important;
+                vertical-align: top !important;
+                white-space: normal !important;
+            }
+            .two-column-radio fieldset {
+                margin-top: 0 !important;
+                padding-top: 0 !important;
+            }
+        """) as interface:
             gr.Markdown("# [TENNIS] Tennis Match Chat Assistant")
             gr.Markdown("Ask questions about tennis matches between any two players!")
             
+            # Search and Load section - fully integrated
+            gr.Markdown("### [SEARCH] Search & Load Matches")
+            
             with gr.Row():
-                with gr.Column(scale=1):
-                    gr.Markdown("### [SEARCH] Search for Matches")
-                    
-                    player1_input = gr.Textbox(
-                        label="Player 1 Name",
-                        placeholder="e.g., Iga Swiatek",
-                        lines=1
-                    )
-                    
-                    player2_input = gr.Textbox(
-                        label="Player 2 Name", 
-                        placeholder="e.g., Jessica Pegula",
-                        lines=1
-                    )
-                    
-                    search_btn = gr.Button("[SEARCH] Search Matches", variant="primary")
-                    
-                    search_output = gr.Textbox(
-                        label="Search Results",
-                        lines=10,
-                        interactive=False
-                    )
+                player1_input = gr.Textbox(
+                    label="Player 1 Name",
+                    placeholder="e.g., Iga Swiatek",
+                    lines=1
+                )
                 
-                with gr.Column(scale=1):
-                    gr.Markdown("### [LOAD] Load Match")
-                    
-                    match_dropdown = gr.Dropdown(
-                        label="Select Match",
-                        choices=[],
-                        value=None,
-                        interactive=True,
-                        allow_custom_value=False,
-                        container=True
-                    )
-                    
-                    # System handles player detection automatically
-                    
-                    load_btn = gr.Button("[LOAD] Load Match", variant="secondary")
-                    
-                    load_output = gr.Textbox(
-                        label="Match Status",
-                        value="Search for matches first, then select one to load.",
-                        lines=8,
-                        max_lines=15,
-                        interactive=False
-                    )
+                player2_input = gr.Textbox(
+                    label="Player 2 Name", 
+                    placeholder="e.g., Jessica Pegula",
+                    lines=1
+                )
+            
+            search_btn = gr.Button("[SEARCH] Search Matches", variant="primary")
+            
+            # Integrated match selection - single interactive list with 2 columns
+            with gr.Group():
+                gr.Markdown("**Search Results - Click a match to select it:**")
+                
+                match_dropdown = gr.Radio(
+                    label="",
+                    choices=[],
+                    value=None,
+                    interactive=True,
+                    elem_classes="two-column-radio"
+                )
+                
+                load_btn = gr.Button("[LOAD] Load Selected Match", variant="primary", size="lg")
+                
+                load_output = gr.Textbox(
+                    label="Status",
+                    value="Search for matches above, select one from the list, then click Load.",
+                    lines=6,
+                    interactive=False
+                )
             
             gr.Markdown("---")
             
+            # Q&A section - side by side, equal width
             with gr.Row():
                 with gr.Column(scale=1):
                     gr.Markdown("### [ASK] Ask Questions")
@@ -333,12 +332,12 @@ class TennisChatInterface:
                     question_input = gr.Textbox(
                         label="Your Question",
                         placeholder="e.g., What were the serve statistics? How many aces were hit?",
-                        lines=2
+                        lines=4
                     )
                     
-                    ask_btn = gr.Button("[ASK] Ask Question", variant="primary")
+                    ask_btn = gr.Button("[ASK] Ask Question", variant="primary", size="lg")
                 
-                with gr.Column(scale=2):
+                with gr.Column(scale=1):
                     gr.Markdown("### [ANSWER] Answer")
                     
                     answer_output = gr.Markdown(
@@ -364,7 +363,7 @@ class TennisChatInterface:
             search_btn.click(
                 fn=self.search_matches,
                 inputs=[player1_input, player2_input],
-                outputs=[search_output, match_dropdown]
+                outputs=match_dropdown
             )
             
             load_btn.click(
