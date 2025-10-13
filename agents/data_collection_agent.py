@@ -177,10 +177,8 @@ class TennisDataCollector:
             
             # Extract match result from the page
             match_result = self._extract_match_result(soup)
-            print(f"DEBUG _extract_match_result returned: {repr(match_result)}")
             if match_result:
                 stats['Match Result'] = match_result
-                print(f"DEBUG Stored in stats: {repr(stats['Match Result'])}")
             else:
                 # If we couldn't extract it from the page, try to find it in the JavaScript data later
                 stats['Match Result'] = 'Unknown'
@@ -471,19 +469,17 @@ class TennisDataCollector:
             # Clean up the match result if it's in a messy format
             if 'Match Result' in stats:
                 match_result = stats['Match Result']
-                # Look for patterns like "Player1 d. Player2 6-4 6-2 6-1" in the messy string
-                clean_result_pattern = re.search(r'(\w+\s+\w+)\s+d\.\s+(\w+\s+\w+)\s+(\d+-\d+(?:\s+\d+-\d+)*)', match_result)
+                # Look for patterns like "Player1 d. Player2 6-4 6-2 6-1" or with tiebreaks "6-7(5)"
+                clean_result_pattern = re.search(r'(\w+\s+\w+)\s+d\.\s+(\w+\s+\w+)\s+((?:\d+-\d+(?:\(\d+\))?(?:\s+|$))+)', match_result)
                 if clean_result_pattern:
                     winner = clean_result_pattern.group(1)
                     loser = clean_result_pattern.group(2)
-                    score = clean_result_pattern.group(3)
+                    score = clean_result_pattern.group(3).strip()
                     stats['Match Result'] = f"{winner} d. {loser} {score}"
-                # Also look for other patterns
+                # Also look for other patterns (keep the full result if it looks good)
                 elif 'd.' in match_result and re.search(r'\d+-\d+', match_result):
-                    # Extract just the part with the result
-                    result_part = re.search(r'([^=]*d\.[^=]*\d+-\d+[^=]*)', match_result)
-                    if result_part:
-                        stats['Match Result'] = result_part.group(1).strip()
+                    # If it already looks clean, don't modify it
+                    pass
             
             return stats
             
@@ -695,23 +691,23 @@ class TennisDataCollector:
                     # Look for score patterns
                     scores = score_pattern.findall(text)
                     if scores and len(text) > 20:  # Avoid short fragments
+                        # Count actual number of sets in the matched score string
+                        # Each set is "X-Y" or "X-Y(Z)", so count how many times we see "\d+-\d+"
+                        set_count = len(re.findall(r'\d+-\d+', scores[0])) if scores else 0
+                        
                         # Check if this looks like a match result
                         if any(keyword in text.lower() for keyword in ['won', 'defeated', 'beat', 'final', 'result', 'd.']):
-                            print(f"DEBUG FOUND match result in <{element.name}>: {repr(text)}")
-                            print(f"DEBUG Length: {len(text)}, Number of sets: {len(scores)}")
                             # Keep the result with the MOST sets (most complete)
-                            if len(scores) > max_sets:
+                            if set_count > max_sets:
                                 best_result = text.strip()
-                                max_sets = len(scores)
+                                max_sets = set_count
                         # If it's just scores, try to find context
-                        elif len(scores) >= 3:  # At least 3 sets suggest a complete match result
-                            print(f"DEBUG FOUND multiple scores ({len(scores)} sets) in <{element.name}>: {repr(text)}")
-                            if len(scores) > max_sets:
+                        elif set_count >= 3:  # At least 3 sets suggest a complete match result
+                            if set_count > max_sets:
                                 best_result = text.strip()
-                                max_sets = len(scores)
+                                max_sets = set_count
             
             if best_result:
-                print(f"DEBUG BEST result has {max_sets} sets: {repr(best_result)}")
                 return best_result
             
             # Pattern 2: Look for specific result text patterns with tiebreak support
