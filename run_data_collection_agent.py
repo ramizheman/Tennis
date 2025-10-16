@@ -34,7 +34,13 @@ def extract_structured_tables_from_details_flat(details_flat: dict, player1: str
         for k, v in fields:
             after = k.split(" - ", 1)[1] if " - " in k else k
             if raw_section == "point_by_point":
-                if any(n in after for n in ['Roger', 'Rafael', 'Iga', 'Jessica', 'Swiatek', 'Pegula', 'Jannik', 'Carlos', 'Sinner', 'Alcaraz']) and any(t in v.lower() for t in ['serve', 'winner', 'unforced', 'forced', 'rally']):
+                # Skip rows that contain player names and look like point descriptions (not stats)
+                # Use actual player names instead of hardcoded list
+                player_name_parts = []
+                for player in [player1, player2]:
+                    player_name_parts.extend(player.split())
+                
+                if any(part in after for part in player_name_parts) and any(t in v.lower() for t in ['serve', 'winner', 'unforced', 'forced', 'rally']):
                     continue
             toks = [t.strip() for t in v.split('|')]
             row = {"label": after, "values": toks}

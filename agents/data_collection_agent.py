@@ -205,22 +205,9 @@ class TennisDataCollector:
                     for key, value in section_data.items():
                         stats[f"{section} - {key}"] = value
             
-            # Look for player-specific sections (Roger Federer and Rafael Nadal)
-            players = ['Roger Federer', 'Rafael Nadal']
-            for player in players:
-                player_sections = [
-                    f'{player}: Serve Breakdown',
-                    f'{player}: Return Breakdown', 
-                    f'{player}: Net Points',
-                    f'{player}: Shot Types',
-                    f'{player}: Shot Direction'
-                ]
-                
-                for section in player_sections:
-                    section_data = self._extract_section_data(soup, section)
-                    if section_data:
-                        for key, value in section_data.items():
-                            stats[f"{section} - {key}"] = value
+            # NOTE: Legacy player-specific section extraction removed
+            # Modern Tennis Abstract uses JavaScript variables (serve1, serve2, etc.) instead of
+            # player-named sections like "Player Name: Serve Breakdown"
             
             # Look for JavaScript data that contains the actual statistics
             scripts = soup.find_all('script')
