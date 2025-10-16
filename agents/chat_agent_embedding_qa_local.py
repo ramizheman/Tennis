@@ -73,7 +73,7 @@ class TennisChatAgentEmbeddingQALocal:
                     raise ValueError("GOOGLE_API_KEY environment variable required for Gemini")
                 genai.configure(api_key=api_key)
                 self.client = genai
-                self.model = "gemini-1.5-flash"
+                self.model = "gemini-2.0-flash-exp"  # Latest free experimental model
             except ImportError:
                 raise ImportError("Please install google-generativeai: pip install google-generativeai")
                 
@@ -1951,8 +1951,16 @@ Always stop at the highest-priority source available. Do not combine across diff
 - **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total
 - **Cite your data sources** - mention which sections you're using for your calculations
 
-**For STRATEGY/INSIGHT questions** (key moments, momentum, analysis):
-- Provide detailed analysis with specific examples
+**For STRATEGY/INSIGHT questions** (tactics, effectiveness, what worked, key moments, momentum, analysis):
+- **CRITICAL**: Provide COMPREHENSIVE tactical analysis with 3-4 paragraphs, not just bullet points
+- Include multiple perspectives: serve placement effectiveness, shot selection patterns, court positioning
+- Cite SPECIFIC moments from point-by-point data with examples (e.g., "In Game 5, player X...")
+- Explain WHY tactics worked or failed (opponent weaknesses, court conditions, momentum)
+- Identify patterns: When did player win points? What shot combinations were effective?
+- Compare effectiveness: Which tactic had highest success rate? Provide percentages
+- Include context: Score situations where tactics were most effective (break points, crucial games)
+- Give actionable insights: What patterns emerged that explain the match result?
+- Be verbose and thorough - strategy questions deserve detailed, multi-paragraph answers
 
 **For COMPLEX ANALYTICAL QUESTIONS** (match flow, patterns, comparisons, comprehensive analysis):
 - **When you receive 8+ chunks**: This indicates a complex question requiring comprehensive analysis
@@ -2128,10 +2136,10 @@ Answer:"""
         # Add point-by-point data if available
         if 'point_log' in match:
             print(f"DEBUG: About to call _convert_point_log_to_text with point_log")
-            natural_language.extend(self._convert_point_log_to_text(match['point_log']))
+            natural_language.extend(self._convert_point_log_to_text(match['point_log'], player1, player2))
         elif 'pointlog_rows' in match:
             print(f"DEBUG: About to call _convert_point_log_to_text with pointlog_rows, count: {len(match['pointlog_rows'])}")
-            natural_language.extend(self._convert_point_log_to_text(match['pointlog_rows']))
+            natural_language.extend(self._convert_point_log_to_text(match['pointlog_rows'], player1, player2))
             print(f"DEBUG: Point log text added")
             
         # Post-process to move rally outcomes to the end for optimal embedding order
@@ -5298,8 +5306,8 @@ Answer:"""
         
         return sentences
 
-    def _convert_point_log_to_text(self, point_log: List[Dict[str, Any]]) -> List[str]:
-        """Convert point-by-point data to natural language text"""
+    def _convert_point_log_to_text(self, point_log: List[Dict[str, Any]], player1: str, player2: str) -> List[str]:
+        """Convert point-by-point data to natural language text with server information"""
         text = []
         text.append("POINT-BY-POINT NARRATIVE:")
         text.append("-" * 30)
@@ -5307,12 +5315,42 @@ Answer:"""
         for i, point in enumerate(point_log, 1):
             # Extract point information
             point_num = point.get('point', f'Point {i}')
+            server = point.get('server', '')
+            sets = point.get('sets', '')
+            games = point.get('games', '')
+            points = point.get('points', '')
             score = point.get('score', '')
             description = point.get('description', '')
             
-            # Create natural language description
+            # Create server context information
+            server_info = ""
+            if server:
+                # Determine the returner dynamically using the actual player names
+                if server.strip() == player1.strip():
+                    returner = player2
+                elif server.strip() == player2.strip():
+                    returner = player1
+                else:
+                    # Fallback: try partial matching
+                    server_lower = server.lower()
+                    player1_lower = player1.lower()
+                    player2_lower = player2.lower()
+                    
+                    if any(part in server_lower for part in player1_lower.split()):
+                        returner = player2
+                    elif any(part in server_lower for part in player2_lower.split()):
+                        returner = player1
+                    else:
+                        returner = "Opponent"
+                
+                server_info = f"[Server: {server} | Returner: {returner} | Score: {sets} {games} {points}]"
+            
+            # Create natural language description with server context
             if description:
-                text.append(f"{point_num}: {description}")
+                if server_info:
+                    text.append(f"{point_num} {server_info}: {description}")
+                else:
+                    text.append(f"{point_num}: {description}")
             elif score:
                 text.append(f"{point_num}: Score is {score}")
             else:

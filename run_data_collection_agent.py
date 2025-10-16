@@ -113,12 +113,20 @@ def main(player1=None, player2=None, match_index=0):
                     # Create the exact format needed for the narrative
                     point_number = len(pointlog_rows) + 1  # Sequential numbering
                     point_description = value
+                    server = parts[0]  # Extract server name
+                    sets = parts[1]   # Extract sets score
+                    games = parts[2]  # Extract games score
+                    points = parts[3] # Extract points score
                     
                     # Format: "Point {number}: {description}"
                     formatted_point = f"Point {point_number}: {point_description}"
                     
                     pointlog_rows.append({
                         'point_number': point_number,
+                        'server': server,
+                        'sets': sets,
+                        'games': games,
+                        'points': points,
                         'description': point_description,
                         'formatted': formatted_point
                     })
