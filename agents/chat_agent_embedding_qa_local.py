@@ -900,6 +900,24 @@ class TennisChatAgentEmbeddingQALocal:
         net_points_fix_applied = False
 
         
+        # MATCH OVERVIEW PRIORITY: For score/winner questions, always include match_overview
+        query_lower = query.lower()
+        if any(word in query_lower for word in ["score", "won", "winner", "result", "defeated", "beat", "lost", "final"]):
+            match_overview_chunk = None
+            for chunk in self.chunks:
+                if 'match_overview' in chunk['metadata']['section']:
+                    match_overview_chunk = {
+                        "text": chunk['text'],
+                        "metadata": chunk['metadata'],
+                        "distance": 0.0,
+                        "relevance_score": 10.0
+                    }
+                    break
+            if match_overview_chunk:
+                filtered_chunks = [chunk for chunk in filtered_chunks if 'match_overview' not in chunk['metadata']['section']]
+                filtered_chunks.insert(0, match_overview_chunk)
+                print(f"🏆 FORCED match_overview to top for score/winner question")
+        
         # OVERVIEW PRIORITY: For basic statistical questions, prioritize overview_statistics
         if not self._is_match_insight_question(query) and any(word in query.lower() for word in [
             # Winners
@@ -1845,6 +1863,8 @@ class TennisChatAgentEmbeddingQALocal:
             prompt = f"""You are a tennis match analyst with access to detailed match data.
 
 IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
+- **CRITICAL: When asked "who won" or "who won the match"**, ALWAYS include BOTH the winner's name AND the final score in your answer (e.g., "Carlos Alcaraz won the match, defeating Novak Djokovic 6-4 7-6(4) 6-2")
+- **CRITICAL: When asked for the "score" or "final score"**, provide the complete score including the winner (e.g., "Carlos Alcaraz d. Novak Djokovic 6-4 7-6(4) 6-2")
 - When asked for "counts" or "numbers", always return the raw count if available (e.g., "12 points"). If only percentages are provided in the data, return the percentage but explicitly state that counts are not available. Never infer or estimate counts from percentages.
 - ⚠️ When adding categories (e.g., unforced + forced errors), only add if both are raw counts
 - ❌ Never add percentages together
@@ -1949,7 +1969,6 @@ Always stop at the highest-priority source available. Do not combine across diff
 - Game points & Deuce points → always combine serve and return values, and provide a total
 
 - **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total
-- **Cite your data sources** - mention which sections you're using for your calculations
 
 **For STRATEGY/INSIGHT questions** (tactics, effectiveness, what worked, key moments, momentum, analysis):
 - **CRITICAL**: Provide COMPREHENSIVE tactical analysis with 3-4 paragraphs, not just bullet points

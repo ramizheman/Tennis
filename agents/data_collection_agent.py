@@ -31,6 +31,65 @@ class TennisDataCollector:
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
     
+    def get_all_player_names(self) -> List[str]:
+        """
+        Extract all unique player names from the Tennis Abstract meta page.
+        Used for autocomplete/dropdown functionality.
+        
+        Returns:
+            List of unique player names, sorted alphabetically
+        """
+        player_names = set()
+        
+        try:
+            print("[CACHE] Fetching all player names from Tennis Abstract meta page...")
+            # The meta.html page has all players organized
+            meta_url = "https://tennisabstract.com/charting/meta.html"
+            response = self.session.get(meta_url)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Find all links - player names are typically in the link text
+            # Links look like: <a href="player_page.html">Player Name</a>
+            all_links = soup.find_all('a', href=True)
+            
+            for link in all_links:
+                text = clean_unicode_text(link.get_text(strip=True))
+                href = link.get('href', '')
+                
+                # Player links go to individual match pages or player stat pages
+                # They typically contain player names in a format like "Firstname Lastname"
+                if text and len(text) >= 5 and len(text) <= 40:
+                    # Exclude common navigation/meta text patterns
+                    exclude_patterns = [
+                        'click', 'here', 'home', 'back', 'next', 'previous', 'charting', 
+                        'meta', 'find out', 'active', 'reasons', 'contribute', 'advanced',
+                        'player', 'match', 'chart', 'baseline', 'aggressive', 'all-court',
+                        'database', 'breakdown', 'sorted', 'analysis', 'statistics'
+                    ]
+                    
+                    text_lower = text.lower()
+                    if any(pattern in text_lower for pattern in exclude_patterns):
+                        continue
+                    
+                    # Player names should have at least one space (First Last) or be single names
+                    # and start with capital letter
+                    if text[0].isupper():
+                        # Check if it looks like a proper name (has letters, maybe spaces/hyphens)
+                        if re.match(r'^[A-Z][a-zA-Z\s\'-]+$', text):
+                            player_names.add(text)
+            
+            # Convert to sorted list
+            sorted_names = sorted(list(player_names))
+            print(f"[CACHE] Found {len(sorted_names)} unique player names")
+            
+            return sorted_names
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to fetch player names: {e}")
+            return []
+    
     def search_player_matches(self, player1: str, player2: str) -> List[Dict]:
         """
         Search for matches between two players on TennisAbstract.com
@@ -75,23 +134,25 @@ class TennisDataCollector:
     
     def _is_match_between_players(self, text: str, player1: str, player2: str) -> bool:
         """
-        Check if the match text contains both players exactly
+        Check if the match text contains both players (supports partial name matching)
         """
-        player1_lower = player1.lower()
-        player2_lower = player2.lower()
+        player1_lower = player1.lower().strip()
+        player2_lower = player2.lower().strip()
         text_lower = text.lower()
         
-        # Look for exact player names in the text
-        # Handle "vs" format: "Player1 vs Player2"
-        vs_pattern = f"{player1_lower} vs {player2_lower}"
-        vs_pattern_reverse = f"{player2_lower} vs {player1_lower}"
+        # Support partial matching (e.g., "djokovic" matches "Novak Djokovic")
+        # Split player names into parts to check each part
+        player1_parts = player1_lower.split()
+        player2_parts = player2_lower.split()
         
-        # Also check for just the names being present (in case of different formatting)
-        has_player1_exact = player1_lower in text_lower
-        has_player2_exact = player2_lower in text_lower
+        # Check if any part of player1 name is in the text
+        has_player1 = any(part in text_lower for part in player1_parts) if player1_parts else player1_lower in text_lower
         
-        # Must have both players exactly
-        return has_player1_exact and has_player2_exact
+        # Check if any part of player2 name is in the text
+        has_player2 = any(part in text_lower for part in player2_parts) if player2_parts else player2_lower in text_lower
+        
+        # Must have both players
+        return has_player1 and has_player2
     
     def _extract_match_data(self, text: str, href: str) -> Optional[Dict]:
         """
@@ -100,7 +161,8 @@ class TennisDataCollector:
         try:
             # Parse match information
             # Format: "YYYY-MM-DD Tournament Round: Player1 vs Player2 (Tour)"
-            match_pattern = r'(\d{4}-\d{2}-\d{2})\s+([^:]+):\s+([^v]+)\s+vs\s+([^(]+)\s+\(([^)]+)\)'
+            # Fixed: Use word boundary for "vs" instead of character class [^v]
+            match_pattern = r'(\d{4}-\d{2}-\d{2})\s+([^:]+):\s+(.+?)\s+vs\s+(.+?)\s+\(([^)]+)\)'
             match = re.search(match_pattern, text)
             
             if match:
@@ -686,7 +748,14 @@ class TennisDataCollector:
                         if any(keyword in text.lower() for keyword in ['won', 'defeated', 'beat', 'final', 'result', 'd.']):
                             # Keep the result with the MOST sets (most complete)
                             if set_count > max_sets:
-                                best_result = text.strip()
+                                # Extract just the clean score line: "Player1 d. Player2 6-4 7-6(4) 6-2"
+                                # Look for pattern: Name d. Name Score
+                                clean_pattern = r'([A-Z][a-zA-Z\s]+)\s+d\.\s+([A-Z][a-zA-Z\s]+)\s+((?:\d+-\d+(?:\(\d+\))?\s*)+)'
+                                clean_match = re.search(clean_pattern, text)
+                                if clean_match:
+                                    best_result = f"{clean_match.group(1).strip()} d. {clean_match.group(2).strip()} {clean_match.group(3).strip()}"
+                                else:
+                                    best_result = text.strip()
                                 max_sets = set_count
                         # If it's just scores, try to find context
                         elif set_count >= 3:  # At least 3 sets suggest a complete match result
@@ -695,6 +764,7 @@ class TennisDataCollector:
                                 max_sets = set_count
             
             if best_result:
+                print(f"[DEBUG] _extract_match_result returning: {best_result}")
                 return best_result
             
             # Pattern 2: Look for specific result text patterns with tiebreak support
