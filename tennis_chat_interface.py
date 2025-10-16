@@ -5,6 +5,7 @@ import json
 import os
 from typing import List, Dict, Tuple
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
 
 # Load environment variables from .env file
 load_dotenv()
@@ -14,9 +15,10 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'agents'))
 from chat_agent_embedding_qa_local import TennisChatAgentEmbeddingQALocal
+from data_collection_agent import TennisDataCollector
 
 class TennisChatInterface:
-    def __init__(self, llm_provider: str = "openai"):
+    def __init__(self, llm_provider: str = "gemini"):
         """
         Initialize the tennis chat interface.
         
@@ -32,7 +34,13 @@ class TennisChatInterface:
         self.matches = []
         self.current_match_index = None
         
+        # Player names cache
+        self.cache_file = "cached_player_names.json"
+        self.cache_age_days = 7
+        self.player_names = self._load_player_names()
+        
         print(f"[TENNIS] Tennis Chat Interface initialized with LOCAL embeddings + {self.llm_provider.upper()} LLM")
+        print(f"[TENNIS] Loaded {len(self.player_names)} player names for autocomplete")
     
     def _check_api_keys(self):
         """Check if required API keys are available."""
@@ -47,6 +55,78 @@ class TennisChatInterface:
                 raise ValueError("GOOGLE_API_KEY not found in environment variables")
         else:
             raise ValueError("llm_provider must be 'openai', 'claude', or 'gemini'")
+    
+    def _load_player_names(self, force_refresh: bool = False) -> List[str]:
+        """
+        Load player names from cache or refresh if needed.
+        
+        Args:
+            force_refresh: If True, fetch fresh data regardless of cache age
+            
+        Returns:
+            List of player names for autocomplete
+        """
+        # Check if cache exists and is valid
+        cache_valid = False
+        if os.path.exists(self.cache_file) and not force_refresh:
+            try:
+                with open(self.cache_file, 'r') as f:
+                    cache_data = json.load(f)
+                    cache_date = datetime.fromisoformat(cache_data['timestamp'])
+                    cache_age = datetime.now() - cache_date
+                    
+                    if cache_age < timedelta(days=self.cache_age_days):
+                        cache_valid = True
+                        player_names = cache_data['player_names']
+                        print(f"[CACHE] Loaded {len(player_names)} player names from cache (age: {cache_age.days} days)")
+                        return player_names
+                    else:
+                        print(f"[CACHE] Cache expired (age: {cache_age.days} days > {self.cache_age_days} days)")
+            except Exception as e:
+                print(f"[CACHE] Error reading cache: {e}")
+        
+        # Cache doesn't exist, is invalid, or force refresh requested
+        print("[CACHE] Fetching fresh player names...")
+        collector = TennisDataCollector()
+        player_names = collector.get_all_player_names()
+        
+        if player_names:
+            # Save to cache
+            self._save_player_cache(player_names)
+            return player_names
+        else:
+            print("[CACHE] Warning: No player names fetched, using empty list")
+            return []
+    
+    def _save_player_cache(self, player_names: List[str]):
+        """Save player names to cache file."""
+        try:
+            cache_data = {
+                'timestamp': datetime.now().isoformat(),
+                'player_names': player_names,
+                'count': len(player_names)
+            }
+            with open(self.cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+            print(f"[CACHE] Saved {len(player_names)} player names to cache")
+        except Exception as e:
+            print(f"[CACHE] Error saving cache: {e}")
+    
+    def refresh_player_names(self) -> Tuple[gr.Dropdown, gr.Dropdown, str]:
+        """
+        Manually refresh the player names cache.
+        Returns updated dropdown choices for both player inputs.
+        """
+        print("[CACHE] Manual refresh requested...")
+        self.player_names = self._load_player_names(force_refresh=True)
+        
+        # Return updated dropdowns and status message
+        status_msg = f"✅ Player list refreshed! Loaded {len(self.player_names)} players."
+        return (
+            gr.Dropdown(choices=self.player_names),
+            gr.Dropdown(choices=self.player_names),
+            status_msg
+        )
         
     def search_matches(self, player1: str, player2: str):
         """Search for matches between two players (without scraping details)"""
@@ -122,63 +202,69 @@ class TennisChatInterface:
             if match_index is None:
                 return "Selected match not found. Please search again."
             
-            # Step 1: Display initial status
-            status_message = f"[LOADING] **Loading Match Data...**\n\n"
-            status_message += f"**Selected Match:** {match_selection}\n\n"
-            status_message += f"**Step 1/4:** [SCRAPE] Scraping detailed match data from TennisAbstract.com...\n"
-            
-            # Call the data collection script to scrape the specific match
-            import subprocess
-            import sys
-            
-            print(f"[SCRAPE] Scraping data for match {match_index}: {match_selection}")
-            
-            # Get player names from the selected match
+            # Get player names and match info from the selected match
             selected_match = self.matches[match_index]
             player1 = selected_match.get('player1', 'Player 1')
             player2 = selected_match.get('player2', 'Player 2')
+            match_date = selected_match.get('date', '2025-06-28')
             
-            print(f"DEBUG: player1 = {player1}, player2 = {player2}")
-            
-            # Run the data collection script with the match index
-            result = subprocess.run([
-                sys.executable, 'run_data_collection_agent.py', 
-                player1, player2, str(match_index)
-            ], capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                return f"[ERROR] **Error during data scraping:** {result.stderr}"
-            
-            print("[SUCCESS] Data collection completed successfully")
-            print(f"DEBUG: Data collection stdout: {result.stdout}")
-            print(f"DEBUG: Data collection stderr: {result.stderr}")
-            
-            # Step 2: Update status
-            status_message += f"[SUCCESS] **Step 1 Complete:** Match data scraped successfully!\n\n"
-            status_message += f"**Step 2/4:** 📁 Loading JSON data file...\n"
-            
-            # Load the created JSON file
-            import json
-            import glob
-            
-            # Determine the filename that was created
-            print(f"DEBUG: About to create player1_clean from player1 = {player1}")
+            # Construct expected filename
             player1_clean = player1.replace(' ', '_').replace('.', '')
             player2_clean = player2.replace(' ', '_').replace('.', '')
+            date_clean = match_date.replace('-', '')
+            expected_filename = f"{player1_clean}_{player2_clean}_{date_clean}.json"
             
-            print(f"DEBUG: player1_clean = {player1_clean}, player2_clean = {player2_clean}")
-            
-            # Look for the JSON file that was created (includes date in filename)
-            pattern = f"{player1_clean}_{player2_clean}_*.json"
-            matching_files = glob.glob(pattern)
-            
-            print(f"DEBUG: Looking for files matching pattern: {pattern}")
-            print(f"DEBUG: Found matching files: {matching_files}")
-            
-            if matching_files:
-                filename = matching_files[0]
+            # Check if match data already exists (cached from previous load)
+            skip_scraping = False
+            if os.path.exists(expected_filename):
+                print(f"[CACHE] Match already cached: {expected_filename}")
+                skip_scraping = True
+                status_message = f"[LOADING] **Loading Match Data...**\n\n"
+                status_message += f"**Selected Match:** {match_selection}\n\n"
+                status_message += f"**Step 1/4:** ⚡ Using cached match data (already scraped)...\n"
             else:
-                return "[ERROR] **Error:** Could not find the created JSON file."
+                print(f"[SCRAPE] First time loading this match, scraping from Tennis Abstract...")
+                status_message = f"[LOADING] **Loading Match Data...**\n\n"
+                status_message += f"**Selected Match:** {match_selection}\n\n"
+                status_message += f"**Step 1/4:** [SCRAPE] Scraping detailed match data from TennisAbstract.com...\n"
+            
+            # Only scrape if cache doesn't exist
+            if not skip_scraping:
+                # Call the data collection script to scrape the specific match
+                import subprocess
+                import sys
+                
+                print(f"[SCRAPE] Scraping data for match {match_index}: {match_selection}")
+                print(f"DEBUG: player1 = {player1}, player2 = {player2}")
+                
+                # Run the data collection script with the match index
+                result = subprocess.run([
+                    sys.executable, 'run_data_collection_agent.py', 
+                    player1, player2, str(match_index)
+                ], capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    return f"[ERROR] **Error during data scraping:** {result.stderr}"
+                
+                print("[SUCCESS] Data collection completed successfully")
+                print(f"DEBUG: Data collection stdout: {result.stdout}")
+                print(f"DEBUG: Data collection stderr: {result.stderr}")
+                
+                status_message += f"[SUCCESS] **Step 1 Complete:** Match data scraped successfully!\n\n"
+            else:
+                status_message += f"[SUCCESS] **Step 1 Complete:** Using cached data (instant load)!\n\n"
+            
+            # Step 2: Update status
+            status_message += f"**Step 2/4:** 📁 Loading JSON data file...\n"
+            
+            # Load the JSON file (either just scraped or from cache)
+            import json
+            
+            filename = expected_filename
+            print(f"DEBUG: Loading JSON file: {filename}")
+            
+            if not os.path.exists(filename):
+                return f"[ERROR] **Error:** Could not find the JSON file: {filename}"
             
             # Load the match data
             with open(filename, 'r', encoding='utf-8') as f:
@@ -186,32 +272,58 @@ class TennisChatInterface:
             
             # Step 3: Update status
             status_message += f"[SUCCESS] **Step 2 Complete:** JSON data loaded!\n\n"
-            status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
             
-            # Convert to natural language and load embeddings
-            print("[CONVERT] Converting match data to natural language...")
-            print(f"DEBUG: match_data type: {type(match_data)}")
-            print(f"DEBUG: match_data keys: {list(match_data.keys()) if isinstance(match_data, dict) else 'Not a dict'}")
-            if isinstance(match_data, dict) and 'matches' in match_data:
-                print(f"DEBUG: matches length: {len(match_data['matches'])}")
-                print(f"DEBUG: first match type: {type(match_data['matches'][0])}")
-                print(f"DEBUG: first match keys: {list(match_data['matches'][0].keys()) if isinstance(match_data['matches'][0], dict) else 'Not a dict'}")
+            # Create match-specific filename prefix (without .json extension)
+            match_prefix = expected_filename.replace('.json', '')
+            embeddings_cache_file = f"{match_prefix}_faiss.pkl"  # Check for the FAISS index file
             
-            natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
-            
-            # Save natural language file
-            with open('FINAL_NATURAL_LANGUAGE.md', 'w', encoding='utf-8') as f:
-                f.write(natural_language)
-            
-            print("[SAVE] Natural language file saved as 'FINAL_NATURAL_LANGUAGE.md'")
-            
-            # Step 4: Update status
-            status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
-            status_message += f"**Step 4/4:** [EMBED] Loading embeddings for question answering...\n"
-            
-            # Generate embeddings from the converted data (now with fixed match result!)
-            print("[EMBED] Generating embeddings from converted match data...")
-            self.chat_agent.load_exact_full_format('FINAL_NATURAL_LANGUAGE.md')
+            # Check if embeddings are already cached
+            if os.path.exists(embeddings_cache_file):
+                print(f"[CACHE] Embeddings already cached: {embeddings_cache_file}")
+                status_message += f"**Step 3/4:** ⚡ Loading cached embeddings (instant!)...\n"
+                
+                # Load pre-computed embeddings directly
+                success = self.chat_agent.load_embeddings_from_disk(match_prefix)
+                
+                if success:
+                    status_message += f"[SUCCESS] **Step 3 Complete:** Embeddings loaded from cache!\n\n"
+                    status_message += f"**Step 4/4:** ✅ Match ready for questions!\n"
+                else:
+                    # Cache corrupted, regenerate
+                    print("[WARN] Cached embeddings corrupted, regenerating...")
+                    status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
+                    natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
+                    nl_filename = f"{match_prefix}_NL.md"
+                    with open(nl_filename, 'w', encoding='utf-8') as f:
+                        f.write(natural_language)
+                    print(f"[SAVE] Natural language saved as '{nl_filename}'")
+                    
+                    status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
+                    status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
+                    
+                    self.chat_agent.load_exact_full_format(nl_filename)
+                    self.chat_agent.save_embeddings_to_disk(match_prefix)
+                    print(f"[CACHE] Embeddings saved for future use: {embeddings_cache_file}")
+            else:
+                # No cache - generate fresh
+                print("[CONVERT] First time loading this match, converting to natural language...")
+                status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
+                
+                natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
+                nl_filename = f"{match_prefix}_NL.md"
+                with open(nl_filename, 'w', encoding='utf-8') as f:
+                    f.write(natural_language)
+                print(f"[SAVE] Natural language saved as '{nl_filename}'")
+                
+                status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
+                status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
+                
+                print("[EMBED] Generating embeddings from converted match data...")
+                self.chat_agent.load_exact_full_format(nl_filename)
+                
+                # Save embeddings for future loads
+                self.chat_agent.save_embeddings_to_disk(match_prefix)
+                print(f"[CACHE] Embeddings saved for future use: {embeddings_cache_file}")
             
             print("[SUCCESS] Match loaded successfully!")
             
@@ -287,19 +399,35 @@ class TennisChatInterface:
             gr.Markdown("### [SEARCH] Search & Load Matches")
             
             with gr.Row():
-                player1_input = gr.Textbox(
+                player1_input = gr.Dropdown(
                     label="Player 1 Name",
-                    placeholder="e.g., Iga Swiatek",
-                    lines=1
+                    choices=self.player_names,
+                    allow_custom_value=True,
+                    filterable=True,
+                    value=None,
+                    info="Start typing to filter player names"
                 )
                 
-                player2_input = gr.Textbox(
+                player2_input = gr.Dropdown(
                     label="Player 2 Name", 
-                    placeholder="e.g., Jessica Pegula",
-                    lines=1
+                    choices=self.player_names,
+                    allow_custom_value=True,
+                    filterable=True,
+                    value=None,
+                    info="Start typing to filter player names"
                 )
             
-            search_btn = gr.Button("[SEARCH] Search Matches", variant="primary")
+            with gr.Row():
+                search_btn = gr.Button("[SEARCH] Search Matches", variant="primary", scale=3)
+                refresh_btn = gr.Button("🔄 Refresh Player List", variant="secondary", scale=1)
+            
+            # Refresh status output
+            refresh_status = gr.Textbox(
+                label="",
+                value="",
+                visible=False,
+                lines=1
+            )
             
             # Integrated match selection - single interactive list with 2 columns
             with gr.Group():
@@ -364,6 +492,12 @@ class TennisChatInterface:
                 fn=self.search_matches,
                 inputs=[player1_input, player2_input],
                 outputs=match_dropdown
+            )
+            
+            refresh_btn.click(
+                fn=self.refresh_player_names,
+                inputs=[],
+                outputs=[player1_input, player2_input, refresh_status]
             )
             
             load_btn.click(
