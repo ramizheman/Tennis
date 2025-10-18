@@ -437,7 +437,7 @@ class TennisDataCollector:
             # Look for the point-by-point description span element
             pointlog_span = soup.find('span', id='pointlog')
             if pointlog_span:
-                print(f"✅ Found pointlog span: {clean_unicode_text(pointlog_span.get_text(strip=True))}")
+                print(f"[OK] Found pointlog span: {clean_unicode_text(pointlog_span.get_text(strip=True))}")
                 
                 # Look for JavaScript that handles the pointlog click
                 scripts = soup.find_all('script')
@@ -446,7 +446,7 @@ class TennisDataCollector:
                     if script_text:
                         # Look for JavaScript that handles pointlog clicks or loads point data
                         if 'pointlog' in script_text or 'pointlog' in script_text.lower():
-                            print(f"✅ Found JavaScript handling pointlog")
+                            print(f"[OK] Found JavaScript handling pointlog")
                             
                             # Look for any data that might be loaded for pointlog
                             point_data_patterns = re.findall(r'var\s+(\w+)\s*=\s*[\'"](.*?point.*?log.*?)[\'"]', script_text, re.DOTALL | re.IGNORECASE)
@@ -494,7 +494,7 @@ class TennisDataCollector:
                                         ajax_content = ajax_response.text
                                         if re.search(r'Roger Federer.*0‑0.*0‑0.*0‑0.*1st serve', ajax_content):
                                             stats['Point-by-point description - AJAX Data'] = ajax_content
-                                            print(f"✅ Found point-by-point data via AJAX!")
+                                            print(f"[OK] Found point-by-point data via AJAX!")
                                 except Exception as e:
                                     print(f"Error fetching AJAX URL: {e}")
             

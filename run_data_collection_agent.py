@@ -194,7 +194,7 @@ def main(player1=None, player2=None, match_index=0):
     with open(filename, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
     
-    print(f"✅ Data collection completed and saved to: {filename}")
+    print(f"[OK] Data collection completed and saved to: {filename}")
     
     # Show what was collected
     print(f"\n=== COLLECTED DATA SUMMARY ===")

@@ -221,12 +221,12 @@ class TennisChatInterface:
                 skip_scraping = True
                 status_message = f"[LOADING] **Loading Match Data...**\n\n"
                 status_message += f"**Selected Match:** {match_selection}\n\n"
-                status_message += f"**Step 1/4:** ⚡ Using cached match data (already scraped)...\n"
+                # status_message += f"**Step 1/4:** ⚡ Using cached match data (already scraped)...\n"
             else:
                 print(f"[SCRAPE] First time loading this match, scraping from Tennis Abstract...")
                 status_message = f"[LOADING] **Loading Match Data...**\n\n"
                 status_message += f"**Selected Match:** {match_selection}\n\n"
-                status_message += f"**Step 1/4:** [SCRAPE] Scraping detailed match data from TennisAbstract.com...\n"
+                # status_message += f"**Step 1/4:** [SCRAPE] Scraping detailed match data from TennisAbstract.com...\n"
             
             # Only scrape if cache doesn't exist
             if not skip_scraping:
@@ -250,12 +250,12 @@ class TennisChatInterface:
                 print(f"DEBUG: Data collection stdout: {result.stdout}")
                 print(f"DEBUG: Data collection stderr: {result.stderr}")
                 
-                status_message += f"[SUCCESS] **Step 1 Complete:** Match data scraped successfully!\n\n"
-            else:
-                status_message += f"[SUCCESS] **Step 1 Complete:** Using cached data (instant load)!\n\n"
+                # status_message += f"[SUCCESS] **Step 1 Complete:** Match data scraped successfully!\n\n"
+            # else:
+                # status_message += f"[SUCCESS] **Step 1 Complete:** Using cached data (instant load)!\n\n"
             
             # Step 2: Update status
-            status_message += f"**Step 2/4:** 📁 Loading JSON data file...\n"
+            # status_message += f"**Step 2/4:** 📁 Loading JSON data file...\n"
             
             # Load the JSON file (either just scraped or from cache)
             import json
@@ -271,7 +271,7 @@ class TennisChatInterface:
                 match_data = json.load(f)
             
             # Step 3: Update status
-            status_message += f"[SUCCESS] **Step 2 Complete:** JSON data loaded!\n\n"
+            # status_message += f"[SUCCESS] **Step 2 Complete:** JSON data loaded!\n\n"
             
             # Create match-specific filename prefix (without .json extension)
             match_prefix = expected_filename.replace('.json', '')
@@ -280,26 +280,27 @@ class TennisChatInterface:
             # Check if embeddings are already cached
             if os.path.exists(embeddings_cache_file):
                 print(f"[CACHE] Embeddings already cached: {embeddings_cache_file}")
-                status_message += f"**Step 3/4:** ⚡ Loading cached embeddings (instant!)...\n"
+                # status_message += f"**Step 3/4:** ⚡ Loading cached embeddings (instant!)...\n"
                 
                 # Load pre-computed embeddings directly
                 success = self.chat_agent.load_embeddings_from_disk(match_prefix)
                 
                 if success:
-                    status_message += f"[SUCCESS] **Step 3 Complete:** Embeddings loaded from cache!\n\n"
-                    status_message += f"**Step 4/4:** ✅ Match ready for questions!\n"
+                    # status_message += f"[SUCCESS] **Step 3 Complete:** Embeddings loaded from cache!\n\n"
+                    # status_message += f"**Step 4/4:** ✅ Match ready for questions!\n"
+                    pass
                 else:
                     # Cache corrupted, regenerate
                     print("[WARN] Cached embeddings corrupted, regenerating...")
-                    status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
+                    # status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
                     natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
                     nl_filename = f"{match_prefix}_NL.md"
                     with open(nl_filename, 'w', encoding='utf-8') as f:
                         f.write(natural_language)
                     print(f"[SAVE] Natural language saved as '{nl_filename}'")
                     
-                    status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
-                    status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
+                    # status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
+                    # status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
                     
                     self.chat_agent.load_exact_full_format(nl_filename)
                     self.chat_agent.save_embeddings_to_disk(match_prefix)
@@ -307,7 +308,7 @@ class TennisChatInterface:
             else:
                 # No cache - generate fresh
                 print("[CONVERT] First time loading this match, converting to natural language...")
-                status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
+                # status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
                 
                 natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
                 nl_filename = f"{match_prefix}_NL.md"
@@ -315,8 +316,8 @@ class TennisChatInterface:
                     f.write(natural_language)
                 print(f"[SAVE] Natural language saved as '{nl_filename}'")
                 
-                status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
-                status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
+                # status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
+                # status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
                 
                 print("[EMBED] Generating embeddings from converted match data...")
                 self.chat_agent.load_exact_full_format(nl_filename)
@@ -334,7 +335,8 @@ class TennisChatInterface:
             p1 = match.get('basic', {}).get('player1', 'Player 1')
             p2 = match.get('basic', {}).get('player2', 'Player 2')
             
-            final_message = status_message + f"[SUCCESS] **Step 4 Complete:** Embeddings loaded successfully!\n\n"
+            # final_message = status_message + f"[SUCCESS] **Step 4 Complete:** Embeddings loaded successfully!\n\n"
+            final_message = status_message + f"\n"
             final_message += f"[TENNIS] **Match Successfully Loaded!**\n\n"
             final_message += f"**Match:** {date} - {tournament}\n"
             final_message += f"**Players:** {p1} vs {p2}\n"
@@ -554,7 +556,7 @@ def main():
     # Launch the interface - let Gradio find an available port
     interface.launch(
         server_name="0.0.0.0",
-        share=False,
+        share=True,  # Creates a public URL for 72 hours
         show_error=True,
         quiet=False
     )
