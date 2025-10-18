@@ -342,11 +342,21 @@ class TennisChatInterface:
             final_message += f"**Players:** {p1} vs {p2}\n"
             final_message += f"**System:** Player detection is automatic based on your questions.\n\n"
             final_message += f"**[READY] Ready to Answer Questions!**\n\n"
-            final_message += f"**Example Questions:**\n"
+            final_message += f"**Example Questions:**\n\n"
+            final_message += f"**Basic Stats:**\n"
             final_message += f"- What was the final score?\n"
             final_message += f"- How many aces did each player hit?\n"
             final_message += f"- What were the break point statistics?\n"
+            final_message += f"- Who hit more forehand winners?\n\n"
+            final_message += f"**Tactical Analysis:**\n"
             final_message += f"- Give me a comprehensive analysis of the match\n"
+            final_message += f"- How did serve effectiveness differ between deuce and ad courts?\n"
+            final_message += f"- What patterns suggest who controlled tempo better?\n\n"
+            final_message += f"**Conditional/Situational:**\n"
+            final_message += f"- Did either player change their serve placement after losing key points?\n"
+            final_message += f"- Was {p1.split()[-1]} more aggressive on returns in tight moments?\n"
+            final_message += f"- Did {p2.split()[-1]} adjust strategy after losing the first set?\n"
+            final_message += f"- How did rally length change in critical games?\n"
             
             return final_message
             
@@ -399,6 +409,7 @@ class TennisChatInterface:
             
             # Search and Load section - fully integrated
             gr.Markdown("### [SEARCH] Search & Load Matches")
+            gr.Markdown("**Note:** Last name searches work best (e.g., 'Federer' or 'Nadal')")
             
             with gr.Row():
                 player1_input = gr.Dropdown(

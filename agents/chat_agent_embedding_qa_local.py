@@ -822,7 +822,16 @@ class TennisChatAgentEmbeddingQALocal:
             "turning point", "momentum", "match narrative", "match story",
             "overall performance", "comprehensive", "detailed analysis",
             "match progression", "how the match unfolded", "match dynamics",
-            "match summary", "match overview", "match recap"
+            "match summary", "match overview", "match recap",
+            # Temporal/evolution indicators
+            "evolve", "evolved", "evolution", "over time", "throughout the match",
+            "progression", "progressed", "changed over", "developed",
+            "early vs late", "first set vs", "as the match", "match went on",
+            # Conditional/situational indicators (require point-by-point data)
+            "after losing", "after winning", "after missing", "after break",
+            "when rallies got", "as rallies got", "rallies longer", "rallies shorter",
+            "on important points", "on key points", "in crucial moments", "in tight moments",
+            "when facing break", "when trailing", "when ahead"
         ]
         
         # Medium complexity questions that need multiple sections
@@ -1545,6 +1554,30 @@ class TennisChatAgentEmbeddingQALocal:
                 filtered_chunks.insert(0, match_overview_chunk)
                 print(f"🏆 FORCED match_overview to top for match result question")
         
+        # POINT-BY-POINT PRIORITY: For conditional/temporal questions, prioritize narrative chunks
+        conditional_indicators = [
+            "after losing", "after winning", "after missing", "after break",
+            "when rallies got", "as rallies got", "rallies longer", "rallies shorter",
+            "when facing break", "when trailing", "when ahead"
+        ]
+        if any(indicator in query.lower() for indicator in conditional_indicators):
+            # Collect all point-by-point narrative chunks
+            pbp_chunks = []
+            non_pbp_chunks = []
+            
+            for chunk in filtered_chunks:
+                if 'narrative' in chunk['metadata']['section'].lower() or 'point-by-point' in chunk['metadata']['section'].lower():
+                    # Boost relevance score for PBP chunks
+                    chunk['relevance_score'] = chunk.get('relevance_score', 1.0) + 5.0
+                    pbp_chunks.append(chunk)
+                else:
+                    non_pbp_chunks.append(chunk)
+            
+            # Reorder: PBP chunks first, then statistical chunks
+            if pbp_chunks:
+                filtered_chunks = pbp_chunks + non_pbp_chunks
+                print(f"📖 PRIORITIZED {len(pbp_chunks)} point-by-point chunks for conditional question")
+        
         # FINAL NEGATIVE FILTER: Remove net points chunks unless question is about net play
         if not net_points_fix_applied and not any(word in query.lower() for word in ["net points", "net approaches", "overhead", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
             original_count = len(filtered_chunks)
@@ -1945,9 +1978,14 @@ Always stop at the highest-priority source available. Do not combine across diff
 - **If you see "AUTHORITATIVE TOTALS FOR KEY POINTS" section, use those numbers first**
 
 **Break Points:**
-- Use the serve section (BP Faced) if the question is about break points faced or saved
-- Use the return section (BP Opps) if the question is about break points created or converted
-- ⚠️ Do not add serve and return values together. Report only the relevant one depending on the context
+- **CRITICAL**: When asked for "break point statistics" or "break points" generally (without specifying "faced" or "converted"), provide BOTH sides for EACH player:
+  - Break points faced (on serve) + saved
+  - Break points created/opportunities (on return) + converted
+  - Example format: "Player A faced 5 break points and saved 3 (60%), and converted 4 of 7 break point opportunities (57%). Player B faced 7 break points and saved 2 (29%), and converted 3 of 5 break point opportunities (60%)."
+- Use the serve section (BP Faced) if the question specifically asks about break points faced or saved
+- Use the return section (BP Opps) if the question specifically asks about break points created or converted
+- Always show both the raw numbers AND percentages when available
+- Be verbose and complete - break point statistics are crucial match stats
 
 **Key Points General Guidance:**
 - If the question asks generally about key points won (e.g., "how many key points did X win?"), report both serve-side and return-side totals and provide a sum
@@ -1969,6 +2007,110 @@ Always stop at the highest-priority source available. Do not combine across diff
 - Game points & Deuce points → always combine serve and return values, and provide a total
 
 - **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total
+
+**For CONDITIONAL questions** (what happened AFTER X, WHEN Y occurred, IN situations where Z):
+- **CRITICAL**: These questions require STEP-BY-STEP analysis of the point-by-point narrative
+- **CRITICAL**: You must identify SPECIFIC INSTANCES in the PBP data, then analyze what happened NEXT
+
+- **DEFINITIONS - What counts as what:**
+  - **"Key points" / "Important points" / "Big points"** = 
+    - Break points (any BP in the match)
+    - Game points (any GP in the match)
+    - Set points (any SP in the match)
+    - Match points (any MP in the match)
+    - Deuce points (40-40 and advantage points)
+    - Close score situations: 30-30, 30-40, 40-30, 40-40 (deuce), advantage
+  
+  - **"Pressure points" / "Under pressure"** = 
+    - All key points listed above, PLUS:
+    - Late in sets: games at 5-5 (5-all), 6-5, 6-6 (tiebreak)
+    - Crucial service games: serving when down a break (behind in games), serving to stay in set
+    - Crucial return games: break point opportunities when behind in set
+  
+  - **"Critical games" / "Crucial games" / "Big games"** = 
+    - Service games when down a break (e.g., trailing 2-3 in games and serving)
+    - Break point opportunities when behind in the set
+    - Games at 4-4 or later in a set (4-4, 5-4, 5-5, 6-5, etc.)
+    - Games immediately after losing serve (trying to break back)
+    - Games to close out a set (serving at 5-4, 6-5, or ahead in tiebreak)
+  
+  - **"Tight moments"** = 
+    - Point level: close scores (30-30, 30-40, 40-30, 40-40/deuce, advantage)
+    - Game level: games that go to deuce (40-40 or beyond)
+    - Set level: close sets (5-5 or later, tiebreaks)
+    - Match level: when momentum is shifting or score is very close
+  
+  - **"Long rallies"** = Rallies with 9 or more shots (adjust based on match average if mentioned in data)
+  
+  - **"Short points"** = Points ending in 0-4 shots (aces, unreturned serves, serve+1 winners, return winners, quick exchanges)
+  
+  - **"Crucial stages" / "Critical moments"** = 
+    - Late in sets: game 8 or later (4-4+, 5-5+, etc.)
+    - Serving to stay in set (e.g., down 4-5 and serving)
+    - Break point opportunities when behind
+    - Set points or match points
+    - Tiebreaks
+    - After momentum shifts (e.g., immediately after losing serve)
+
+- **RECOGNIZING CONDITIONAL QUESTIONS**: Look for both explicit and implied conditions:
+  - **Explicit**: "after losing key points", "when rallies got longer", "following breaks of serve", "in tight moments"
+  - **Implied**: Questions with situational context that require PBP analysis:
+    - "How did the player react under pressure?" → implies pressure points → needs PBP
+    - "Did rally length change in critical games?" → implies game-specific context → needs PBP
+    - "Performance on important points?" → implies key points → needs PBP
+    - "In tight moments?" → implies close scores, pressure situations → needs PBP
+    - "Effectiveness on big points?" → implies key points → needs PBP
+    - "During crucial stages?" → implies specific game/set situations → needs PBP
+
+- **MULTI-STEP PROCESS** (YOU MUST FOLLOW THESE STEPS - DO NOT SKIP TO GENERAL STATISTICS):
+  1. **Identify the condition**: What is the triggering event? (e.g., "after losing key points", "when rallies got longer", "after breaks of serve")
+  
+  2. **Define what qualifies**: Use the definitions above to determine what counts as meeting the condition
+  
+  3. **ACTUALLY READ THE POINT-BY-POINT NARRATIVE**: This is CRITICAL - you MUST examine the actual PBP text chunk by chunk:
+     - Read through each point description in the narrative
+     - Look for score indicators (30-30, deuce, BP, GP, etc.)
+     - Identify when the triggering condition occurred
+     - Note the game number and score when it happened
+  
+  4. **FIND SPECIFIC INSTANCES**: Do NOT summarize - find actual examples:
+     - Example: "In game 3 at 30-40 (break point), player X lost the point"
+     - Example: "In game 7 at deuce, player Y lost the deuce point"
+     - List at least 2-3 specific instances you found
+  
+  5. **Look at subsequent points**: For EACH instance you found, examine what happened in the NEXT point(s) where the metric applies:
+     - If question is about serving: look at the next point where that player served
+     - If about second serves specifically: look at the next point where they hit a second serve
+     - If about shot selection: look at the next rally where they had the opportunity
+     - Example: "After losing BP in game 3, player X next served in game 5 at 15-0, hitting second serve wide"
+  
+  6. **Compare to baseline**: How did their behavior in these instances differ from their overall statistics?
+     - Example: "Player normally serves 60% wide on second serve (from statistics), but in the 3 instances after losing key points, served wide only 1 time (33%)"
+  
+  7. **Provide specific answer with evidence**: DO NOT say "data doesn't show" - if you found instances, report them:
+     - Good: "Yes, after losing the break point in game 3, Swiatek served to the body on her next second serve in game 5, which differs from her typical wide placement"
+     - Bad: "The data doesn't provide explicit details" (this means you didn't actually read the PBP narrative)
+- **EXAMPLE**: "Did either player change their second-serve placement after losing key points?"
+  - Step 1: Trigger = losing a key point
+  - Step 2: Key points = break points, game points, set points, match points, deuce points, important score situations (30-30+)
+  - Step 3: Identify every point in PBP where a player LOST a key point (note the game and score)
+  - Step 4: For each instance, look at the NEXT point where that player served AND hit a second serve
+  - Step 5: Note the placement (wide, body, T) of those second serves
+  - Step 6: Compare to their overall second-serve placement patterns from the statistics
+  - Step 7: Report if there was a notable change (e.g., "Normally serves 60% wide but after losing key points served 80% to the body in games 3, 7, and 9")
+- **BE SPECIFIC**: Don't give generic answers. Actually trace through the PBP data and cite examples with game numbers and scores.
+
+**For TEMPORAL/EVOLUTION questions** (how X evolved/changed/progressed over time, throughout the match):
+- **CRITICAL**: These questions require analyzing the point-by-point narrative across different parts of the match
+- **CRITICAL**: When asked about "evolution", "over time", "progression", "changed throughout", analyze patterns from EARLY match vs LATE match
+- Look at the point-by-point narrative and compare:
+  - Set 1 vs Set 2 vs Set 3 (if available)
+  - Early games vs middle games vs late games
+  - First half of match vs second half
+- For serve aggression questions: Look at second serve outcomes, placement, rally lengths on second serves
+- For shot selection questions: Track how often certain shots were used in different phases
+- Provide specific examples from different points in the match to show the evolution
+- Cite game numbers or score situations to show when changes occurred (e.g., "In Set 1, player X... but in Set 3, they...")
 
 **For STRATEGY/INSIGHT questions** (tactics, effectiveness, what worked, key moments, momentum, analysis):
 - **CRITICAL**: Provide COMPREHENSIVE tactical analysis with 3-4 paragraphs, not just bullet points
@@ -2055,13 +2197,14 @@ Answer:"""
         except Exception as e:
             return f"Error generating response: {e}"
     
-    def ask_question(self, question: str, top_k: int = 5) -> str:
+    def ask_question(self, question: str, top_k: int = None) -> str:
         """
         Main method to ask a question and get an answer.
+        Uses intelligent complexity detection if top_k is not specified.
         """
         print(f"Processing question: {question}")
         
-        # Retrieve relevant chunks
+        # Retrieve relevant chunks (top_k=None triggers complexity detection)
         relevant_chunks = self.retrieve_relevant_chunks(question, top_k)
         
         if not relevant_chunks:
