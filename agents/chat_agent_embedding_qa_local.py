@@ -1556,19 +1556,11 @@ class TennisChatAgentEmbeddingQALocal:
         
         # POINT-BY-POINT PRIORITY: For conditional/temporal questions, prioritize narrative chunks
         conditional_indicators = [
-            # Conditional/situational
             "after losing", "after winning", "after missing", "after break",
             "when rallies got", "as rallies got", "rallies longer", "rallies shorter",
-            "on important points", "on key points", "in crucial moments", "in tight moments",
-            "when facing break", "when trailing", "when ahead",
-            # Temporal/evolution (also require PBP analysis over time)
-            "evolve", "evolved", "evolution", "over time", "throughout the match",
-            "progression", "progressed", "changed over", "developed",
-            "early vs late", "first set vs", "as the match", "match went on"
+            "when facing break", "when trailing", "when ahead"
         ]
         if any(indicator in query.lower() for indicator in conditional_indicators):
-            print(f"🎯 DETECTED CONDITIONAL QUESTION: {query}")
-            print(f"🎯 Matching indicators: {[ind for ind in conditional_indicators if ind in query.lower()]}")
             # Collect all point-by-point narrative chunks
             pbp_chunks = []
             non_pbp_chunks = []
