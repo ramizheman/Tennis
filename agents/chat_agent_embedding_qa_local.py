@@ -40,12 +40,12 @@ class TennisChatAgentEmbeddingQALocal:
         self.min_delay = 2.0  # Minimum 2 seconds between API calls
         
         # Initialize local embedding model (FREE!)
-        print("📦 Loading LOCAL embedding model (sentence-transformers)...")
+        print("Loading LOCAL embedding model (sentence-transformers)...")
         try:
             from sentence_transformers import SentenceTransformer
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
             self.embedding_dim = 384
-            print("✅ Local embedding model loaded (FREE)!")
+            print("Local embedding model loaded (FREE)!")
         except ImportError:
             raise ImportError("Please install sentence-transformers: pip install sentence-transformers")
         
@@ -195,7 +195,7 @@ class TennisChatAgentEmbeddingQALocal:
         if current_section and current_text:
             self._process_section_with_strategy(sections, current_section, current_text, current_strategy)
         
-        print(f"✅ Created {len(sections)} optimized chunks using semantic boundaries")
+        print(f"Created {len(sections)} optimized chunks using semantic boundaries")
         return sections
     
     def _process_section_with_strategy(self, sections: Dict[str, str], section_name: str, 
@@ -679,7 +679,7 @@ class TennisChatAgentEmbeddingQALocal:
         for i, chunk in enumerate(chunks):
             chunk["embedding"] = embeddings[i].tolist()
         
-        print(f"✅ Successfully generated {len(chunks)} embeddings locally (384 dimensions)")
+        print(f"Successfully generated {len(chunks)} embeddings locally (384 dimensions)")
         
         return chunks
     
@@ -727,7 +727,7 @@ class TennisChatAgentEmbeddingQALocal:
         with open(chunks_filename, 'wb') as f:
             pickle.dump(self.chunks, f)
         
-        print(f"✅ Saved embeddings to disk:")
+        print(f"Saved embeddings to disk:")
         print(f"   FAISS index: {faiss_filename}")
         print(f"   Metadata: {metadata_filename}")
         print(f"   Chunks: {chunks_filename}")
@@ -757,7 +757,7 @@ class TennisChatAgentEmbeddingQALocal:
                 # Reconstruct chunks from metadata if needed
                 self.chunks = [{"metadata": meta} for meta in self.metadata_store]
             
-            print(f"✅ Loaded embeddings from disk:")
+            print(f"Loaded embeddings from disk:")
             print(f"   FAISS index: {faiss_filename}")
             print(f"   Metadata: {metadata_filename}")
             print(f"   Total chunks: {len(self.metadata_store)}")
@@ -1558,9 +1558,12 @@ class TennisChatAgentEmbeddingQALocal:
         conditional_indicators = [
             "after losing", "after winning", "after missing", "after break",
             "when rallies got", "as rallies got", "rallies longer", "rallies shorter",
+            "on important points", "on key points", "in crucial moments", "in tight moments",
             "when facing break", "when trailing", "when ahead"
         ]
         if any(indicator in query.lower() for indicator in conditional_indicators):
+            print(f"🎯 DETECTED CONDITIONAL QUESTION: {query}")
+            print(f"🎯 Matching indicators: {[ind for ind in conditional_indicators if ind in query.lower()]}")
             # Collect all point-by-point narrative chunks
             pbp_chunks = []
             non_pbp_chunks = []
