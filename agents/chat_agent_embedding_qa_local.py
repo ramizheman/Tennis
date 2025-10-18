@@ -73,7 +73,7 @@ class TennisChatAgentEmbeddingQALocal:
                     raise ValueError("GOOGLE_API_KEY environment variable required for Gemini")
                 genai.configure(api_key=api_key)
                 self.client = genai
-                self.model = "gemini-2.0-flash-exp"  # Latest free experimental model
+                self.model = "gemini-2.5-flash-latest"  # Latest stable model with improved reasoning
             except ImportError:
                 raise ImportError("Please install google-generativeai: pip install google-generativeai")
                 
