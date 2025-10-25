@@ -31,7 +31,7 @@ class TennisChatAgentEmbeddingQALocal:
         self.chunks = []
         self.index = None
         self.metadata_store = []
-        self.match_id = "swiatek_pegula_20250628"
+        self.match_id = "match_data"  # Generic default, overwritten when loading match
         self.player1 = None
         self.player2 = None
         
@@ -90,15 +90,162 @@ class TennisChatAgentEmbeddingQALocal:
         else:
             raise ValueError("llm_provider must be 'claude', 'gemini', or 'openai'")
         
+    def _parse_match_score(self, content: str) -> None:
+        """
+        Parse the match score from the markdown content and build set mapping.
+        Example: "Carlos Alcaraz d. Jannik Sinner 4-6 6-7(4) 6-4 7-6(3)"
+        Format: "Winner d. Loser winner_score-loser_score ..."
+        """
+        import re
+        
+        # Initialize
+        self.match_score = None
+        self.set_mapping = {}  # Maps set number to set score (e.g., {1: "0-0", 2: "0-1", 3: "0-2", 4: "1-2"})
+        self.total_sets = 0
+        
+        # Find the Final Score line
+        score_match = re.search(r'Final Score:\s*(.+?)(?:\n|$)', content)
+        if not score_match:
+            print("[WARN] Could not find Final Score in markdown")
+            return
+        
+        score_line = score_match.group(1).strip()
+        self.match_score = score_line
+        
+        # Parse the format: "Winner d. Loser score score score"
+        match_result = re.match(r'(.+?)\s+d\.\s+(.+?)\s+([\d\-\(\)\s]+)$', score_line)
+        if not match_result:
+            print("[WARN] Could not parse match result format:", score_line)
+            return
+        
+        winner_name = match_result.group(1).strip()
+        loser_name = match_result.group(2).strip()
+        scores_str = match_result.group(3).strip()
+        
+        # Extract the set scores
+        set_scores = re.findall(r'(\d+)-(\d+)(?:\(\d+\))?', scores_str)
+        
+        if not set_scores:
+            print("[WARN] Could not parse set scores from:", score_line)
+            return
+        
+        self.total_sets = len(set_scores)
+        
+        # Determine which player is player1 and which is player2
+        # (based on who is mentioned first in self.player1/player2)
+        winner_is_player1 = (hasattr(self, 'player1') and 
+                            self.player1 and 
+                            winner_name.lower().replace(' ', '') == self.player1.lower().replace(' ', ''))
+        
+        # Build cumulative set score
+        # Scores in the format are: winner_score-loser_score for each set
+        player1_sets = 0
+        player2_sets = 0
+        
+        for i, (score1, score2) in enumerate(set_scores, 1):
+            # Record the set score BEFORE this set starts
+            self.set_mapping[i] = f"{player1_sets}-{player2_sets}"
+            
+            # Determine who won this set
+            # score1 is winner's score, score2 is loser's score
+            if int(score1) > int(score2):
+                # Winner won this set
+                if winner_is_player1:
+                    player1_sets += 1
+                else:
+                    player2_sets += 1
+            else:
+                # Loser won this set
+                if winner_is_player1:
+                    player2_sets += 1
+                else:
+                    player1_sets += 1
+        
+        print(f"[MATCH] Final Score: {self.match_score}")
+        print(f"[MATCH] Winner: {winner_name} | Loser: {loser_name}")
+        print(f"[MATCH] Winner is Player1: {winner_is_player1}")
+        print(f"[MATCH] Set Mapping: {self.set_mapping}")
+    
+    def _detect_set_reference(self, query: str) -> int:
+        """
+        Detect if the query references a specific set.
+        Returns the set number (1, 2, 3, 4, 5) or None.
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Direct number references
+        set_match = re.search(r'(?:set\s+|the\s+)?(\d+)(?:st|nd|rd|th)?\s+set', query_lower)
+        if set_match:
+            return int(set_match.group(1))
+        
+        # Word-based references
+        set_words = {
+            'first': 1, 'second': 2, 'third': 3, 'fourth': 4, 'fifth': 5,
+            '1st': 1, '2nd': 2, '3rd': 3, '4th': 4, '5th': 5
+        }
+        
+        for word, num in set_words.items():
+            if f"{word} set" in query_lower:
+                return num
+        
+        # Special references
+        if any(word in query_lower for word in ['final set', 'deciding set', 'last set']):
+            return self.total_sets if self.total_sets else None
+        
+        return None
+    
+    def _detect_game_reference(self, query: str) -> str:
+        """
+        Detect if the query references a specific game or game score.
+        Returns a game score pattern like "3-2" or None.
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Game score patterns (e.g., "at 4-3", "when it was 5-5", "3-2")
+        game_score_match = re.search(r'(?:at\s+|when\s+it\s+was\s+|score\s+was\s+)?(\d+)-(\d+)', query_lower)
+        if game_score_match:
+            return f"{game_score_match.group(1)}-{game_score_match.group(2)}"
+        
+        # Game number references (e.g., "game 5", "5th game")
+        game_num_match = re.search(r'(?:game\s+|the\s+)?(\d+)(?:st|nd|rd|th)?\s+game', query_lower)
+        if game_num_match:
+            # This would need more complex logic to determine the exact game score
+            # For now, just return a marker that we need game-specific data
+            return f"game_{game_num_match.group(1)}"
+        
+        return None
+    
     def load_exact_full_format(self, file_path: str = "EXACT_FULL_FORMAT.md") -> None:
         """
         Load and process the specified natural language file into chunks with embeddings.
         """
         print(f"Loading {file_path}...")
         
+        # Extract player names from filename (e.g., "Jannik_Sinner_Carlos_Alcaraz_20250608_NL.md")
+        import os
+        filename = os.path.basename(file_path)
+        parts = filename.replace('_NL.md', '').split('_')
+        if len(parts) >= 4:
+            # Reconstruct player names (handle names with spaces)
+            # Find the date (8 digits) to split the names
+            date_idx = next((i for i, part in enumerate(parts) if part.isdigit() and len(part) == 8), None)
+            if date_idx and date_idx >= 2:
+                player1_parts = parts[:date_idx//2] 
+                player2_parts = parts[date_idx//2:date_idx]
+                self.player1 = ' '.join(player1_parts)
+                self.player2 = ' '.join(player2_parts)
+                print(f"Extracted player names: {self.player1} vs {self.player2}")
+        
         # Read the file
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
+        
+        # Extract match score for set mapping
+        self._parse_match_score(content)
         
         # Split content into sections (tables vs point-by-point)
         sections = self._split_into_sections(content)
@@ -146,8 +293,8 @@ class TennisChatAgentEmbeddingQALocal:
             'SERVE1 STATISTICS (DETAILED):': 'large',
             'SERVE2 STATISTICS (SUMMARY):': 'medium',
             'SERVE2 STATISTICS (DETAILED):': 'large',
-            'RETURN1 STATISTICS (DETAILED):': 'return_split',
-            'RETURN2 STATISTICS (DETAILED):': 'return_split',
+            'RETURN1 STATISTICS (DETAILED):': 'large',
+            'RETURN2 STATISTICS (DETAILED):': 'large',
             'KEY POINTS STATISTICS (SERVES):': 'medium',
             'KEY POINTS STATISTICS (RETURNS):': 'medium',
             'SHOTS1 STATISTICS:': 'large',
@@ -164,7 +311,7 @@ class TennisChatAgentEmbeddingQALocal:
         current_text = []
         current_strategy = None
         
-        print("🔧 Using improved semantic chunking strategy...")
+        print("[FORCED] Using improved semantic chunking strategy...")
         
         for line in lines:
             line_stripped = line.strip()
@@ -235,7 +382,7 @@ class TennisChatAgentEmbeddingQALocal:
             point_chunks = self._split_narrative_by_games(content)
             for i, chunk in enumerate(point_chunks):
                 sections[f"{section_name}_games_{i+1}"] = chunk
-            print(f"  🎾 {section_name}: split by games ({len(point_chunks)} chunks)")
+            print(f"  [SET/GAME] {section_name}: split by games ({len(point_chunks)} chunks)")
             
         elif strategy == 'return_split':
             # Custom strategy for return statistics: split by outcomes and depth
@@ -246,7 +393,7 @@ class TennisChatAgentEmbeddingQALocal:
                         sections[f"{section_name}_outcomes"] = chunk
                     else:
                         sections[f"{section_name}_depth"] = chunk
-                print(f"  🎯 {section_name}: split by outcomes and depth ({len(return_chunks)} chunks)")
+                print(f"  [TARGET] {section_name}: split by outcomes and depth ({len(return_chunks)} chunks)")
             else:
                 sections[section_name] = content
                 print(f"  📝 {section_name}: kept intact (return_split)")
@@ -550,7 +697,7 @@ class TennisChatAgentEmbeddingQALocal:
             return chunks
             
         except Exception as e:
-            print(f"  ⚠️  Token counting failed, using character fallback: {e}")
+            print(f"  [WARN]  Token counting failed, using character fallback: {e}")
             # Fallback to character-based chunking
             max_chars = max_tokens * 4  # Rough estimate
             chunks = []
@@ -717,10 +864,16 @@ class TennisChatAgentEmbeddingQALocal:
         with open(faiss_filename, 'wb') as f:
             pickle.dump(self.index, f)
         
-        # Save metadata store
+        # Save metadata store (including match score and set mapping)
         metadata_filename = f"{filename_prefix}_metadata.pkl"
+        metadata_bundle = {
+            'metadata_store': self.metadata_store,
+            'match_score': getattr(self, 'match_score', None),
+            'set_mapping': getattr(self, 'set_mapping', {}),
+            'total_sets': getattr(self, 'total_sets', 0)
+        }
         with open(metadata_filename, 'wb') as f:
-            pickle.dump(self.metadata_store, f)
+            pickle.dump(metadata_bundle, f)
         
         # Save chunks (for debugging/inspection)
         chunks_filename = f"{filename_prefix}_chunks.pkl"
@@ -738,15 +891,52 @@ class TennisChatAgentEmbeddingQALocal:
         Returns True if successful, False if files don't exist.
         """
         try:
+            # Extract player names from filename_prefix (e.g., "Jannik_Sinner_Carlos_Alcaraz_20250608")
+            parts = filename_prefix.split('_')
+            if len(parts) >= 4:
+                # Find the date (8 digits at the end)
+                date_idx = -1
+                for i in range(len(parts) - 1, -1, -1):
+                    if parts[i].isdigit() and len(parts[i]) == 8:
+                        date_idx = i
+                        break
+                
+                if date_idx >= 2:
+                    # Everything before the date is player names
+                    # Find the split point (usually middle, but handle multi-word names)
+                    player_parts = parts[:date_idx]
+                    # Simple heuristic: split roughly in middle
+                    mid = len(player_parts) // 2
+                    self.player1 = ' '.join(player_parts[:mid])
+                    self.player2 = ' '.join(player_parts[mid:])
+                    print(f"[CACHE] Extracted player names: {self.player1} vs {self.player2}")
+            
             # Load FAISS index
             faiss_filename = f"{filename_prefix}_faiss.pkl"
             with open(faiss_filename, 'rb') as f:
                 self.index = pickle.load(f)
             
-            # Load metadata store
+            # Load metadata store and match info
             metadata_filename = f"{filename_prefix}_metadata.pkl"
             with open(metadata_filename, 'rb') as f:
-                self.metadata_store = pickle.load(f)
+                metadata_bundle = pickle.load(f)
+                
+                # Handle both old format (just metadata_store) and new format (bundle)
+                if isinstance(metadata_bundle, dict) and 'metadata_store' in metadata_bundle:
+                    # New format with match score and set mapping
+                    self.metadata_store = metadata_bundle['metadata_store']
+                    self.match_score = metadata_bundle.get('match_score', None)
+                    self.set_mapping = metadata_bundle.get('set_mapping', {})
+                    self.total_sets = metadata_bundle.get('total_sets', 0)
+                    if self.match_score:
+                        print(f"[CACHE] Loaded match score: {self.match_score}")
+                        print(f"[CACHE] Loaded set mapping: {self.set_mapping}")
+                else:
+                    # Old format - just metadata_store
+                    self.metadata_store = metadata_bundle
+                    self.match_score = None
+                    self.set_mapping = {}
+                    self.total_sets = 0
             
             # Load chunks (optional, for debugging)
             chunks_filename = f"{filename_prefix}_chunks.pkl"
@@ -765,10 +955,10 @@ class TennisChatAgentEmbeddingQALocal:
             return True
             
         except FileNotFoundError:
-            print(f"❌ Embedding files not found. Run load_exact_full_format() first.")
+            print(f"[ERROR] Embedding files not found. Run load_exact_full_format() first.")
             return False
         except Exception as e:
-            print(f"❌ Error loading embeddings: {e}")
+            print(f"[ERROR] Error loading embeddings: {e}")
             return False
     
     def _detect_player_mentioned(self, query: str) -> str:
@@ -875,7 +1065,7 @@ class TennisChatAgentEmbeddingQALocal:
         if top_k is None:
             top_k = self._determine_optimal_chunk_count(query)
         
-        print(f"🎯 Using {top_k} chunks for query complexity analysis")
+        print(f"[TARGET] Using {top_k} chunks for query complexity analysis")
         
         if not self.index:
             raise ValueError("Vector index not created. Call load_exact_full_format() first.")
@@ -925,7 +1115,7 @@ class TennisChatAgentEmbeddingQALocal:
             if match_overview_chunk:
                 filtered_chunks = [chunk for chunk in filtered_chunks if 'match_overview' not in chunk['metadata']['section']]
                 filtered_chunks.insert(0, match_overview_chunk)
-                print(f"🏆 FORCED match_overview to top for score/winner question")
+                print(f"[MATCH] FORCED match_overview to top for score/winner question")
         
         # OVERVIEW PRIORITY: For basic statistical questions, prioritize overview_statistics
         if not self._is_match_insight_question(query) and any(word in query.lower() for word in [
@@ -964,7 +1154,7 @@ class TennisChatAgentEmbeddingQALocal:
                 filtered_chunks = [chunk for chunk in filtered_chunks if 'overview_statistics' not in chunk['metadata']['section']]
                 # Add overview at the very top
                 filtered_chunks.insert(0, overview_chunk)
-                print(f"📊 FORCED overview_statistics to top for basic statistical question")
+                print(f"[STATS] FORCED overview_statistics to top for basic statistical question")
         
         # CRITICAL FIX: Always include overview_statistics for statistical questions
         if not self._is_match_insight_question(query):
@@ -983,7 +1173,7 @@ class TennisChatAgentEmbeddingQALocal:
             # If overview chunk exists and not already in results, add it at the top
             if overview_chunk and not any('overview_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
                 filtered_chunks.insert(0, overview_chunk)
-                print(f"🔧 FORCED overview_statistics to top of results for statistical question")
+                print(f"[FORCED] FORCED overview_statistics to top of results for statistical question")
             
             # DIRECTION + OUTCOME FIX: For questions about shots by direction AND outcome, force include all shot types for that direction/outcome combo
             direction_keywords = {
@@ -1020,11 +1210,11 @@ class TennisChatAgentEmbeddingQALocal:
             if detected_direction and detected_outcome:
                 # Determine which player is being asked about
                 player_mentioned = None
-                if player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split())):
-                    player_mentioned = player1
+                if self.player1 and (self.player1.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player1.lower().split())):
+                    player_mentioned = self.player1
                     target_chunk_name = "shotdir1_statistics"
-                elif player2 and (player2.lower() in query.lower() or any(word.lower() in query.lower() for word in player2.lower().split())):
-                    player_mentioned = player2
+                elif self.player2 and (self.player2.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player2.lower().split())):
+                    player_mentioned = self.player2
                     target_chunk_name = "shotdir2_statistics"
                 else:
                     # If no specific player mentioned, include both (for "each player" questions)
@@ -1068,16 +1258,16 @@ class TennisChatAgentEmbeddingQALocal:
                         filtered_chunks = [chunk for chunk in filtered_chunks if "explicit_totals_for_shot_direction_+_outcome_combinations" not in chunk['metadata']['section']]
                         # Insert at the very beginning
                         filtered_chunks.insert(0, explicit_totals_found)
-                        print(f"🎯 FORCED explicit_totals_for_shot_direction_+_outcome_combinations to top for {detected_direction} {detected_outcome} query")
+                        print(f"[TARGET] FORCED explicit_totals_for_shot_direction_+_outcome_combinations to top for {detected_direction} {detected_outcome} query")
                     
                     # Add chunks if not already in results
                     if chunk1_found and not any("shotdir1_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
                         filtered_chunks.insert(0, chunk1_found)
-                        print(f"🎯 FORCED shotdir1_statistics to top for {detected_direction} {detected_outcome} query")
+                        print(f"[TARGET] FORCED shotdir1_statistics to top for {detected_direction} {detected_outcome} query")
                     
                     if chunk2_found and not any("shotdir2_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
                         filtered_chunks.insert(0, chunk2_found)
-                        print(f"🎯 FORCED shotdir2_statistics to top for {detected_direction} {detected_outcome} query")
+                        print(f"[TARGET] FORCED shotdir2_statistics to top for {detected_direction} {detected_outcome} query")
                 else:
                     # Force include only the specific player's shot direction chunk and explicit totals
                     target_chunk = None
@@ -1105,21 +1295,21 @@ class TennisChatAgentEmbeddingQALocal:
                         filtered_chunks = [chunk for chunk in filtered_chunks if "explicit_totals_for_shot_direction_+_outcome_combinations" not in chunk['metadata']['section']]
                         # Insert at the very beginning
                         filtered_chunks.insert(0, explicit_totals_found)
-                        print(f"🎯 FORCED explicit_totals_for_shot_direction_+_outcome_combinations to top for {detected_direction} {detected_outcome} query ({player_mentioned})")
+                        print(f"[TARGET] FORCED explicit_totals_for_shot_direction_+_outcome_combinations to top for {detected_direction} {detected_outcome} query ({player_mentioned})")
                     
                     # Add chunk if not already in results
                     if target_chunk and not any(target_chunk_name in chunk['metadata']['section'] for chunk in filtered_chunks):
                         filtered_chunks.insert(0, target_chunk)
-                        print(f"🎯 FORCED {target_chunk_name} to top for {detected_direction} {detected_outcome} query ({player_mentioned})")
+                        print(f"[TARGET] FORCED {target_chunk_name} to top for {detected_direction} {detected_outcome} query ({player_mentioned})")
                 
                 direction_outcome_fix_applied = True
             
             # BP/GP ROUTING FIX: For break point and game point questions, route to correct data sources
-            print(f"🔍 DEBUG: Checking BP/GP fix for query: '{query}'")
-            print(f"🔍 DEBUG: Contains break point: {'break point' in query.lower()}")
-            print(f"🔍 DEBUG: Contains net points: {'net points' in query.lower()}")
+            print(f"[DEBUG] DEBUG: Checking BP/GP fix for query: '{query}'")
+            print(f"[DEBUG] DEBUG: Contains break point: {'break point' in query.lower()}")
+            print(f"[DEBUG] DEBUG: Contains net points: {'net points' in query.lower()}")
             if any(phrase in query.lower() for phrase in ["break point", "bp", "game point", "gp", "deuce"]) and "net points" not in query.lower():
-                print(f"🎯 BP/GP FIX TRIGGERED!")
+                print(f"[TARGET] BP/GP FIX TRIGGERED!")
                 # Determine which player is being asked about
                 player_mentioned = self._detect_player_mentioned(query)
                 
@@ -1143,7 +1333,7 @@ class TennisChatAgentEmbeddingQALocal:
                         # Add overview chunk if it has BP/GP data and not already in results
                         if overview_chunk and not any('overview_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
                             filtered_chunks.insert(0, overview_chunk)
-                            print(f"🎯 FORCED overview_statistics to top for BP/GP question: {player_mentioned}")
+                            print(f"[TARGET] FORCED overview_statistics to top for BP/GP question: {player_mentioned}")
                             bp_gp_fix_applied = True
                         
                         # Also add the specific section chunk as backup
@@ -1262,19 +1452,19 @@ class TennisChatAgentEmbeddingQALocal:
                                 # Set maximum priority and force to top
                                 target_chunk['relevance_score'] = 10.0
                                 filtered_chunks.insert(0, target_chunk)
-                                print(f"🎯 FORCED {key_points_section} to top with max priority for BP/GP question: {player_mentioned}")
+                                print(f"[TARGET] FORCED {key_points_section} to top with max priority for BP/GP question: {player_mentioned}")
                                 bp_gp_fix_applied = True
                             else:
                                 # For regular statistics chunks, use target_section
                                 if not any(target_section in chunk['metadata']['section'] for chunk in filtered_chunks):
                                     filtered_chunks.insert(0, target_chunk)
-                                    print(f"🎯 FORCED {target_section} to top for BP/GP question: {player_mentioned}")
+                                    print(f"[TARGET] FORCED {target_section} to top for BP/GP question: {player_mentioned}")
                                     bp_gp_fix_applied = True
                     
                     elif target_section == "both":
                         # Need both serve and return sections for BP/GP/deuce totals or ambiguous questions
-                        serve_section = "serve1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "serve2_statistics"
-                        return_section = "return1_statistics" if (player1 and (player1.lower() in query.lower() or any(word.lower() in query.lower() for word in player1.lower().split()))) else "return2_statistics"
+                        serve_section = "serve1_statistics_summary" if (self.player1 and (self.player1.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player1.lower().split()))) else "serve2_statistics_summary"
+                        return_section = "return1_statistics_detailed" if (self.player1 and (self.player1.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player1.lower().split()))) else "return2_statistics_detailed"
                         
                         # Add both chunks
                         for section in [serve_section, return_section]:
@@ -1291,7 +1481,7 @@ class TennisChatAgentEmbeddingQALocal:
                             
                             if target_chunk and not any(section in chunk['metadata']['section'] for chunk in filtered_chunks):
                                 filtered_chunks.insert(0, target_chunk)
-                                print(f"🎯 FORCED {section} to top for BP/GP/deuce totals: {player_mentioned}")
+                                print(f"[TARGET] FORCED {section} to top for BP/GP/deuce totals: {player_mentioned}")
                                 bp_gp_fix_applied = True
             
             # DIRECTION TOTALS FIX: For questions asking about shot direction totals (e.g., "how many crosscourt shots")
@@ -1325,12 +1515,12 @@ class TennisChatAgentEmbeddingQALocal:
                 # Add shotdir1 chunk if not already in results
                 if shotdir1_chunk and not any('shotdir1_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
                     filtered_chunks.insert(0, shotdir1_chunk)
-                    print(f"🔧 FORCED shotdir1_statistics to top of results for direction totals question")
+                    print(f"[FORCED] FORCED shotdir1_statistics to top of results for direction totals question")
                 
                 # Add shotdir2 chunk if not already in results
                 if shotdir2_chunk and not any('shotdir2_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
                     filtered_chunks.insert(0, shotdir2_chunk)
-                    print(f"🔧 FORCED shotdir2_statistics to top of results for direction totals question")
+                    print(f"[FORCED] FORCED shotdir2_statistics to top of results for direction totals question")
             
             # UNIVERSAL FIX: For "each player" or "both players" questions, force include both players' chunks
             detected_stat_type = None  # Initialize outside the if block
@@ -1338,12 +1528,12 @@ class TennisChatAgentEmbeddingQALocal:
             if any(phrase in query.lower() for phrase in ["each player", "both players", "both player"]):
                 # Define all the split player statistics sections
                 split_sections = {
-                    "serve": ["serve1_statistics_summary", "serve2_statistics_summary"],
+                    "serve": ["serve1_statistics_summary", "serve2_statistics_summary", "serve1_statistics_detailed", "serve2_statistics_detailed"],
                     "shots": ["shots1_statistics", "shots2_statistics"],
                     "shotdir": ["shotdir1_statistics", "shotdir2_statistics"],
-                    "return": ["return1_statistics", "return2_statistics"],
+                    "return": ["return1_statistics_detailed", "return2_statistics_detailed"],
                     "netpts": ["netpts1_statistics", "netpts2_statistics"],
-                    "keypoints": ["keypoints1_statistics", "keypoints2_statistics"]
+                    "keypoints": ["key_points_statistics_serves", "key_points_statistics_returns"]
                 }
                 
                 # Check which statistic type the question is about (in order of specificity)
@@ -1375,8 +1565,8 @@ class TennisChatAgentEmbeddingQALocal:
                     chunk1_found = None
                     chunk2_found = None
                     
-                    print(f"🔍 DEBUG: UNIVERSAL FIX applying for {detected_stat_type} - looking for {chunk1_name} and {chunk2_name}")
-                    print(f"🔍 DEBUG: Current filtered_chunks sections: {[chunk['metadata']['section'] for chunk in filtered_chunks]}")
+                    print(f"[DEBUG] DEBUG: UNIVERSAL FIX applying for {detected_stat_type} - looking for {chunk1_name} and {chunk2_name}")
+                    print(f"[DEBUG] DEBUG: Current filtered_chunks sections: {[chunk['metadata']['section'] for chunk in filtered_chunks]}")
                     
                     # Find both chunks - use separate loops to ensure both can be found
                     for chunk in self.chunks:
@@ -1387,7 +1577,7 @@ class TennisChatAgentEmbeddingQALocal:
                                 "distance": 0.0,  # Perfect match
                                 "relevance_score": 8.0  # High score
                             }
-                            print(f"🔍 DEBUG: Found {chunk1_name}")
+                            print(f"[DEBUG] DEBUG: Found {chunk1_name}")
                             break
                     
                     for chunk in self.chunks:
@@ -1398,7 +1588,7 @@ class TennisChatAgentEmbeddingQALocal:
                                 "distance": 0.0,  # Perfect match
                                 "relevance_score": 8.0  # High score
                             }
-                            print(f"🔍 DEBUG: Found {chunk2_name}")
+                            print(f"[DEBUG] DEBUG: Found {chunk2_name}")
                             break
                     
                     # Remove existing instances and add with high priority
@@ -1408,7 +1598,7 @@ class TennisChatAgentEmbeddingQALocal:
                         # Set high priority and add to top
                         chunk1_found['relevance_score'] = 9.0
                         filtered_chunks.insert(0, chunk1_found)
-                        print(f"🔧 FORCED {chunk1_name} to top of results for 'each player' {detected_stat_type} question")
+                        print(f"[FORCED] FORCED {chunk1_name} to top of results for 'each player' {detected_stat_type} question")
                     
                     if chunk2_found:
                         # Remove any existing instance  
@@ -1416,7 +1606,7 @@ class TennisChatAgentEmbeddingQALocal:
                         # Set high priority and add to top
                         chunk2_found['relevance_score'] = 9.0
                         filtered_chunks.insert(0, chunk2_found)
-                        print(f"🔧 FORCED {chunk2_name} to top of results for 'each player' {detected_stat_type} question")
+                        print(f"[FORCED] FORCED {chunk2_name} to top of results for 'each player' {detected_stat_type} question")
                     
                     universal_fix_applied = True
                     
@@ -1425,60 +1615,153 @@ class TennisChatAgentEmbeddingQALocal:
                         net_points_fix_applied = True
             
                         # CRITICAL FIX: For ace/serve questions (only if other fixes didn't apply)
-            if not universal_fix_applied and not direction_outcome_fix_applied and not bp_gp_fix_applied and any(word in query.lower() for word in ["ace", "aces", "serve", "serving", "double fault"]):
-                serve1_chunk = None
-                serve2_chunk = None
+            if not universal_fix_applied and not direction_outcome_fix_applied and not bp_gp_fix_applied and any(word in query.lower() for word in ["serve", "serves", "ace", "aces", "serving", "double fault", "first serve", "second serve"]) and not any(word in query.lower() for word in ["return", "returning"]):
+                serve1_summary_chunks = []
+                serve2_summary_chunks = []
+                serve1_detailed_chunks = []
+                serve2_detailed_chunks = []
                 
-                # Find serve1_statistics_summary chunk
+                # Find ALL serve1_statistics_summary chunks
                 for chunk in self.chunks:
-                    if 'serve1_statistics_summary' in chunk['metadata']['section']:
-                        serve1_chunk = {
+                    if 'serve1_statistics_summary' in chunk['metadata'].get('section', ''):
+                        serve1_summary_chunks.append({
                             "text": chunk['text'],
                             "metadata": chunk['metadata'],
-                            "distance": 0.0,  # Perfect match
-                            "relevance_score": 8.0  # High score
-                        }
-                        break
+                            "distance": 0.0,
+                            "relevance_score": 8.0
+                        })
                 
-                # Find serve2_statistics_summary chunk
+                # Find ALL serve2_statistics_summary chunks
                 for chunk in self.chunks:
-                    if 'serve2_statistics_summary' in chunk['metadata']['section']:
-                        serve2_chunk = {
+                    if 'serve2_statistics_summary' in chunk['metadata'].get('section', ''):
+                        serve2_summary_chunks.append({
                             "text": chunk['text'],
                             "metadata": chunk['metadata'],
-                            "distance": 0.0,  # Perfect match
-                            "relevance_score": 8.0  # High score
-                        }
-                        break
+                            "distance": 0.0,
+                            "relevance_score": 8.0
+                        })
                 
-                # Add serve1 chunk if not already in results
-                if serve1_chunk and not any('serve1_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                    filtered_chunks.insert(0, serve1_chunk)
-                    print(f"🔧 FORCED serve1_statistics_summary to top of results for serve question")
+                # Find ALL serve1_statistics_detailed chunks
+                for chunk in self.chunks:
+                    if 'serve1_statistics_detailed' in chunk['metadata'].get('section', ''):
+                        serve1_detailed_chunks.append({
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,
+                            "relevance_score": 7.5  # Slightly lower than summary
+                        })
                 
-                # Add serve2 chunk if not already in results
-                if serve2_chunk and not any('serve2_statistics_summary' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                    filtered_chunks.insert(0, serve2_chunk)
-                    print(f"🔧 FORCED serve2_statistics_summary to top of results for serve question")
+                # Find ALL serve2_statistics_detailed chunks
+                for chunk in self.chunks:
+                    if 'serve2_statistics_detailed' in chunk['metadata'].get('section', ''):
+                        serve2_detailed_chunks.append({
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,
+                            "relevance_score": 7.5
+                        })
+                
+                # Add serve1 summary chunks to position 0 (remove if exists first)
+                for chunk in serve1_summary_chunks:
+                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk['metadata']['section']]
+                    filtered_chunks.insert(0, chunk)
+                    print(f"[FORCED] {chunk['metadata']['section']} to position 0 for serve question")
+                
+                # Add serve2 summary chunks to position 0 (remove if exists first)
+                for chunk in serve2_summary_chunks:
+                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk['metadata']['section']]
+                    filtered_chunks.insert(0, chunk)
+                    print(f"[FORCED] {chunk['metadata']['section']} to position 0 for serve question")
+                
+                # Add serve1 detailed chunks to position 0 (for detailed questions)
+                for chunk in serve1_detailed_chunks:
+                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk['metadata']['section']]
+                    filtered_chunks.insert(0, chunk)
+                    print(f"[FORCED] {chunk['metadata']['section']} to position 0 for serve question")
+                
+                # Add serve2 detailed chunks to position 0 (for detailed questions)
+                for chunk in serve2_detailed_chunks:
+                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk['metadata']['section']]
+                    filtered_chunks.insert(0, chunk)
+                    print(f"[FORCED] {chunk['metadata']['section']} to position 0 for serve question")
+            
+            # CRITICAL FIX: For return questions (return depth, return direction, etc.)
+            print(f"[DEBUG] DEBUG: Checking return question fix for query: '{query}'")
+            if any(word in query.lower() for word in ["return", "returning", "deep return", "shallow return", "return depth"]):
+                print(f"[FORCED] DETECTED return question - applying return fix")
+                
+                # Detect which player is mentioned
+                player_mentioned = self._detect_player_mentioned(query)
+                print(f"[DEBUG] DEBUG: Player mentioned: {player_mentioned}")
+                
+                # Only force the relevant player's chunks
+                if player_mentioned:
+                    if player_mentioned.lower() == self.player1.lower():
+                        target_sections = "return1_statistics_detailed"
+                        print(f"[DEBUG] DEBUG: Forcing return1 (Player 1: {self.player1}) chunks")
+                    else:
+                        target_sections = "return2_statistics_detailed"
+                        print(f"[DEBUG] DEBUG: Forcing return2 (Player 2: {self.player2}) chunks")
+                    
+                    # Find and force the relevant player's chunks to position 0
+                    chunks_to_add = []
+                    for chunk in self.chunks:
+                        if target_sections in chunk['metadata'].get('section', ''):
+                            chunks_to_add.append({
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,
+                                "relevance_score": 8.0
+                            })
+                    
+                    # Remove these chunks if they already exist, then add them at position 0
+                    for chunk_to_add in chunks_to_add:
+                        filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk_to_add['metadata']['section']]
+                        filtered_chunks.insert(0, chunk_to_add)
+                        print(f"[FORCED] FORCED {chunk_to_add['metadata']['section']} to position 0 for return question")
+                else:
+                    # If no player mentioned, force both players' chunks to position 0
+                    print(f"[DEBUG] DEBUG: No specific player mentioned, forcing both players' chunks")
+                    chunks_to_add = []
+                    for chunk in self.chunks:
+                        if 'return1_statistics_detailed' in chunk['metadata'].get('section', '') or 'return2_statistics_detailed' in chunk['metadata'].get('section', ''):
+                            chunks_to_add.append({
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,
+                                "relevance_score": 8.0
+                            })
+                    
+                    # Remove these chunks if they already exist, then add them at position 0
+                    for chunk_to_add in chunks_to_add:
+                        filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk_to_add['metadata']['section']]
+                        filtered_chunks.insert(0, chunk_to_add)
+                        print(f"[FORCED] FORCED {chunk_to_add['metadata']['section']} to position 0 for return question")
             
             # CRITICAL FIX: For net points questions (always apply for net points questions)
-            print(f"🔍 DEBUG: About to check net points fix section")
+            print(f"[DEBUG] DEBUG: About to check net points fix section")
             if any(word in query.lower() for word in ["net points", "net approaches", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
+                print(f"[FORCED] NET POINTS DETECTED in query!")
                 # Determine which player is being asked about
                 player_mentioned = self._detect_player_mentioned(query)
+                print(f"[DEBUG] DEBUG: Net points - Player mentioned: {player_mentioned}")
                 if player_mentioned:
                     if player_mentioned.lower() == self.player1.lower():
                         target_chunk_name = "netpts1_statistics"
+                        print(f"[DEBUG] DEBUG: Targeting netpts1 for player1: {self.player1}")
                     else:
                         target_chunk_name = "netpts2_statistics"
+                        print(f"[DEBUG] DEBUG: Targeting netpts2 for player2: {self.player2}")
                 else:
                     # If no specific player mentioned, pull both chunks
                     player_mentioned = "both players"
                     target_chunk_name = None
+                    print(f"[DEBUG] DEBUG: No specific player mentioned, will pull both netpts chunks")
                 
                 if target_chunk_name:
                     # Find the specific player's net points chunk
                     target_chunk = None
+                    print(f"[DEBUG] DEBUG: Searching for chunk: {target_chunk_name}")
                     for chunk in self.chunks:
                         if target_chunk_name in chunk['metadata']['section']:
                             target_chunk = {
@@ -1487,13 +1770,20 @@ class TennisChatAgentEmbeddingQALocal:
                                 "distance": 0.0,  # Perfect match
                                 "relevance_score": 10.0  # Maximum score for net points
                             }
+                            print(f"[DEBUG] DEBUG: FOUND chunk: {chunk['metadata']['section']}")
                             break
                     
-                    # Add the specific player's chunk if not already in results
-                    if target_chunk and not any(target_chunk_name in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    # Add or move the specific player's chunk to position 0
+                    if target_chunk:
+                        print(f"[DEBUG] DEBUG: target_chunk exists, checking if already in filtered_chunks...")
+                        # Remove it if it already exists (we'll re-insert at position 0)
+                        filtered_chunks = [c for c in filtered_chunks if target_chunk_name not in c['metadata']['section']]
+                        # Insert at position 0
                         filtered_chunks.insert(0, target_chunk)
-                        print(f"🔧 FORCED {target_chunk_name} to top of results for net question ({player_mentioned})")
+                        print(f"[FORCED] FORCED {target_chunk_name} to position 0 for net question ({player_mentioned})")
                         net_points_fix_applied = True
+                    else:
+                        print(f"[ERROR] Could not find chunk: {target_chunk_name}")
                 
                 else:
                     # Pull both players' chunks for "each player" questions
@@ -1525,13 +1815,13 @@ class TennisChatAgentEmbeddingQALocal:
                     # Add netpts1 chunk if not already in results
                     if netpts1_chunk and not any('netpts1_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
                         filtered_chunks.insert(0, netpts1_chunk)
-                        print(f"🔧 FORCED netpts1_statistics to top of results for net question")
+                        print(f"[FORCED] FORCED netpts1_statistics to top of results for net question")
                         net_points_fix_applied = True
                     
                     # Add netpts2 chunk if not already in results
                     if netpts2_chunk and not any('netpts2_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
                         filtered_chunks.insert(0, netpts2_chunk)
-                        print(f"🔧 FORCED netpts2_statistics to top of results for net question")
+                        print(f"[FORCED] FORCED netpts2_statistics to top of results for net question")
                         net_points_fix_applied = True
         
         # MATCH RESULT FIX: For questions about match outcome, force include match_overview (FINAL PRIORITY)
@@ -1552,13 +1842,73 @@ class TennisChatAgentEmbeddingQALocal:
             filtered_chunks = [chunk for chunk in filtered_chunks if 'match_overview' not in chunk['metadata']['section']]
             if match_overview_chunk:
                 filtered_chunks.insert(0, match_overview_chunk)
-                print(f"🏆 FORCED match_overview to top for match result question")
+                print(f"[MATCH] FORCED match_overview to top for match result question")
+        
+        # CRITICAL FIX: For set-specific questions
+        set_number = self._detect_set_reference(query)
+        if set_number and hasattr(self, 'set_mapping') and set_number in self.set_mapping:
+            target_set_score = self.set_mapping[set_number]
+            print(f"[SET/GAME] SET-SPECIFIC QUERY DETECTED: Set {set_number} (Set Score: {target_set_score})")
+            
+            # Find all point-by-point chunks matching this set score
+            set_specific_chunks = []
+            for chunk in self.chunks:
+                if 'point-by-point_narrative' in chunk['metadata'].get('section', ''):
+                    # Check if the chunk contains points from this set
+                    # Look for pattern like "Score: 0-2" in the text
+                    if f"Score: {target_set_score}" in chunk['text']:
+                        set_specific_chunks.append({
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,
+                            "relevance_score": 10.0  # Maximum score for set-specific
+                        })
+            
+            # Force these chunks to the top
+            if set_specific_chunks:
+                print(f"[FORCED] FORCING {len(set_specific_chunks)} point-by-point chunks for Set {set_number}")
+                for chunk_to_add in set_specific_chunks:
+                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk_to_add['metadata']['section']]
+                    filtered_chunks.insert(0, chunk_to_add)
+                    print(f"[FORCED] FORCED {chunk_to_add['metadata']['section']} to position 0 for Set {set_number}")
+        
+        # CRITICAL FIX: For game-specific questions
+        game_reference = self._detect_game_reference(query)
+        if game_reference and not game_reference.startswith('game_'):  # Game score pattern like "3-2"
+            print(f"[SET/GAME] GAME-SPECIFIC QUERY DETECTED: Game Score {game_reference}")
+            
+            # Find all point-by-point chunks matching this game score
+            game_specific_chunks = []
+            for chunk in self.chunks:
+                if 'point-by-point_narrative' in chunk['metadata'].get('section', ''):
+                    # Look for pattern like "0-0 3-2" (set score + game score)
+                    if f" {game_reference} " in chunk['text']:
+                        game_specific_chunks.append({
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,
+                            "relevance_score": 9.5  # Slightly lower than set-specific
+                        })
+            
+            # Force these chunks to the top
+            if game_specific_chunks:
+                print(f"[FORCED] FORCING {len(game_specific_chunks)} point-by-point chunks for Game Score {game_reference}")
+                for chunk_to_add in game_specific_chunks:
+                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk_to_add['metadata']['section']]
+                    filtered_chunks.insert(0, chunk_to_add)
+                    print(f"[FORCED] FORCED {chunk_to_add['metadata']['section']} to position 0 for Game Score {game_reference}")
         
         # POINT-BY-POINT PRIORITY: For conditional/temporal questions, prioritize narrative chunks
         conditional_indicators = [
+            # Conditional/situational
             "after losing", "after winning", "after missing", "after break",
             "when rallies got", "as rallies got", "rallies longer", "rallies shorter",
-            "when facing break", "when trailing", "when ahead"
+            "on important points", "on key points", "in crucial moments", "in tight moments",
+            "when facing break", "when trailing", "when ahead",
+            # Temporal/evolution (also require PBP analysis over time)
+            "evolve", "evolved", "evolution", "over time", "throughout the match",
+            "progression", "progressed", "changed over", "developed",
+            "early vs late", "first set vs", "as the match", "match went on"
         ]
         if any(indicator in query.lower() for indicator in conditional_indicators):
             # Collect all point-by-point narrative chunks
@@ -1583,7 +1933,7 @@ class TennisChatAgentEmbeddingQALocal:
             original_count = len(filtered_chunks)
             filtered_chunks = [chunk for chunk in filtered_chunks if 'netpts' not in chunk['metadata']['section']]
             if len(filtered_chunks) < original_count:
-                print(f"🚫 REMOVED {original_count - len(filtered_chunks)} net points chunks for non-net question")
+                print(f"[REMOVED] REMOVED {original_count - len(filtered_chunks)} net points chunks for non-net question")
         
         # For complex analytical questions, ensure we have diverse chunk types
         if top_k > 8:
@@ -1608,7 +1958,7 @@ class TennisChatAgentEmbeddingQALocal:
                 elif 'match_overview' in section:
                     section_types.add('match_overview')
             
-            print(f"📊 Complex analysis using {len(section_types)} different section types: {section_types}")
+            print(f"[STATS] Complex analysis using {len(section_types)} different section types: {section_types}")
         
         # Return top_k results
         return filtered_chunks[:top_k]
@@ -1714,10 +2064,10 @@ class TennisChatAgentEmbeddingQALocal:
         player_mentioned = self._detect_player_mentioned(query)
         
         stat_category = None
-        if any(word in query_lower for word in ["serve", "serving", "aces", "double fault"]):
-            stat_category = "serving"
-        elif any(word in query_lower for word in ["return", "returning"]):
+        if any(word in query_lower for word in ["return", "returning"]):
             stat_category = "returning"
+        elif any(word in query_lower for word in ["serve", "serving", "aces", "double fault"]):
+            stat_category = "serving"
         elif any(word in query_lower for word in ["shot", "winner", "error", "forehand", "backhand"]):
             stat_category = "shots"
         elif any(word in query_lower for word in ["net", "volley", "approach"]):
@@ -1899,8 +2249,8 @@ IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
 - **CRITICAL: When asked "who won" or "who won the match"**, ALWAYS include BOTH the winner's name AND the final score in your answer (e.g., "Carlos Alcaraz won the match, defeating Novak Djokovic 6-4 7-6(4) 6-2")
 - **CRITICAL: When asked for the "score" or "final score"**, provide the complete score including the winner (e.g., "Carlos Alcaraz d. Novak Djokovic 6-4 7-6(4) 6-2")
 - When asked for "counts" or "numbers", always return the raw count if available (e.g., "12 points"). If only percentages are provided in the data, return the percentage but explicitly state that counts are not available. Never infer or estimate counts from percentages.
-- ⚠️ When adding categories (e.g., unforced + forced errors), only add if both are raw counts
-- ❌ Never add percentages together
+- [WARN] When adding categories (e.g., unforced + forced errors), only add if both are raw counts
+- [ERROR] Never add percentages together
 - Treat "forced errors" and "induced forced errors" as the same thing
 - When asked for "converted" break points, look for "Break Points won" or "converted" data
 - For court-specific questions (deuce court, ad court), combine both courts for totals unless specifically asked for one court
@@ -2139,6 +2489,23 @@ Always stop at the highest-priority source available. Do not combine across diff
 **For RALLY questions** (longest rally, specific rallies):
 - Focus on the specific rally details requested
 - Include shot sequences and outcomes
+
+**For GAME-LEVEL and SET-LEVEL NARRATIVE QUESTIONS** (what happened in game X, describe the Nth set, how did the set unfold):
+- **CRITICAL**: NEVER MAKE UP OR INFER GAME SUMMARIES - Use ONLY the actual point-by-point data
+- **CRITICAL**: NEVER say things like "Player X held to love" or "Player Y broke serve" unless you can VERIFY IT from the actual point scores in the PBP data
+- **CRITICAL**: DO NOT fabricate game outcomes, point counts, or match flow - if you don't have the exact PBP data, say so
+- **CRITICAL**: When describing games, you MUST cite the actual point scores (0-0, 0-15, 0-30, etc.) from the PBP data
+- **PROCESS FOR GAME/SET NARRATIVES**:
+  1. **Find the exact PBP points**: Look for the specific game/set score in the point-by-point data (e.g., "Score: 2-0 4-5" means Set 3, games 4-5)
+  2. **Read each point sequentially**: Go through each point in order and note the point score progression (0-0 → 0-15 → 0-30 → 0-40 or 15-0 → 30-0 → 40-0, etc.)
+  3. **Determine game outcome from point scores**: 
+     - If points go 0-15, 0-30, 0-40 → server LOST the game (was broken)
+     - If points go 15-0, 30-0, 40-0 → server WON the game (held to love)
+     - Count the actual points from the data, don't guess
+  4. **Cite specific points**: Reference actual point numbers (e.g., "Points 204-207 show...")
+  5. **NO FABRICATION**: If you cannot find the exact PBP data for a game, say "The point-by-point data for game X is not available in the provided context"
+- **EXAMPLE OF CORRECT ANALYSIS**: "Game 10 of Set 3 (Score 2-0 4-5, Sinner serving): Looking at Points 204-207, the point scores progressed 0-0, 0-15, 0-30, 0-40, with Alcaraz winning all 4 points to break Sinner and win the set 6-4."
+- **EXAMPLE OF INCORRECT ANALYSIS** (NEVER DO THIS): "Game 10: Sinner held to love, winning the game with three winners and one unforced error from Alcaraz, leveling the set at 5-5." ← This is FABRICATED and WRONG
 
 **IMPORTANT DISTINCTION:**
 - "Forehand/Backhand" alone usually means groundstrokes → Use SHOT DIRECTION
@@ -2568,11 +2935,15 @@ Answer:"""
             return self.player1 if self.player1 else "Player 1"
         elif 'serve2' in table_name or 'return2' in table_name or 'shots2' in table_name or 'shotdir2' in table_name or 'netpts2' in table_name:
             return self.player2 if self.player2 else "Player 2"
-        elif 'IS' in row_label:
-            return self.player1 if self.player1 else "Player 1"
-        elif 'JP' in row_label:
-            return self.player2 if self.player2 else "Player 2"
         else:
+            # Try to extract player initials from row_label dynamically
+            if self.player1 and self.player2:
+                player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
+                player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
+                if player1_initials in row_label:
+                    return self.player1
+                elif player2_initials in row_label:
+                    return self.player2
             return "Unknown Player"
 
     def _determine_table_type(self, column_headers: List[str]) -> str:
@@ -3080,10 +3451,13 @@ Answer:"""
         
         # Use the player parameter that's already passed in
         # If we need to determine player from row_label, do it here
-        if 'IS' in row_label:
-            player = self.player1 if self.player1 else "Player 1"
-        elif 'JP' in row_label:
-            player = self.player2 if self.player2 else "Player 2"
+        if self.player1 and self.player2:
+            player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
+            player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
+            if player1_initials in row_label:
+                player = self.player1
+            elif player2_initials in row_label:
+                player = self.player2
         
         # Determine serve type context
         if "1st Serve" in row_label:
@@ -5211,13 +5585,15 @@ Answer:"""
         """Convert key points row to natural language sentences"""
         sentences = []
         
-        # Determine player from row label
-        if 'IS ' in row_label:
-            player = self.player1 if self.player1 else "Player 1"
-        elif 'JP ' in row_label:
-            player = self.player2 if self.player2 else "Player 2"
-        else:
-            player = "Unknown Player"
+        # Determine player from row label dynamically
+        player = "Unknown Player"
+        if self.player1 and self.player2:
+            player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
+            player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
+            if player1_initials in row_label:
+                player = self.player1
+            elif player2_initials in row_label:
+                player = self.player2
         
         # Determine key point type from row label and table type
         if table_type == "serves":
@@ -5798,13 +6174,15 @@ Answer:"""
             values = row.get('values', [])
             
             if label and values:
-                # Determine player
-                if 'IS' in label:
-                    player = self.player1 if self.player1 else "Player 1"
-                elif 'JP' in label:
-                    player = self.player2 if self.player2 else "Player 2"
-                else:
-                    player = "Unknown Player"
+                # Determine player dynamically from initials
+                player = "Unknown Player"
+                if self.player1 and self.player2:
+                    player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
+                    player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
+                    if player1_initials in label:
+                        player = self.player1
+                    elif player2_initials in label:
+                        player = self.player2
                 
                 # Extract key stats
                 total_pts = values[0] if len(values) > 0 else "0"
@@ -5837,13 +6215,15 @@ Answer:"""
             values = row.get('values', [])
             
             if label and values:
-                # Determine player
-                if 'IS' in label:
-                    player = self.player1 if self.player1 else "Player 1"
-                elif 'JP' in label:
-                    player = self.player2 if self.player2 else "Player 2"
-                else:
-                    player = "Unknown Player"
+                # Determine player dynamically from initials
+                player = "Unknown Player"
+                if self.player1 and self.player2:
+                    player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
+                    player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
+                    if player1_initials in label:
+                        player = self.player1
+                    elif player2_initials in label:
+                        player = self.player2
                 
                 # Determine serve type
                 if '1st Serve' in label:
@@ -5979,12 +6359,16 @@ Answer:"""
                     player = self.player1
                 elif self.player2 and self.player2 in label:
                     player = self.player2
-                elif 'IS' in label:
-                    player = self.player1 if self.player1 else "Player 1"
-                elif 'JP' in label:
-                    player = self.player2 if self.player2 else "Player 2"
                 else:
+                    # Try dynamic initials extraction as fallback
                     player = "Unknown Player"
+                    if self.player1 and self.player2:
+                        player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
+                        player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
+                        if player1_initials in label:
+                            player = self.player1
+                        elif player2_initials in label:
+                            player = self.player2
                 
                 # Extract key stats
                 ace_pct = values[0] if len(values) > 0 else "0%"
