@@ -360,8 +360,9 @@ class TennisChatInterface:
             final_message += f"- Who controlled rallies from the baseline more effectively?\n\n"
             final_message += f"**Advanced Analysis:**\n"
             final_message += f"- When one player won a break point, did they play more aggressively in the next game? Calculate the momentum carry-over effect\n"
+            final_message += f"- How did {p1}'s first serves change when facing break points?\n"
             final_message += f"- Tell the parallel journey of both players through the match - how did each player's mental and tactical state evolve?\n"
-            final_message += f"- Provide an analysis on each player's overall strategy in the match\n"
+            final_message += f"- Provide a strategic summary of the match\n"
             
             return final_message
             
