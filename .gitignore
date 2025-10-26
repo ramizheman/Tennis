@@ -1,0 +1,38 @@
+# Large video files
+*.webm
+*.mp4
+*.avi
+*.mov
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+tennis-venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+
+# Match data cache
+*.pkl
+
+# Test outputs
+*_TEST_RESULTS*.md
+

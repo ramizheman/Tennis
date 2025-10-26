@@ -219,12 +219,12 @@ class TennisChatInterface:
             if os.path.exists(expected_filename):
                 print(f"[CACHE] Match already cached: {expected_filename}")
                 skip_scraping = True
-                status_message = f"[LOADING] **Loading Match Data...**\n\n"
+                status_message = f"**Loading Match Data...**\n\n"
                 status_message += f"**Selected Match:** {match_selection}\n\n"
                 # status_message += f"**Step 1/4:** ⚡ Using cached match data (already scraped)...\n"
             else:
                 print(f"[SCRAPE] First time loading this match, scraping from Tennis Abstract...")
-                status_message = f"[LOADING] **Loading Match Data...**\n\n"
+                status_message = f"**Loading Match Data...**\n\n"
                 status_message += f"**Selected Match:** {match_selection}\n\n"
                 # status_message += f"**Step 1/4:** [SCRAPE] Scraping detailed match data from TennisAbstract.com...\n"
             
@@ -244,7 +244,7 @@ class TennisChatInterface:
                 ], capture_output=True, text=True)
                 
                 if result.returncode != 0:
-                    return f"[ERROR] **Error during data scraping:** {result.stderr}"
+                    return f"❌ **Error during data scraping:** {result.stderr}"
                 
                 print("[SUCCESS] Data collection completed successfully")
                 print(f"DEBUG: Data collection stdout: {result.stdout}")
@@ -264,7 +264,7 @@ class TennisChatInterface:
             print(f"DEBUG: Loading JSON file: {filename}")
             
             if not os.path.exists(filename):
-                return f"[ERROR] **Error:** Could not find the JSON file: {filename}"
+                return f"❌ **Error:** Could not find the JSON file: {filename}"
             
             # Load the match data
             with open(filename, 'r', encoding='utf-8') as f:
@@ -337,35 +337,40 @@ class TennisChatInterface:
             
             # final_message = status_message + f"[SUCCESS] **Step 4 Complete:** Embeddings loaded successfully!\n\n"
             final_message = status_message + f"\n"
-            final_message += f"[TENNIS] **Match Successfully Loaded!**\n\n"
+            final_message += f"✅ **Match Successfully Loaded!**\n\n"
             final_message += f"**Match:** {date} - {tournament}\n"
             final_message += f"**Players:** {p1} vs {p2}\n"
             final_message += f"**System:** Player detection is automatic based on your questions.\n\n"
-            final_message += f"**[READY] Ready to Answer Questions!**\n\n"
+            final_message += f"**Ready to Answer Questions!** 🎾\n\n"
             final_message += f"**Example Questions:**\n\n"
-            final_message += f"**Basic Stats:**\n"
+            final_message += f"**Simple Stats:**\n"
             final_message += f"- What was the final score?\n"
-            final_message += f"- How many aces did each player hit?\n"
-            final_message += f"- What were the break point statistics?\n"
-            final_message += f"- Who hit more forehand winners?\n\n"
-            final_message += f"**Tactical Analysis:**\n"
-            final_message += f"- Give me a comprehensive analysis of the match\n"
-            final_message += f"- How did serve effectiveness differ between deuce and ad courts?\n"
-            final_message += f"- What patterns suggest who controlled tempo better?\n\n"
-            final_message += f"**Conditional/Situational:**\n"
-            final_message += f"- Did either player change their serve placement after losing key points?\n"
-            final_message += f"- Was {p1.split()[-1]} more aggressive on returns in tight moments?\n"
-            final_message += f"- Did {p2.split()[-1]} adjust strategy after losing the first set?\n"
-            final_message += f"- How did rally length change in critical games?\n"
+            final_message += f"- How many aces did {p1} hit?\n"
+            final_message += f"- How many forehand winners did each player hit?\n"
+            final_message += f"- How many double faults did each player have?\n"
+            final_message += f"- What was each player's second serve win percentage?\n\n"
+            final_message += f"- How many cross court winners did each player have?\n\n"
+            final_message += f"**Set Analysis:**\n"
+            final_message += f"- What happened in Set 3?\n"
+            final_message += f"- Compare {p1}'s unforced errors in Set 1 versus Set 5\n"
+            final_message += f"- How did {p2}'s serve effectiveness change across sets?\n\n"
+            final_message += f"**Tactical Comparisons:**\n"
+            final_message += f"- When {p1} served to the T versus wide, which was more effective?\n"
+            final_message += f"- How did {p2} respond to second serves — aggressive return vs rally neutralizing?\n"
+            final_message += f"- Who controlled rallies from the baseline more effectively?\n\n"
+            final_message += f"**Advanced Analysis:**\n"
+            final_message += f"- When one player won a break point, did they play more aggressively in the next game? Calculate the momentum carry-over effect\n"
+            final_message += f"- Tell the parallel journey of both players through the match - how did each player's mental and tactical state evolve?\n"
+            final_message += f"- Provide an analysis on each player's overall strategy in the match\n"
             
             return final_message
             
         except Exception as e:
             print(f"DEBUG: Exception caught: {str(e)}")
             print(f"DEBUG: player1 = {player1}, player2 = {player2}")
-            return f"[ERROR] **Error loading match:** {str(e)}"
+            return f"❌ **Error loading match:** {str(e)}"
     
-    def ask_question(self, question: str) -> str:
+    def ask_question(self, question: str, model: str = None) -> str:
         """Ask a question about the currently loaded match"""
         if not question.strip():
             return "Please enter a question."
@@ -374,7 +379,17 @@ class TennisChatInterface:
             return "No match is currently loaded. Please search for and load a match first."
         
         try:
+            # Temporarily switch model if specified
+            original_model = self.chat_agent.model
+            if model:
+                self.chat_agent.model = model
+            
             answer = self.chat_agent.ask_question(question.strip())
+            
+            # Restore original model
+            if model:
+                self.chat_agent.model = original_model
+            
             return answer
             
         except Exception as e:
@@ -383,7 +398,7 @@ class TennisChatInterface:
     def create_interface(self):
         """Create the Gradio interface"""
         
-        with gr.Blocks(title="Tennis Match Chat Assistant", theme=gr.themes.Soft(), css="""
+        with gr.Blocks(title="Tennis Match Q&A Assistant", theme=gr.themes.Soft(), css="""
             .two-column-radio {
                 column-count: 2 !important;
                 column-gap: 20px !important;
@@ -404,11 +419,11 @@ class TennisChatInterface:
                 padding-top: 0 !important;
             }
         """) as interface:
-            gr.Markdown("# [TENNIS] Tennis Match Chat Assistant")
-            gr.Markdown("Ask questions about tennis matches between any two players!")
+            gr.Markdown("# 🎾 Tennis Match Q&A Assistant")
+            gr.Markdown("Ask questions about tennis matches between any two players and get detailed analysis!")
             
             # Search and Load section - fully integrated
-            gr.Markdown("### [SEARCH] Search & Load Matches")
+            gr.Markdown("### Search & Load Matches")
             gr.Markdown("**Note:** Last name searches work best (e.g., 'Federer' or 'Nadal')")
             
             with gr.Row():
@@ -431,7 +446,7 @@ class TennisChatInterface:
                 )
             
             with gr.Row():
-                search_btn = gr.Button("[SEARCH] Search Matches", variant="primary", scale=3)
+                search_btn = gr.Button("🔍 Search Matches", variant="primary", scale=3)
                 refresh_btn = gr.Button("🔄 Refresh Player List", variant="secondary", scale=1)
             
             # Refresh status output
@@ -454,7 +469,7 @@ class TennisChatInterface:
                     elem_classes="two-column-radio"
                 )
                 
-                load_btn = gr.Button("[LOAD] Load Selected Match", variant="primary", size="lg")
+                load_btn = gr.Button("📥 Load Selected Match", variant="primary", size="lg")
                 
                 load_output = gr.Textbox(
                     label="Status",
@@ -468,7 +483,18 @@ class TennisChatInterface:
             # Q&A section - side by side, equal width
             with gr.Row():
                 with gr.Column(scale=1):
-                    gr.Markdown("### [ASK] Ask Questions")
+                    gr.Markdown("### Ask Questions")
+                    
+                    # Model selection
+                    model_choice = gr.Radio(
+                        choices=[
+                            ("Gemini 2.0 - Good answers, fast", "gemini-2.0-flash-exp"),
+                            ("Gemini 2.5 - Best answers, slower", "gemini-2.5-flash")
+                        ],
+                        value="gemini-2.5-flash",
+                        label="Analysis Model",
+                        info="Choose speed vs quality tradeoff"
+                    )
                     
                     question_input = gr.Textbox(
                         label="Your Question",
@@ -476,29 +502,19 @@ class TennisChatInterface:
                         lines=4
                     )
                     
-                    ask_btn = gr.Button("[ASK] Ask Question", variant="primary", size="lg")
+                    ask_btn = gr.Button("💬 Ask Question", variant="primary", size="lg")
                 
                 with gr.Column(scale=1):
-                    gr.Markdown("### [ANSWER] Answer")
+                    gr.Markdown("### Answer")
                     
                     answer_output = gr.Markdown(
                         label="Answer",
-                        value="Load a match first, then ask your question!"
+                        value="Load a match first, then ask your question!",
+                        height=400
                     )
             
             gr.Markdown("---")
-            
-            gr.Markdown("### [EXAMPLES] Example Questions")
-            gr.Markdown("""
-            - **Basic Info:** When was this match played? Who were the players?
-            - **Serve Stats:** What were the serve statistics? How many aces were hit?
-            - **Rally Analysis:** What were the rally outcomes? How many winners were hit?
-            - **Key Points:** What were the key points? How did they perform on break points?
-            - **Net Play:** How did they perform at the net? What were the net point statistics?
-            - **Shot Analysis:** What shot types were used? How many forehand/backhand winners?
-            - **Tactical Analysis:** Give me a tactical analysis of the match
-            - **General:** Give me a match summary
-            """)
+            gr.Markdown("*Powered by Tennis Abstract Match Charting Project (http://www.tennisabstract.com/charting/) Data*")
             
             # Connect the interface components
             search_btn.click(
@@ -521,14 +537,14 @@ class TennisChatInterface:
             
             ask_btn.click(
                 fn=self.ask_question,
-                inputs=[question_input],
+                inputs=[question_input, model_choice],
                 outputs=[answer_output]
             )
             
             # Allow Enter key to submit questions
             question_input.submit(
                 fn=self.ask_question,
-                inputs=[question_input],
+                inputs=[question_input, model_choice],
                 outputs=[answer_output]
             )
         

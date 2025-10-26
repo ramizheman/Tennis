@@ -17,12 +17,12 @@ class TennisChatAgentEmbeddingQALocal:
     Supports Claude, Gemini, and OpenAI for answering questions.
     """
     
-    def __init__(self, llm_provider: str = "openai", api_key: str = None, model: str = None):
+    def __init__(self, llm_provider: str = "gemini", api_key: str = None, model: str = None):
         """
         Initialize with specified LLM provider and LOCAL embeddings.
         
         Args:
-            llm_provider: "openai", "claude", or "gemini" (for answering questions)
+            llm_provider: "openai", "claude", or "gemini" (for answering questions, default: gemini)
             api_key: API key for the provider (optional, will use env vars)
         """
         self.llm_provider = llm_provider.lower()
@@ -170,13 +170,24 @@ class TennisChatAgentEmbeddingQALocal:
         """
         Detect if the query references a specific set.
         Returns the set number (1, 2, 3, 4, 5) or None.
+        Returns None if MULTIPLE sets are mentioned (e.g., "set 3 and set 4").
         """
         import re
         
         query_lower = query.lower()
         
+        # Check for multiple set references (e.g., "set 3 and set 4")
+        # If found, return None to avoid filtering
+        set_count = len(re.findall(r'set\s+\d+', query_lower))
+        if set_count > 1:
+            print(f"[SET/GAME] Multiple sets detected ({set_count}), NOT filtering to single set")
+            return None
+        
         # Direct number references
-        set_match = re.search(r'(?:set\s+|the\s+)?(\d+)(?:st|nd|rd|th)?\s+set', query_lower)
+        # Match "set 3", "in set 3", "3rd set", "the 3rd set", etc.
+        set_match = re.search(r'set\s+(\d+)', query_lower)  # "set 3"
+        if not set_match:
+            set_match = re.search(r'(\d+)(?:st|nd|rd|th)?\s+set', query_lower)  # "3rd set"
         if set_match:
             return int(set_match.group(1))
         
@@ -218,7 +229,7 @@ class TennisChatAgentEmbeddingQALocal:
             return f"game_{game_num_match.group(1)}"
         
         return None
-    
+        
     def load_exact_full_format(self, file_path: str = "EXACT_FULL_FORMAT.md") -> None:
         """
         Load and process the specified natural language file into chunks with embeddings.
@@ -244,8 +255,11 @@ class TennisChatAgentEmbeddingQALocal:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # Extract match score for set mapping
+        # Extract match score for set mapping (needed for transformation)
         self._parse_match_score(content)
+        
+        # Transform point-by-point data to add shot attribution (NEW!)
+        content = self._transform_point_by_point_in_content(content)
         
         # Split content into sections (tables vs point-by-point)
         sections = self._split_into_sections(content)
@@ -353,7 +367,7 @@ class TennisChatAgentEmbeddingQALocal:
         if strategy == 'small':
             # Keep small sections intact (MATCH OVERVIEW, NETPTS, etc.)
             sections[section_name] = content
-            print(f"  📝 {section_name}: kept intact (small)")
+            print(f"  [INTACT] {section_name}: kept intact (small)")
             
         elif strategy == 'medium':
             # Split medium sections by player if beneficial
@@ -361,10 +375,10 @@ class TennisChatAgentEmbeddingQALocal:
             if len(player_chunks) > 1:
                 for i, chunk in enumerate(player_chunks):
                     sections[f"{section_name}_player_{i+1}"] = chunk
-                print(f"  👥 {section_name}: split by player ({len(player_chunks)} chunks)")
+                print(f"  [PLAYER] {section_name}: split by player ({len(player_chunks)} chunks)")
             else:
                 sections[section_name] = content
-                print(f"  📝 {section_name}: kept intact (medium)")
+                print(f"  [INTACT] {section_name}: kept intact (medium)")
                 
         elif strategy == 'large':
             # Split large detailed sections by logical subsections
@@ -372,10 +386,10 @@ class TennisChatAgentEmbeddingQALocal:
             if len(subsection_chunks) > 1:
                 for i, chunk in enumerate(subsection_chunks):
                     sections[f"{section_name}_part_{i+1}"] = chunk
-                print(f"  🔪 {section_name}: split by subsections ({len(subsection_chunks)} chunks)")
+                print(f"  [SUBSECT] {section_name}: split by subsections ({len(subsection_chunks)} chunks)")
             else:
                 sections[section_name] = content
-                print(f"  📝 {section_name}: kept intact (large)")
+                print(f"  [INTACT] {section_name}: kept intact (large)")
                 
         elif strategy == 'narrative':
             # Split point-by-point by game groups (every 12-15 points)
@@ -396,7 +410,7 @@ class TennisChatAgentEmbeddingQALocal:
                 print(f"  [TARGET] {section_name}: split by outcomes and depth ({len(return_chunks)} chunks)")
             else:
                 sections[section_name] = content
-                print(f"  📝 {section_name}: kept intact (return_split)")
+                print(f"  [INTACT] {section_name}: kept intact (return_split)")
     
     def _split_return_statistics_by_outcomes_and_depth(self, content: str, section_name: str) -> List[str]:
         """Split return statistics into outcomes and depth sections."""
@@ -547,6 +561,246 @@ class TennisChatAgentEmbeddingQALocal:
         
         return chunks if chunks else [content]
     
+    def _extract_set_numbers_from_chunk(self, chunk_text: str) -> List[int]:
+        """
+        Extract which set(s) this chunk contains based on score patterns.
+        Returns list of set numbers (e.g., [2, 3] for a mixed chunk).
+        """
+        import re
+        
+        if not hasattr(self, 'set_mapping') or not self.set_mapping:
+            return []
+        
+        set_numbers = set()
+        
+        # Find all "Score: X-Y" patterns in chunk
+        score_matches = re.findall(r'Score: (\d+)-(\d+)', chunk_text)
+        
+        for server_sets, returner_sets in score_matches:
+            set_score = f"{server_sets}-{returner_sets}"
+            
+            # Reverse lookup: which set has this score pattern?
+            for set_num, expected_score in self.set_mapping.items():
+                # Check both the expected score and its reverse (server perspective flip)
+                score_parts = expected_score.split('-')
+                reversed_score = f"{score_parts[1]}-{score_parts[0]}" if len(score_parts) == 2 else expected_score
+                
+                if set_score == expected_score or set_score == reversed_score:
+                    set_numbers.add(set_num)
+        
+        return sorted(list(set_numbers))
+    
+    def _extract_game_scores_from_chunk(self, chunk_text: str) -> List[str]:
+        """
+        Extract which game scores appear in this chunk.
+        Returns list of game scores (e.g., ['0-0', '1-0', '2-1']).
+        """
+        import re
+        
+        game_scores = set()
+        
+        # Find all "Score: X-Y G1-G2" patterns in chunk
+        # Format: "Score: 2-0 4-5 0-15" where 4-5 is the game score
+        score_matches = re.findall(r'Score: \d+-\d+ (\d+-\d+)', chunk_text)
+        
+        for game_score in score_matches:
+            game_scores.add(game_score)
+        
+        return sorted(list(game_scores))
+    
+    def _transform_point_by_point_in_content(self, content: str) -> str:
+        """
+        Find and transform the point-by-point section in the full content.
+        Adds player attribution to each shot in rallies.
+        """
+        import re
+        
+        # Find the point-by-point section
+        pbp_start = content.find('POINT-BY-POINT NARRATIVE:')
+        if pbp_start == -1:
+            return content  # No PBP section found
+        
+        # Find where it ends (look for next major section or end of file)
+        # PBP is typically the last section, but check anyway
+        pbp_end = len(content)
+        for next_section in ['RALLY OUTCOMES STATISTICS:', 'OTHER DATA:']:
+            section_pos = content.find(next_section, pbp_start + 1)
+            if section_pos != -1 and section_pos < pbp_end:
+                pbp_end = section_pos
+        
+        # Extract, transform, and replace
+        raw_pbp = content[pbp_start:pbp_end]
+        print("[TRANSFORM] Adding shot attribution to point-by-point data...")
+        transformed_pbp = self._transform_point_by_point_data(raw_pbp)
+        
+        return content[:pbp_start] + transformed_pbp + content[pbp_end:]
+    
+    def _transform_point_by_point_data(self, raw_pbp_text: str) -> str:
+        """
+        Transform raw PBP notation into explicit, LLM-friendly format with shot attribution.
+        """
+        import re
+        
+        # Keep the header
+        result = "POINT-BY-POINT NARRATIVE:\n"
+        result += "-" * 30 + "\n\n"
+        
+        # Find all points
+        points = re.findall(r'(Point \d+.*?)(?=Point \d+|$)', raw_pbp_text, re.DOTALL)
+        
+        transformed_count = 0
+        for point_text in points:
+            if not point_text.strip():
+                continue
+            transformed = self._transform_single_point(point_text.strip())
+            result += transformed + "\n\n"
+            transformed_count += 1
+        
+        print(f"[TRANSFORM] Transformed {transformed_count} points with shot attribution")
+        return result
+    
+    def _transform_single_point(self, point_text: str) -> str:
+        """Transform a single point into explicit format with shot attribution."""
+        import re
+        
+        # Parse point header
+        header_match = re.search(
+            r'Point (\d+) \[Server: (.*?) \| Returner: (.*?) \| Score: ([\d-]+) ([\d-]+) ([\d-]+)\]:',
+            point_text
+        )
+        
+        if not header_match:
+            return point_text  # Fallback to original
+        
+        point_num = header_match.group(1)
+        server = header_match.group(2).strip()
+        returner = header_match.group(3).strip()
+        set_score = header_match.group(4)
+        game_score = header_match.group(5)
+        point_score = header_match.group(6)
+        
+        # Parse rally
+        rally_text = point_text[header_match.end():].strip()
+        rally_shots = self._parse_rally_sequence(rally_text, server, returner)
+        
+        # Determine point winner
+        point_winner = None
+        if rally_shots:
+            # Check for double fault (2nd serve fault)
+            for shot in rally_shots:
+                if '2nd serve' in shot['description'] and shot.get('outcome') == 'FAULT':
+                    # Double fault - returner wins
+                    point_winner = returner
+                    break
+            
+            # If not double fault, find the last shot with an outcome
+            if not point_winner:
+                for shot in reversed(rally_shots):
+                    outcome = shot.get('outcome')
+                    if outcome and outcome != 'FAULT':
+                        # Winner or error determines point winner
+                        if outcome == 'WINNER':
+                            point_winner = shot['player']
+                        elif outcome in ['UNFORCED ERROR', 'FORCED ERROR']:
+                            # The player who made the error LOST
+                            point_winner = returner if shot['player'] == server else server
+                        else:
+                            # Normal shot
+                            point_winner = shot['player']
+                        break
+        
+        # Build the transformed point text
+        result = f"Point {point_num} [Server: {server} | Returner: {returner} | Score: {set_score} {game_score} {point_score}]:\n"
+        
+        # Add rally with attribution
+        rally_description = []
+        for shot in rally_shots:
+            shot_desc = f"{shot['description']} [{shot['player']}]"
+            rally_description.append(shot_desc)
+        
+        result += "; ".join(rally_description) + "."
+        
+        # Add point winner
+        if point_winner:
+            result += f" [Point won by: {point_winner}]"
+        
+        return result
+    
+    def _parse_rally_sequence(self, rally_text: str, server: str, returner: str) -> List[Dict]:
+        """
+        Parse rally into alternating sequence of shots with player attribution.
+        Returns list of {player, description, outcome} dicts.
+        """
+        import re
+        
+        shots = []
+        current_player = server  # Server always starts
+        in_rally = False  # Track if we're in rally (after successful serve)
+        
+        # CRITICAL: Handle "1st serve fault. 2nd serve" pattern
+        # Replace period-space between serves with marker for proper splitting
+        rally_text = re.sub(r'fault \([^)]+\)\.\s+(2nd serve)', r'fault. SERVE_SEPARATOR \1', rally_text)
+        
+        # Split by semicolons (each shot)
+        shot_parts = rally_text.split(';')
+        
+        # Also split by SERVE_SEPARATOR marker
+        expanded_parts = []
+        for part in shot_parts:
+            if 'SERVE_SEPARATOR' in part:
+                sub_parts = part.split('SERVE_SEPARATOR')
+                expanded_parts.extend(sub_parts)
+            else:
+                expanded_parts.append(part)
+        shot_parts = expanded_parts
+        
+        for shot_part in shot_parts:
+            shot_part = shot_part.strip()
+            if not shot_part:
+                continue
+            
+            # Clean up
+            shot_clean = shot_part.strip()
+            
+            # Check for outcomes
+            outcome = None
+            if 'winner' in shot_clean.lower():
+                outcome = 'WINNER'
+            elif 'unforced error' in shot_clean.lower():
+                outcome = 'UNFORCED ERROR'
+            elif 'forced error' in shot_clean.lower():
+                outcome = 'FORCED ERROR'
+            elif 'fault' in shot_clean.lower():
+                outcome = 'FAULT'
+            
+            # Handle serves
+            if '1st serve' in shot_clean or '2nd serve' in shot_clean:
+                # Serve is always by the server
+                shots.append({
+                    'player': server,  # Always server, not current_player
+                    'description': shot_clean,
+                    'outcome': outcome
+                })
+                # If successful serve, next shot is returner's
+                if outcome != 'FAULT':
+                    current_player = returner
+                    in_rally = True
+                else:
+                    # Fault - next serve attempt, stay on server
+                    current_player = server
+                    in_rally = False
+            else:
+                # Regular rally shot
+                shots.append({
+                    'player': current_player,
+                    'description': shot_clean,
+                    'outcome': outcome
+                })
+                # Alternate for next shot
+                current_player = returner if current_player == server else server
+        
+        return shots
+    
     def chunk_text(self, text: str, max_tokens: int = 500) -> List[str]:
         """
         Splits a long text into chunks small enough to feed an LLM.
@@ -581,8 +835,18 @@ class TennisChatAgentEmbeddingQALocal:
         player_focus = self._determine_player_focus(section)
         stat_category = self._determine_stat_category(section)
         
-        return [
-            {
+        result_chunks = []
+        for i, chunk in enumerate(chunks):
+            # Extract set and game metadata for point-by-point chunks
+            set_numbers = []
+            game_scores = []
+            if 'point-by-point' in section.lower():
+                set_numbers = self._extract_set_numbers_from_chunk(chunk)
+                game_scores = self._extract_game_scores_from_chunk(chunk)
+                if set_numbers or game_scores:
+                    print(f"  [METADATA] Chunk {i+1}: sets={set_numbers}, games={game_scores[:5]}{'...' if len(game_scores) > 5 else ''}")
+            
+            result_chunks.append({
                 "text": chunk,
                 "metadata": {
                     "type": chunk_type,
@@ -590,6 +854,8 @@ class TennisChatAgentEmbeddingQALocal:
                     "match_id": match_id,
                     "player_focus": player_focus,
                     "stat_category": stat_category,
+                    "set_numbers": set_numbers,  # NEW: Which sets are in this chunk (e.g., [2, 3])
+                    "game_scores": game_scores,  # NEW: Which game scores appear (e.g., ['4-5', '5-5', '6-5'])
                     "contains_percentages": "%" in chunk,
                     "contains_point_details": "Point " in chunk,
                     "contains_long_rallies": any("shot rally" in line or "stroke rally" in line for line in chunk.split('\n') if "rally" in line),
@@ -600,9 +866,9 @@ class TennisChatAgentEmbeddingQALocal:
                         "match_type": "WTA"
                     }
                 }
-            }
-            for chunk in chunks
-        ]
+            })
+        
+        return result_chunks
     
     def _smart_chunk_large_section(self, text: str, section: str) -> List[str]:
         """
@@ -671,7 +937,7 @@ class TennisChatAgentEmbeddingQALocal:
             if total_tokens <= max_tokens:
                 return [text]
             
-            print(f"  📏 Precise chunking: {total_tokens} tokens → targeting {max_tokens} per chunk")
+            print(f"  [PRECISE] Precise chunking: {total_tokens} tokens → targeting {max_tokens} per chunk")
             
             lines = text.split('\n')
             chunks = []
@@ -693,7 +959,7 @@ class TennisChatAgentEmbeddingQALocal:
             if current_chunk:
                 chunks.append('\n'.join(current_chunk))
             
-            print(f"  ✂️  Split into {len(chunks)} chunks (avg {total_tokens//len(chunks)} tokens each)")
+            print(f"  [SPLIT] Split into {len(chunks)} chunks (avg {total_tokens//len(chunks)} tokens each)")
             return chunks
             
         except Exception as e:
@@ -712,7 +978,7 @@ class TennisChatAgentEmbeddingQALocal:
         
         if time_since_last_call < self.min_delay:
             sleep_time = self.min_delay - time_since_last_call
-            print(f"⏳ Rate limiting: waiting {sleep_time:.1f}s...")
+            print(f"[WAIT] Rate limiting: waiting {sleep_time:.1f}s...")
             time.sleep(sleep_time)
         
         self.last_api_call = time.time()
@@ -809,7 +1075,7 @@ class TennisChatAgentEmbeddingQALocal:
         Generate embeddings for chunks using LOCAL sentence-transformers (100% FREE).
         No API calls, runs entirely on your computer!
         """
-        print("🔄 Generating embeddings with LOCAL model (FREE - no API calls!)...")
+        print("[EMBED] Generating embeddings with LOCAL model (FREE - no API calls!)...")
         
         # Extract text from chunks
         texts = [chunk["text"] for chunk in chunks]
@@ -1001,55 +1267,124 @@ class TennisChatAgentEmbeddingQALocal:
         """
         Determine optimal number of chunks based on question complexity.
         Returns the number of chunks needed for comprehensive analysis.
+        
+        4-tier system:
+        - Ultra-high (18): Multi-factor analysis needing ALL point-by-point data
+        - High (15): Complex tactical/pattern questions
+        - Detailed (8): Specific context questions
+        - Simple (5): Direct factual questions
         """
         query_lower = query.lower()
         
-        # High complexity questions that need extensive context
-        high_complexity_indicators = [
-            "match flow", "match pattern", "match analysis", "match strategy",
-            "how did the match", "what was the pattern", "analyze the match",
-            "compare the players", "player comparison", "match breakdown",
-            "turning point", "momentum", "match narrative", "match story",
-            "overall performance", "comprehensive", "detailed analysis",
-            "match progression", "how the match unfolded", "match dynamics",
-            "match summary", "match overview", "match recap",
-            # Temporal/evolution indicators
-            "evolve", "evolved", "evolution", "over time", "throughout the match",
-            "progression", "progressed", "changed over", "developed",
-            "early vs late", "first set vs", "as the match", "match went on",
-            # Conditional/situational indicators (require point-by-point data)
-            "after losing", "after winning", "after missing", "after break",
-            "when rallies got", "as rallies got", "rallies longer", "rallies shorter",
-            "on important points", "on key points", "in crucial moments", "in tight moments",
-            "when facing break", "when trailing", "when ahead"
+        # Ultra-high complexity (need ALL point-by-point chunks - ~18-19 total)
+        # These are RARE, genuinely complex multi-factor questions
+        ultra_high_indicators = [
+            # Multi-factor match analysis
+            "match flow", "match progression", "match dynamics",
+            "how the match unfolded", "match evolution",
+            "throughout the match", "over time", "entire match",
+            # Complex shot sequences and patterns
+            "shot sequences", "shot sequence", "rally patterns",
+            "when hit a", "when they hit", "when he hit", "when she hit",
+            "response to", "respond to", "responded to", "in response",
+            # Adaptation and change detection (need before/after comparison)
+            "adapt", "adapted", "adaptation",
+            "adjust", "adjusted", "adjustment",
+            "changed over",
+            "counter", "countered", "neutralize", "neutralized",
+            # Behavioral transitions
+            "switched to", "started hitting more", "began favoring",
+            "moved away from", "increased reliance on",
+            "started doing", "stopped doing",
+            "changed shot direction",
+            # Sequential momentum analysis (specific patterns, not common words)
+            "consecutive", "streak", "run of", "string of",
+            # Rally length and patterns
+            "long rallies", "short rallies", "rally length",
+            "extended rallies", "quick points",
+            "8+ shot", "5+ shot", "rallies longer", "rallies shorter",
+            # Physical and performance variance
+            "fatigue", "tired", "wore down",
+            "variance", "highs and lows",
+            "defensive to offensive", "pushed back", "stepped in",
+            # Counterfactual analysis
+            "what if", "if he had", "if she had",
+            "could have", "should have", "would have", "prevented"
         ]
         
-        # Medium complexity questions that need multiple sections
-        medium_complexity_indicators = [
-            "each player", "both players", "all players", "every player",
-            "serve and return", "offensive and defensive", "overall statistics",
-            "complete picture", "full breakdown", "all aspects",
-            "serve vs return", "offense vs defense", "comprehensive stats",
-            "compare", "comparison", "versus", "vs"
+        # High complexity (need most point-by-point data)
+        high_complexity_indicators = [
+            # Match narrative and strategy
+            "match pattern", "match analysis", "match strategy",
+            "what was the pattern", "analyze the match",
+            "turning point", "momentum", "match narrative", "match story",
+            "match breakdown", "match summary", "match overview", "match recap",
+            "progression", "progressed", "developed",
+            "early vs late", "first set vs", "as the match", "match went on",
+            # Evolution and shifts (moved from ultra_high - common but still complex)
+            "evolve", "evolved", "evolution",
+            "momentum shift", "momentum swing",
+            "shift", "shifted",
+            # Situational and conditional
+            "after losing", "after winning", "after missing", "after break",
+            "after", "following", "then", "led to", "triggered",
+            "when rallies got", "as rallies got",
+            "on important points", "on key points", "in crucial moments", "in tight moments",
+            "when facing break", "when trailing", "when ahead",
+            # Shot responses and effectiveness
+            "most common response", "typical response", "usual response",
+            "how did", "what did", "how would", "what would",
+            "drop shot", "most effective", "least effective", "best response", "worst response",
+            # Tactical patterns
+            "serve placement", "shot selection", "shot placement",
+            "approach shot", "net approach", "serve and volley", "chip and charge",
+            "rally control", "dictate", "dictating", "control the point",
+            "tactical", "tactics", "strategy", "strategic", "game plan",
+            # Psychology and momentum
+            "clutch", "pressure", "under pressure", "mental", "mentality",
+            "champion", "fighting spirit", "resilience", "comeback",
+            "statement", "deflate", "demoralize", "confidence",
+            # Sequential patterns
+            "next", "subsequent", "immediately after",
+            "in response to", "as a result",
+            # Comparative time periods
+            "first half", "second half", "early", "late", "beginning", "end",
+            "set 1 vs", "set 2 vs", "first two sets", "last three sets",
+            "tiebreak vs", "regular games", "important games vs",
+            # Pattern and tendency
+            "pattern", "patterns", "tendency", "tendencies", "prefer", "preferred",
+            "favor", "favored", "typically", "usually", "commonly", "often",
+            "most of the time", "majority", "predominant", "characteristic",
+            # Context-specific situations
+            "set point", "game point", "match point",
+            "deuce", "advantage", "30-30", "40-40",
+            "must hold", "must break",
+            "tiebreak", "tie-break", "deciding", "crucial game",
+            # Outcome and effectiveness
+            "effectiveness", "effective", "ineffective",
+            "worked", "didn't work", "successful", "unsuccessful",
+            "paid off", "backfired",
+            # Quality and level
+            "quality", "level", "standard", "performance level",
+            "raised their game", "elevated", "dropped off", "declined",
+            "peak", "best", "worst", "high point", "low point"
         ]
         
         # Specific but detailed questions
         detailed_indicators = [
             "break points", "game points", "key points", "pressure points",
             "shot direction", "shot types", "serve types", "return types",
-            "net play", "baseline play", "rally length", "point construction",
+            "net play", "baseline play", "point construction",
             "serve performance", "return performance", "overall performance"
         ]
         
-        # Check for high complexity
+        # Check complexity in order (most specific first)
+        if any(indicator in query_lower for indicator in ultra_high_indicators):
+            return 18  # Get ALL point-by-point chunks
+        
         if any(indicator in query_lower for indicator in high_complexity_indicators):
-            return 15  # Maximum context for complex analysis
+            return 15  # Most point-by-point chunks
         
-        # Check for medium complexity
-        if any(indicator in query_lower for indicator in medium_complexity_indicators):
-            return 10  # Multiple sections needed
-        
-        # Check for detailed specific questions
         if any(indicator in query_lower for indicator in detailed_indicators):
             return 8  # More context for detailed analysis
         
@@ -1561,52 +1896,34 @@ class TennisChatAgentEmbeddingQALocal:
                 # Apply the fix for the detected statistic type
                 if detected_stat_type and detected_stat_type in split_sections:
                     chunk_names = split_sections[detected_stat_type]
-                    chunk1_name, chunk2_name = chunk_names
-                    chunk1_found = None
-                    chunk2_found = None
                     
-                    print(f"[DEBUG] DEBUG: UNIVERSAL FIX applying for {detected_stat_type} - looking for {chunk1_name} and {chunk2_name}")
+                    print(f"[DEBUG] DEBUG: UNIVERSAL FIX applying for {detected_stat_type} - looking for {len(chunk_names)} chunks: {chunk_names}")
                     print(f"[DEBUG] DEBUG: Current filtered_chunks sections: {[chunk['metadata']['section'] for chunk in filtered_chunks]}")
                     
-                    # Find both chunks - use separate loops to ensure both can be found
-                    for chunk in self.chunks:
-                        if chunk1_name in chunk['metadata']['section']:
-                            chunk1_found = {
-                                "text": chunk['text'],
-                                "metadata": chunk['metadata'],
-                                "distance": 0.0,  # Perfect match
-                                "relevance_score": 8.0  # High score
-                            }
-                            print(f"[DEBUG] DEBUG: Found {chunk1_name}")
-                            break
-                    
-                    for chunk in self.chunks:
-                        if chunk2_name in chunk['metadata']['section']:
-                            chunk2_found = {
-                                "text": chunk['text'],
-                                "metadata": chunk['metadata'],
-                                "distance": 0.0,  # Perfect match
-                                "relevance_score": 8.0  # High score
-                            }
-                            print(f"[DEBUG] DEBUG: Found {chunk2_name}")
+                    # Find all matching chunks (handle variable-length lists)
+                    found_chunks = []
+                    for chunk_name in chunk_names:
+                        for chunk in self.chunks:
+                            if chunk_name in chunk['metadata']['section']:
+                                found_chunk = {
+                                    "text": chunk['text'],
+                                    "metadata": chunk['metadata'],
+                                    "distance": 0.0,  # Perfect match
+                                    "relevance_score": 8.0  # High score
+                                }
+                                found_chunks.append(found_chunk)
+                                print(f"[DEBUG] DEBUG: Found {chunk_name}")
                             break
                     
                     # Remove existing instances and add with high priority
-                    if chunk1_found:
+                    for found_chunk in found_chunks:
+                        chunk_section = found_chunk['metadata']['section']
                         # Remove any existing instance
-                        filtered_chunks = [chunk for chunk in filtered_chunks if chunk['metadata']['section'] != chunk1_name]
+                        filtered_chunks = [chunk for chunk in filtered_chunks if chunk['metadata']['section'] != chunk_section]
                         # Set high priority and add to top
-                        chunk1_found['relevance_score'] = 9.0
-                        filtered_chunks.insert(0, chunk1_found)
-                        print(f"[FORCED] FORCED {chunk1_name} to top of results for 'each player' {detected_stat_type} question")
-                    
-                    if chunk2_found:
-                        # Remove any existing instance  
-                        filtered_chunks = [chunk for chunk in filtered_chunks if chunk['metadata']['section'] != chunk2_name]
-                        # Set high priority and add to top
-                        chunk2_found['relevance_score'] = 9.0
-                        filtered_chunks.insert(0, chunk2_found)
-                        print(f"[FORCED] FORCED {chunk2_name} to top of results for 'each player' {detected_stat_type} question")
+                        found_chunk['relevance_score'] = 9.0
+                        filtered_chunks.insert(0, found_chunk)
+                        print(f"[FORCED] FORCED {chunk_section} to top of results for '{detected_stat_type}' question")
                     
                     universal_fix_applied = True
                     
@@ -1694,14 +2011,28 @@ class TennisChatAgentEmbeddingQALocal:
                 player_mentioned = self._detect_player_mentioned(query)
                 print(f"[DEBUG] DEBUG: Player mentioned: {player_mentioned}")
                 
+                # Check if this is a serve-return question (e.g., "When X served, Y's return rate")
+                is_serve_return_question = any(word in query.lower() for word in ["served", "serving", "serve to", "serve wide", "serve down"])
+                
                 # Only force the relevant player's chunks
                 if player_mentioned:
-                    if player_mentioned.lower() == self.player1.lower():
-                        target_sections = "return1_statistics_detailed"
-                        print(f"[DEBUG] DEBUG: Forcing return1 (Player 1: {self.player1}) chunks")
+                    # FLIP logic for serve-return questions: if asking about X's serve → need OTHER player's returns
+                    if is_serve_return_question:
+                        # If server is mentioned, get the OTHER player's return stats
+                        if player_mentioned.lower() == self.player1.lower():
+                            target_sections = "return2_statistics_detailed"  # FLIPPED: Get player2's returns
+                            print(f"[DEBUG] DEBUG: Server={self.player1}, so forcing return2 (Player 2: {self.player2}) chunks")
+                        else:
+                            target_sections = "return1_statistics_detailed"  # FLIPPED: Get player1's returns
+                            print(f"[DEBUG] DEBUG: Server={self.player2}, so forcing return1 (Player 1: {self.player1}) chunks")
                     else:
-                        target_sections = "return2_statistics_detailed"
-                        print(f"[DEBUG] DEBUG: Forcing return2 (Player 2: {self.player2}) chunks")
+                        # Normal return question: player mentioned is the returner
+                        if player_mentioned.lower() == self.player1.lower():
+                            target_sections = "return1_statistics_detailed"
+                            print(f"[DEBUG] DEBUG: Forcing return1 (Player 1: {self.player1}) chunks")
+                        else:
+                            target_sections = "return2_statistics_detailed"
+                            print(f"[DEBUG] DEBUG: Forcing return2 (Player 2: {self.player2}) chunks")
                     
                     # Find and force the relevant player's chunks to position 0
                     chunks_to_add = []
@@ -1850,65 +2181,147 @@ class TennisChatAgentEmbeddingQALocal:
             target_set_score = self.set_mapping[set_number]
             print(f"[SET/GAME] SET-SPECIFIC QUERY DETECTED: Set {set_number} (Set Score: {target_set_score})")
             
-            # Find all point-by-point chunks matching this set score
+            # Generate ALL possible score patterns for this set
+            # For Set 3 with mapping "2-0", we need to match BOTH "2-0" AND "0-2" (server perspective)
+            # Also handle "1-1" if it's a tied situation
+            score_parts = target_set_score.split('-')
+            if len(score_parts) == 2:
+                set_score_patterns = [
+                    target_set_score,  # e.g., "2-0"
+                    f"{score_parts[1]}-{score_parts[0]}",  # e.g., "0-2" (reversed)
+                ]
+                # Add "1-1" pattern if the total is 2 (for set 3)
+                total = int(score_parts[0]) + int(score_parts[1])
+                if total == 2 and score_parts[0] != score_parts[1]:
+                    set_score_patterns.append("1-1")
+                
+                print(f"[SET/GAME] Searching for set score patterns: {set_score_patterns}")
+            else:
+                set_score_patterns = [target_set_score]
+            
+            # Find all point-by-point chunks containing ANY points from this set
+            # Use metadata filtering (fast) with text fallback (backward compatibility)
             set_specific_chunks = []
             for chunk in self.chunks:
                 if 'point-by-point_narrative' in chunk['metadata'].get('section', ''):
-                    # Check if the chunk contains points from this set
-                    # Look for pattern like "Score: 0-2" in the text
-                    if f"Score: {target_set_score}" in chunk['text']:
+                    chunk_metadata = chunk.get('metadata', {})
+                    chunk_set_numbers = chunk_metadata.get('set_numbers', [])
+                    
+                    # Method 1: Use metadata (preferred - fast and accurate)
+                    if set_number in chunk_set_numbers:
                         set_specific_chunks.append({
                             "text": chunk['text'],
                             "metadata": chunk['metadata'],
                             "distance": 0.0,
                             "relevance_score": 10.0  # Maximum score for set-specific
                         })
+                        print(f"[SET/GAME] METADATA MATCH: Found chunk with set_numbers={chunk_set_numbers}")
+                    # Method 2: Text search fallback (for old chunks without metadata)
+                    elif not chunk_set_numbers:  # Only if metadata is missing
+                        chunk_text = chunk['text']
+                        for pattern in set_score_patterns:
+                            if f"Score: {pattern}" in chunk_text:
+                                set_specific_chunks.append({
+                                    "text": chunk['text'],
+                                    "metadata": chunk['metadata'],
+                                    "distance": 0.0,
+                                    "relevance_score": 10.0
+                                })
+                                print(f"[SET/GAME] TEXT MATCH: Found chunk via pattern '{pattern}'")
+                                break  # Don't add the same chunk twice
             
-            # Force these chunks to the top
+            # CRITICAL: Remove ALL point-by-point chunks from OTHER sets
+            # Only keep chunks that match the target set score
             if set_specific_chunks:
-                print(f"[FORCED] FORCING {len(set_specific_chunks)} point-by-point chunks for Set {set_number}")
+                print(f"[SET/GAME] REMOVING point-by-point chunks from other sets, keeping ONLY Set {set_number}")
+                filtered_chunks = [c for c in filtered_chunks if 'point-by-point_narrative' not in c['metadata'].get('section', '')]
+                print(f"[SET/GAME] Removed all PBP chunks. Remaining chunks: {len(filtered_chunks)}")
+                
+                # Now add ONLY the Set 3 chunks at the top
+                print(f"[FORCED] FORCING {len(set_specific_chunks)} point-by-point chunks for Set {set_number} ONLY")
                 for chunk_to_add in set_specific_chunks:
-                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk_to_add['metadata']['section']]
                     filtered_chunks.insert(0, chunk_to_add)
-                    print(f"[FORCED] FORCED {chunk_to_add['metadata']['section']} to position 0 for Set {set_number}")
+                    print(f"[FORCED] ADDED {chunk_to_add['metadata']['section']} for Set {set_number}")
+                    
+                print(f"[SET/GAME] Final chunk count: {len(filtered_chunks)} (all from Set {set_number} or stats)")
         
         # CRITICAL FIX: For game-specific questions
         game_reference = self._detect_game_reference(query)
         if game_reference and not game_reference.startswith('game_'):  # Game score pattern like "3-2"
             print(f"[SET/GAME] GAME-SPECIFIC QUERY DETECTED: Game Score {game_reference}")
             
-            # Find all point-by-point chunks matching this game score
+            # IMPORTANT: Search within already-filtered chunks (which may already be set-specific)
+            # This prevents adding back games from other sets
             game_specific_chunks = []
-            for chunk in self.chunks:
-                if 'point-by-point_narrative' in chunk['metadata'].get('section', ''):
-                    # Look for pattern like "0-0 3-2" (set score + game score)
-                    if f" {game_reference} " in chunk['text']:
-                        game_specific_chunks.append({
-                            "text": chunk['text'],
-                            "metadata": chunk['metadata'],
-                            "distance": 0.0,
-                            "relevance_score": 9.5  # Slightly lower than set-specific
-                        })
+            search_source = filtered_chunks if set_number else self.chunks
+            print(f"[SET/GAME] Searching for game score '{game_reference}' in {'filtered chunks (set-specific)' if set_number else 'all chunks'}")
             
-            # Force these chunks to the top
+            for chunk in search_source:
+                if 'point-by-point_narrative' in chunk.get('metadata', {}).get('section', ''):
+                    chunk_metadata = chunk.get('metadata', {})
+                    chunk_game_scores = chunk_metadata.get('game_scores', [])
+                    
+                    # Method 1: Use metadata (preferred)
+                    if game_reference in chunk_game_scores:
+                        game_specific_chunks.append({
+                            "text": chunk.get('text', ''),
+                            "metadata": chunk.get('metadata', {}),
+                            "distance": chunk.get('distance', 0.0),
+                            "relevance_score": 9.5
+                        })
+                        print(f"[SET/GAME] METADATA MATCH: Found chunk with game_scores={chunk_game_scores}")
+                    # Method 2: Text search fallback
+                    elif not chunk_game_scores:  # Only if metadata missing
+                        if f" {game_reference} " in chunk.get('text', ''):
+                            game_specific_chunks.append({
+                                "text": chunk.get('text', ''),
+                                "metadata": chunk.get('metadata', {}),
+                                "distance": chunk.get('distance', 0.0),
+                                "relevance_score": 9.5
+                            })
+                            print(f"[SET/GAME] TEXT MATCH: Found chunk via game score '{game_reference}'")
+            
+            # Remove existing PBP chunks and add only the game-specific ones
             if game_specific_chunks:
+                print(f"[SET/GAME] REMOVING other PBP chunks, keeping ONLY Game Score {game_reference}")
+                filtered_chunks = [c for c in filtered_chunks if 'point-by-point_narrative' not in c['metadata'].get('section', '')]
                 print(f"[FORCED] FORCING {len(game_specific_chunks)} point-by-point chunks for Game Score {game_reference}")
                 for chunk_to_add in game_specific_chunks:
-                    filtered_chunks = [c for c in filtered_chunks if c['metadata']['section'] != chunk_to_add['metadata']['section']]
                     filtered_chunks.insert(0, chunk_to_add)
-                    print(f"[FORCED] FORCED {chunk_to_add['metadata']['section']} to position 0 for Game Score {game_reference}")
+                    print(f"[FORCED] ADDED chunk for Game Score {game_reference}")
         
-        # POINT-BY-POINT PRIORITY: For conditional/temporal questions, prioritize narrative chunks
+        # POINT-BY-POINT PRIORITY: For conditional/temporal/shot-sequence questions, prioritize narrative chunks
+        # ONLY include indicators that ALWAYS need PBP (not words that could be stats OR PBP)
         conditional_indicators = [
-            # Conditional/situational
+            # Conditional/situational (always need PBP context)
             "after losing", "after winning", "after missing", "after break",
-            "when rallies got", "as rallies got", "rallies longer", "rallies shorter",
+            "when rallies got", "as rallies got",
             "on important points", "on key points", "in crucial moments", "in tight moments",
             "when facing break", "when trailing", "when ahead",
-            # Temporal/evolution (also require PBP analysis over time)
+            # Temporal/evolution (always need PBP analysis over time)
             "evolve", "evolved", "evolution", "over time", "throughout the match",
             "progression", "progressed", "changed over", "developed",
-            "early vs late", "first set vs", "as the match", "match went on"
+            "early vs late", "first set vs", "as the match", "match went on",
+            # Per-set/per-game breakdowns (always need PBP counting)
+            "each set", "per set", "in each set", "every set", "set by set",
+            "across sets", "across the sets", "across all sets", "across the five sets",
+            "in set 1", "in set 2", "in set 3", "in set 4", "in set 5",
+            "per game", "each game", "game by game",
+            # Shot sequence/response indicators (ALWAYS need rally-level data)
+            "when hit a", "when he hit", "when she hit", "when they hit",
+            "response to", "respond to", "responded to", "in response",
+            "shot sequence", "shot sequences", "rally patterns",
+            "most common response", "typical response",
+            # Sequential/consequential (always need PBP flow)
+            "next shot", "following shot", "then hit",
+            # Specific rally questions (need PBP not stats)
+            "rallies with", "rallies where", "points where", "points when",
+            "long rallies", "short rallies", "extended rallies",
+            "8+ shot", "5+ shot", "10+ shot",
+            # Adaptation/tactical evolution (need PBP temporal analysis)
+            "adapt", "adapted", "adaptation",
+            "counter", "countered", "countering",
+            "switched to", "started hitting", "began favoring", "began using"
         ]
         if any(indicator in query.lower() for indicator in conditional_indicators):
             # Collect all point-by-point narrative chunks
@@ -1926,7 +2339,7 @@ class TennisChatAgentEmbeddingQALocal:
             # Reorder: PBP chunks first, then statistical chunks
             if pbp_chunks:
                 filtered_chunks = pbp_chunks + non_pbp_chunks
-                print(f"📖 PRIORITIZED {len(pbp_chunks)} point-by-point chunks for conditional question")
+                print(f"[PBP] PRIORITIZED {len(pbp_chunks)} point-by-point chunks for conditional question")
         
         # FINAL NEGATIVE FILTER: Remove net points chunks unless question is about net play
         if not net_points_fix_applied and not any(word in query.lower() for word in ["net points", "net approaches", "overhead", "approach shot", "approach shots", "net play", "at the net", "net points won", "net points lost", "net percentage", "net points won percentage", "net points percentage", "net"]):
@@ -2245,6 +2658,74 @@ class TennisChatAgentEmbeddingQALocal:
         if is_statistical:
             prompt = f"""You are a tennis match analyst with access to detailed match data.
 
+IMPORTANT: Do not use emojis in your response. Use plain text only.
+
+🚨 CRITICAL RULES FOR READING POINT-BY-POINT DATA 🚨
+
+**RULE #1: Score Notation - "Score: 2-0" and "Score: 0-2" can be THE SAME SET!**
+- Score format: Score: [Sets_Server]-[Sets_Returner] [Games]-[Games] [Points]
+- The set numbers FLIP based on who is serving
+- Example for Set 3 (after Sinner leads 2-0 in sets):
+  - When Sinner serves: "Score: 2-0 4-5" ← SET 3
+  - When Alcaraz serves: "Score: 0-2 4-5" ← SET 3 (SAME SET!)
+- **DO NOT call this an "inconsistency"** - it's normal server/returner perspective
+
+**RULE #2: Each Point Shows the Winner Explicitly**
+- Every point includes: "[Point won by: PLAYER_NAME]"
+- Use this tag to determine who won each point - don't guess!
+- To determine game outcomes: count sequential point winners
+- Example: If Points 204-207 all show "[Point won by: Alcaraz]" → Alcaraz won all 4 points
+
+**RULE #3: Each Shot Shows Who Hit It**
+- Rally shots are tagged with player names: "forehand winner [ALCARAZ]"
+- Don't try to track alternation - just read the tags!
+
+**RULE #4: Never Fabricate - Verify Everything**
+- DO NOT say "held to love" or "broke serve" without counting actual point winners
+- DO NOT guess game outcomes - count the "[Point won by:]" tags
+- If you see mixed sets in a chunk, filter by score pattern (Score: 0-2 vs Score: 1-2)
+- DO NOT explain score notation or reasoning in your answer (e.g. don't say "the score structure suggests...")
+- Just provide clean, narrative answers without showing your internal reasoning process
+
+**RULE #4B: When Asked About a Set - Describe ALL Games, Not Just the Tiebreak**
+- If asked "what happened in Set X", describe ALL games from 0-0 through the end
+- DO NOT only describe the tiebreak and skip the regular games (1-0, 2-1, 3-2, etc.)
+- Tiebreaks are important, but so are the 12+ regular games that came before them
+- Example: For "what happened in Set 5", describe games from 0-0, 1-0, 1-1... all the way to 6-6 AND the tiebreak
+
+**RULE #5: TENNIS SET SCORING - CRITICAL FOR SET/GAME QUESTIONS**
+- A set is won by the first player to win 6 games (with a 2-game margin), or 7-6 in a tiebreak
+- IMPORTANT: If a player is leading 5-4 and wins the next game → They win the set 6-4 (NOT 5-5!)
+- IMPORTANT: If a set is tied 5-5, the next game makes it 6-5 (NOT the end of the set)
+- IMPORTANT: If a player is leading 6-5 and wins the next game → They win the set 7-5
+- IMPORTANT: If a set is tied 6-6 → Tiebreak is played
+- Examples:
+  * Leading 5-4, break serve → Set ends 6-4 ✓
+  * Tied 5-5, hold serve → Score becomes 6-5 (set continues) ✓
+  * Leading 6-5, hold serve → Set ends 7-5 ✓
+
+**RULE #6: MATCH FORMAT SCORING - WHICH SET ARE WE IN?**
+- Best-of-3 matches: First to win 2 sets (men's non-Slams, all women's matches)
+- Best-of-5 matches: First to win 3 sets (men's Grand Slams)
+- CRITICAL: Count completed sets to determine which set is being played:
+  * "Score: 0-0 ..." = SET 1 (match just started)
+  * "Score: 1-0 ..." or "Score: 0-1 ..." = SET 2 (one player leads 1-0)
+  * "Score: 1-1 ..." = SET 3 (sets tied 1-1)
+  * "Score: 2-0 ..." or "Score: 0-2 ..." = SET 3 (one player leads 2-0 in best-of-5)
+  * "Score: 2-1 ..." or "Score: 1-2 ..." = SET 4 (in best-of-5, one player leads 2-1)
+  * "Score: 2-2 ..." = SET 5 (in best-of-5, sets tied 2-2 - THE DECIDING SET!)
+- Examples for best-of-5:
+  * "Score: 2-2 6-6 0-0" = SET 5 tiebreak (NOT Set 4!)
+  * Match CANNOT end at 2-2; someone must win Set 5 to win 3-2
+- DO NOT say "the match ended 3-1 after 4 sets" if you see 2-2 scoring!
+
+**CRITICAL EXAMPLE - Tracking Games Through Server Changes:**
+Game 9 ends at: "Score: 0-2 5-3" → Player serving is DOWN 5-3 in games, opponent LEADS 5-3
+Player leading 5-3 LOSES Game 9 → Score becomes 5-4 (still leading, but by less)
+Game 10 starts at: "Score: 2-0 4-5" → Player serving is DOWN 4-5 in games, opponent LEADS 5-4
+Player leading 5-4 WINS Game 10 → Score becomes 6-4 → SET OVER! ✓
+**DO NOT say "5-5" - when you see the set score jump from "0-2"/"2-0" to "1-2", the set ENDED!**
+
 IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
 - **CRITICAL: When asked "who won" or "who won the match"**, ALWAYS include BOTH the winner's name AND the final score in your answer (e.g., "Carlos Alcaraz won the match, defeating Novak Djokovic 6-4 7-6(4) 6-2")
 - **CRITICAL: When asked for the "score" or "final score"**, provide the complete score including the winner (e.g., "Carlos Alcaraz d. Novak Djokovic 6-4 7-6(4) 6-2")
@@ -2490,22 +2971,11 @@ Always stop at the highest-priority source available. Do not combine across diff
 - Focus on the specific rally details requested
 - Include shot sequences and outcomes
 
-**For GAME-LEVEL and SET-LEVEL NARRATIVE QUESTIONS** (what happened in game X, describe the Nth set, how did the set unfold):
-- **CRITICAL**: NEVER MAKE UP OR INFER GAME SUMMARIES - Use ONLY the actual point-by-point data
-- **CRITICAL**: NEVER say things like "Player X held to love" or "Player Y broke serve" unless you can VERIFY IT from the actual point scores in the PBP data
-- **CRITICAL**: DO NOT fabricate game outcomes, point counts, or match flow - if you don't have the exact PBP data, say so
-- **CRITICAL**: When describing games, you MUST cite the actual point scores (0-0, 0-15, 0-30, etc.) from the PBP data
-- **PROCESS FOR GAME/SET NARRATIVES**:
-  1. **Find the exact PBP points**: Look for the specific game/set score in the point-by-point data (e.g., "Score: 2-0 4-5" means Set 3, games 4-5)
-  2. **Read each point sequentially**: Go through each point in order and note the point score progression (0-0 → 0-15 → 0-30 → 0-40 or 15-0 → 30-0 → 40-0, etc.)
-  3. **Determine game outcome from point scores**: 
-     - If points go 0-15, 0-30, 0-40 → server LOST the game (was broken)
-     - If points go 15-0, 30-0, 40-0 → server WON the game (held to love)
-     - Count the actual points from the data, don't guess
-  4. **Cite specific points**: Reference actual point numbers (e.g., "Points 204-207 show...")
-  5. **NO FABRICATION**: If you cannot find the exact PBP data for a game, say "The point-by-point data for game X is not available in the provided context"
-- **EXAMPLE OF CORRECT ANALYSIS**: "Game 10 of Set 3 (Score 2-0 4-5, Sinner serving): Looking at Points 204-207, the point scores progressed 0-0, 0-15, 0-30, 0-40, with Alcaraz winning all 4 points to break Sinner and win the set 6-4."
-- **EXAMPLE OF INCORRECT ANALYSIS** (NEVER DO THIS): "Game 10: Sinner held to love, winning the game with three winners and one unforced error from Alcaraz, leveling the set at 5-5." ← This is FABRICATED and WRONG
+**For SET/GAME NARRATIVE QUESTIONS:**
+- Each point explicitly shows "[Point won by: PLAYER_NAME]" - use this to count game outcomes
+- When asked about a specific set, you'll only receive data for that set
+- If you see mixed sets in a chunk, filter by matching score patterns
+- **Example:** Points 204-207 all show "[Point won by: Alcaraz]" at score 0-0, 0-15, 0-30, 0-40 → Alcaraz won 4 straight points → Broke serve → Won set 6-4
 
 **IMPORTANT DISTINCTION:**
 - "Forehand/Backhand" alone usually means groundstrokes → Use SHOT DIRECTION
@@ -2522,6 +2992,8 @@ Answer:"""
         else:
             # For insight/narrative questions
             prompt = f"""You are a tennis match analyst with access to detailed match data.
+
+IMPORTANT: Do not use emojis in your response. Use plain text only.
 
 Provide a detailed analysis based on the following match context.
 
@@ -2623,7 +3095,15 @@ Answer:"""
         natural_language.append("=" * 60)
         natural_language.append("")
         natural_language.append("IMPORTANT INSTRUCTIONS FOR DATA ANALYSIS:")
-        natural_language.append("- When answering about TOTALS (aces, double faults, points won), use only the AUTHORITATIVE TOTALS as the single source of truth")
+        natural_language.append("")
+        natural_language.append("CRITICAL RULE FOR PER-SET / PER-GAME QUESTIONS:")
+        natural_language.append("- If asked for PER-SET or PER-GAME breakdowns (e.g., 'unforced errors in each set', 'aces per set', 'serve % across sets'):")
+        natural_language.append("  1. Check if the summary tables contain this per-set breakdown")
+        natural_language.append("  2. If NOT in tables, you MUST count from the point-by-point narrative")
+        natural_language.append("  3. Do NOT say 'data not available' - the point-by-point data contains everything")
+        natural_language.append("")
+        natural_language.append("GENERAL RULES FOR AGGREGATE TOTALS:")
+        natural_language.append("- When answering about MATCH TOTALS (aces, double faults, points won), use only the AUTHORITATIVE TOTALS as the single source of truth")
         natural_language.append("- Use detailed breakdowns only for distributions and patterns, never for recalculating totals")
         natural_language.append("- Breakdowns sum to the authoritative totals - do not add them again")
         natural_language.append("- Summary statistics take precedence over detailed breakdowns for aggregate numbers")

@@ -5,24 +5,26 @@ An AI-powered chat interface that lets you ask natural language questions about 
 ## Features
 
 - **Natural Language Queries**: Ask questions in plain English about any tennis match
-- **Comprehensive Match Data**: Access detailed statistics from Tennis Abstract's match charting data
+- **Advanced RAG System**: Intelligent retrieval with metadata-enhanced chunking and semantic search
 - **Player Search**: Search and filter through 2000+ professional players (ATP & WTA)
 - **Match History**: Browse complete head-to-head match history between any two players
-- **Instant Analysis**: Get answers about:
-  - Match scores and results
-  - Serve statistics (aces, double faults, first serve %)
-  - Break point conversions
-  - Shot directions and outcomes
-  - Rally lengths and outcomes
-  - Point-by-point narratives
-  - And much more...
+- **Multi-Tier Analysis**: Automatically scales complexity from simple stats to deep tactical analysis
+- **Per-Set Analytics**: Count and analyze statistics on a per-set or per-game basis
+- **Comprehensive Coverage**:
+  - Match scores and set-by-set results
+  - Serve statistics (aces, double faults, first serve %, placement effectiveness)
+  - Break point conversions and save rates
+  - Shot directions, types, and outcomes
+  - Rally patterns and point-by-point narratives
+  - Tactical evolution throughout the match
+  - Mental and momentum shifts
 
 ## Technology Stack
 
 - **Frontend**: Gradio web interface (mobile-friendly)
 - **Backend**: Python
 - **Embeddings**: Sentence Transformers (local, free)
-- **LLM**: Google Gemini (configurable for OpenAI/Claude)
+- **LLM**: Google Gemini 2.5 Flash (default, configurable for OpenAI/Claude)
 - **Vector Search**: FAISS
 - **Data Source**: Tennis Abstract match charting data
 
@@ -32,7 +34,7 @@ An AI-powered chat interface that lets you ask natural language questions about 
 
 - Python 3.12+
 - Git
-- A Google Gemini API key (free tier available)
+- A Google Gemini 2.5 API key (free tier available)
 
 ### Installation
 
@@ -60,10 +62,10 @@ pip install -r requirements.txt
 
 Create a `.env` file in the project root:
 ```
-GEMINI_API_KEY=your_gemini_api_key_here
+GOOGLE_API_KEY=your_google_api_key_here
 ```
 
-Get a free Gemini API key at: https://makersuite.google.com/app/apikey
+Get a free Gemini API key at: https://aistudio.google.com/apikey
 
 ### Running the Application
 
@@ -82,12 +84,41 @@ The interface will be available at: `http://localhost:7860`
 
 ### Example Questions
 
+**Simple Stats:**
 - "What was the final score?"
 - "How many aces did each player hit?"
-- "What were the break point statistics?"
-- "Who won more points at the net?"
-- "What was the longest rally?"
-- "Give me a comprehensive analysis of the match"
+- "How many forehand winners did each player hit?"
+- "How many double faults did each player have?"
+
+**Set-Specific Analysis:**
+- "What happened in Set 3?"
+- "Compare Player 1's unforced errors in Set 1 versus Set 5"
+- "How did Player 2's serve effectiveness change across sets?"
+
+**Tactical Comparisons:**
+- "When Player 1 served to the T versus wide, which was more effective?"
+- "What were Player 2's break point conversion statistics?"
+- "Who controlled rallies from the baseline more effectively?"
+
+**Advanced Analysis:**
+- "How did Player 1's first serve percentage change when facing break points?"
+- "Tell the parallel journey of both players through the match - how did each player's mental and tactical state evolve?"
+- "Provide a summary of the match"
+
+## System Capabilities
+
+### Intelligent Retrieval
+- **4-Tier Complexity Detection**: Automatically determines optimal number of chunks (5, 8, 15, or 18) based on query complexity
+- **Set/Game Filtering**: Precisely retrieves data for specific sets or games
+- **Metadata-Enhanced Chunking**: Each chunk tagged with set numbers and game scores for accurate filtering
+- **Point-by-Point Prioritization**: Complex tactical questions automatically retrieve narrative data
+
+### Advanced Question Types
+- **Simple Statistics**: Direct answers from aggregate tables (aces, winners, double faults)
+- **Set-Specific Queries**: Per-set breakdowns counted from point-by-point data
+- **Conditional Analysis**: "When X happened, how did Y respond?" questions
+- **Tactical Evolution**: Track strategy changes throughout the match
+- **Momentum Analysis**: Identify turning points and psychological shifts
 
 ## Caching & Performance
 
@@ -95,7 +126,7 @@ The system implements intelligent caching to improve load times:
 
 - **Player Names**: Cached for 7 days
 - **Match Data**: Cached after first load (instant subsequent loads)
-- **Embeddings**: Pre-computed and cached per match
+- **Embeddings**: Generated once per match, stored locally (never regenerated)
 
 First-time match loads take ~30-60 seconds (scraping + embedding generation).
 Subsequent loads of the same match are nearly instant!
