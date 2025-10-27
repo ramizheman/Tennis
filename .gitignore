@@ -36,3 +36,151 @@ Thumbs.db
 # Test outputs
 *_TEST_RESULTS*.md
 
+# Gradio cache
+.gradio/
+
+# Test and debug scripts
+test_*.py
+debug_*.py
+check_*.py
+run_*.py
+analyze_*.py
+compare_*.py
+show_*.py
+export_*.py
+validate_*.py
+verify_*.py
+calculate_*.py
+generate_*.py
+inspect_*.py
+trace_*.py
+compress_*.py
+convert_*.py
+count_*.py
+create_*.py
+extract_*.py
+fix_*.py
+find_*.py
+search_*.py
+quick_*.py
+regenerate_*.py
+simple_*.py
+
+# Test and analysis output files
+*_results*.md
+*_results*.json
+*_analysis*.md
+*_test*.md
+*_comparison*.md
+*_verification*.md
+*_export*.md
+*_output*.md
+*_format*.md
+*_data*.md
+
+# Match data files (JSON and markdown)
+*_20??????.json
+*_20??????_NL.md
+*_NL.md
+
+# Documentation and analysis files
+CHUNKING_*.md
+COMPLEX_*.md
+DEBUG_*.md
+ENHANCED_*.md
+EXACT_*.md
+EXPORTED_*.json
+FINAL_*.md
+FIXED_*.md
+FRESH_*.json
+FRESH_*.md
+HIERARCHICAL_*.md
+NATURAL_*.md
+NET_*.md
+PROMPT_*.md
+READABLE_*.json
+REFACTORING_*.md
+REGENERATED_*.json
+RETURN_*.md
+SEPARATED_*.md
+SET_*.md
+SHOTDIR_*.md
+ULTRA_*.md
+UPDATED_*.md
+
+# Specific files
+LLM_JSON_OUTPUT.txt
+*.txt
+accuracy_tracking.xlsx
+cached_player_names.json
+player_names_cache.json
+confidence_log.jsonl
+notes.txt
+gradio_error.txt
+gradio_output.txt
+
+# Working/committed/temporary files
+*_working.py
+*_committed.py
+*_temp.py
+t_natural_language.py
+temp_*.py
+
+# Batch files
+*.bat
+
+# Data directories
+Data/
+Tennis/
+analysis_output/
+reports/
+
+# Other project files
+Dockerfile
+*.md
+!README.md
+
+# Specific misc files
+.py
+demo.py
+examine_html.py
+example_usage.py
+interactive_qa.py
+selenium_scraper.py
+tennis_analysis_crew.py
+tennis_compression_code_export.py
+pattern_matching_config.py
+local_stats_calculator.py
+comprehensive_qa_verification.py
+fresh_data_collection.py
+
+# Additional JSON files
+*_stats*.json
+*_test_*.json
+*_match_json_*.json
+FIXED_JSON_*.json
+comprehensive_*.json
+complex_questions_*.json
+model_comparison_*.json
+stats_comparison_*.json
+
+# Additional agent files (keep only the main ones)
+agents/__init__.py
+agents/chat_agent.py
+agents/chat_agent_embedding_qa.py
+agents/chat_agent_embedding_qa_multi_llm_committed.py
+agents/chat_agent_natural_language.py
+agents/chat_agent_natural_language_LLM.py
+agents/chat_agent_natural_language_full_data.py
+agents/data_analysis_agent.py
+agents/data_collection_agent_selenium.py
+agents/data_collection_agent_working.py
+agents/report_generation_agent.py
+agents/tennis_chat_agent.py
+agents/tennis_chunking.py
+agents/tennis_chunking_exact.py
+agents/tennis_data_glossary.py
+agents/tennis_llm_handlers.py
+agents/tennis_natural_language_*.py
+agents/tennis_retrieval.py
+

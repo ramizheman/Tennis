@@ -352,7 +352,7 @@ class TennisChatInterface:
             final_message += f"- How many cross court winners did each player have?\n\n"
             final_message += f"**Set Analysis:**\n"
             final_message += f"- What happened in Set 3?\n"
-            final_message += f"- Compare {p1}'s unforced errors in Set 1 versus Set 5\n"
+            final_message += f"- How did {p2}'s tactics change in Set 1 versus Set 3?\n"
             final_message += f"- How did {p2}'s serve effectiveness change across sets?\n\n"
             final_message += f"**Tactical Comparisons:**\n"
             final_message += f"- When {p1} served to the T versus wide, which was more effective?\n"
