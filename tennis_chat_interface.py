@@ -348,7 +348,7 @@ class TennisChatInterface:
             final_message += f"- How many aces did {p1} hit?\n"
             final_message += f"- How many forehand winners did each player hit?\n"
             final_message += f"- How many double faults did each player have?\n"
-            final_message += f"- What was each player's second serve win percentage?\n\n"
+            final_message += f"- What was each player's second serve win percentage?\n"
             final_message += f"- How many cross court winners did each player have?\n\n"
             final_message += f"**Set Analysis:**\n"
             final_message += f"- What happened in Set 3?\n"
@@ -356,7 +356,7 @@ class TennisChatInterface:
             final_message += f"- How did {p2}'s serve effectiveness change across sets?\n\n"
             final_message += f"**Tactical Comparisons:**\n"
             final_message += f"- When {p1} served to the T versus wide, which was more effective?\n"
-            final_message += f"- How did {p2} respond to second serves — aggressive return vs rally neutralizing?\n"
+            final_message += f"- Did {p2} play more aggressively on second serve returns compared to first serve returns?\n"
             final_message += f"- Who controlled rallies from the baseline more effectively?\n\n"
             final_message += f"**Advanced Analysis:**\n"
             final_message += f"- When one player won a break point, did they play more aggressively in the next game? Calculate the momentum carry-over effect\n"
@@ -584,7 +584,7 @@ def main():
     # Launch the interface - let Gradio find an available port
     interface.launch(
         server_name="0.0.0.0",
-        share=True,  # Creates a public URL for 72 hours
+        share=False,  # Set to False when using ngrok for sharing
         show_error=True,
         quiet=False
     )

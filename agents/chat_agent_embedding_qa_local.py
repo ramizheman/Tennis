@@ -1913,7 +1913,7 @@ class TennisChatAgentEmbeddingQALocal:
                                 }
                                 found_chunks.append(found_chunk)
                                 print(f"[DEBUG] DEBUG: Found {chunk_name}")
-                            break
+                                break
                     
                     # Remove existing instances and add with high priority
                     for found_chunk in found_chunks:
