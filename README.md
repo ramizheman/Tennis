@@ -1,3 +1,14 @@
+---
+title: Tennis Match Chat Assistant
+emoji: 🎾
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: "4.44.0"
+app_file: tennis_chat_interface.py
+pinned: false
+---
+
 # Tennis Match Chat Assistant 🎾
 
 **Free, open-source Q&A AI for analyzing pro tennis matches using real match data.**
