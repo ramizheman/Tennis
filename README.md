@@ -1,6 +1,12 @@
 # Tennis Match Chat Assistant 🎾
 
-An AI-powered chat interface that lets you ask natural language questions about professional tennis matches. Get instant answers about match statistics, player performance, and detailed point-by-point analysis.
+**Free, open-source Q&A AI for analyzing pro tennis matches using real match data.**
+
+An AI-powered interface that lets you ask natural language questions about professional tennis matches. Get instant answers about match statistics, player performance, and detailed point-by-point analysis.
+
+Designed for coaches, analysts, and fans who want to explore tactical insights from professional matches — without paying for expensive data feeds.
+
+👉 [View on GitHub](https://github.com/ramizheman/Tennis)
 
 ## Features
 
@@ -24,56 +30,26 @@ An AI-powered chat interface that lets you ask natural language questions about 
 - **Frontend**: Gradio web interface (mobile-friendly)
 - **Backend**: Python
 - **Embeddings**: Sentence Transformers (local, free)
-- **LLM**: Google Gemini 2.5 Flash (default, configurable for OpenAI/Claude)
+- **LLM**: Google Gemini 2.5 Flash (default, configurable as needed)
 - **Vector Search**: FAISS
 - **Data Source**: Tennis Abstract match charting data
 
-## Setup
+## How It Works
 
-### Prerequisites
+The system combines natural language understanding with a retrieval-augmented generation (RAG) pipeline. Each match is transformed into structured and narrative representations that the model can reason over.
 
-- Python 3.12+
-- Git
-- A Google Gemini 2.5 API key (free tier available)
+When you ask a question, it retrieves the most relevant match segments, analyzes them, and builds a contextualized answer that blends quantitative stats with tactical insights.
 
-### Installation
+The system automatically adjusts how much contextual data it retrieves and analyzes depending on query complexity — from quick stats to in-depth tactical breakdowns. It dynamically scales from simple queries ("How many aces?") to complex ones ("How did Nadal adjust his return depth in Set 3 vs Set 1?") by automatically retrieving the right level of match detail.
 
-1. **Clone the repository**
-```bash
-git clone https://github.com/ramizheman/Tennis.git
-cd Tennis
-```
+### Key Features
+- **Intelligent Retrieval**: Automatically finds the most relevant match data for any question type
+- **Multi-Scale Analysis**: Handles everything from basic stats to complex tactical comparisons
+- **Set-Specific Filtering**: Precisely targets data from specific sets or game ranges
+- **Smart Caching**: Reuses processed data for instant subsequent loads
+- **Dependent Search**: Player 2 dropdown automatically shows only real opponents of Player 1
 
-2. **Create a virtual environment**
-```bash
-python -m venv tennis-venv
-# On Windows:
-tennis-venv\Scripts\activate
-# On Mac/Linux:
-source tennis-venv/bin/activate
-```
-
-3. **Install dependencies**
-```bash
-pip install -r requirements.txt
-```
-
-4. **Set up your API key**
-
-Create a `.env` file in the project root:
-```
-GOOGLE_API_KEY=your_google_api_key_here
-```
-
-Get a free Gemini API key at: https://aistudio.google.com/apikey
-
-### Running the Application
-
-```bash
-python tennis_chat_interface.py
-```
-
-The interface will be available at: `http://localhost:7860`
+<!-- Setup and run instructions intentionally omitted in this readme to focus on project overview. -->
 
 ## Usage
 
@@ -92,7 +68,7 @@ The interface will be available at: `http://localhost:7860`
 
 **Set-Specific Analysis:**
 - "What happened in Set 3?"
-- "Compare Player 1's unforced errors in Set 1 versus Set 5"
+- "How did Player 2's tactics change in Set 1 versus Set 3?"
 - "How did Player 2's serve effectiveness change across sets?"
 
 **Tactical Comparisons:**
@@ -131,26 +107,7 @@ The system implements intelligent caching to improve load times:
 First-time match loads take ~30-60 seconds (scraping + embedding generation).
 Subsequent loads of the same match are nearly instant!
 
-## Sharing with Others
-
-### Option 1: ngrok (Recommended)
-
-1. Download ngrok: https://ngrok.com/download
-2. Run the tennis interface in one terminal
-3. In another terminal:
-```bash
-ngrok http 7860
-```
-4. Share the generated `https://xxx.ngrok-free.app` URL
-
-The ngrok URL works on mobile, tablet, and desktop!
-
-### Option 2: Local Network
-
-Share your local IP address with users on the same WiFi network:
-```
-http://YOUR_IP_ADDRESS:7860
-```
+<!-- Sharing options intentionally omitted. -->
 
 ## Project Structure
 
@@ -174,22 +131,7 @@ Tennis/
 - **Windows Compatible**: Fully tested on Windows 10/11
 - **Mobile Friendly**: The Gradio interface is responsive and works great on phones
 
-## Troubleshooting
-
-### Match loading fails
-- Check your internet connection (needs to scrape Tennis Abstract)
-- Verify the match exists on Tennis Abstract
-- Check the terminal for error messages
-
-### API errors
-- Verify your `.env` file has the correct API key
-- Check your API quota hasn't been exceeded
-- Ensure your API key has the necessary permissions
-
-### Slow performance
-- First load of a match is always slower (scraping + embedding)
-- Subsequent loads use cached data (much faster)
-- Consider using a machine with more RAM for faster embedding generation
+<!-- Troubleshooting intentionally omitted. -->
 
 ## Contributing
 
@@ -197,7 +139,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
+Licensed under the Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0).
+
 This project is for educational and research purposes.
+
+## About the Author
+
+Developed by **Rami Zheman**, data and AI consultant passionate about sports analytics (in addition to his day job in IT government contracting!)
+
+Connect on [LinkedIn](https://linkedin.com/in/ramizheman) or [GitHub](https://github.com/ramizheman).
 
 ## Acknowledgments
 
@@ -207,4 +157,3 @@ This project is for educational and research purposes.
 
 ---
 
-**Built with ❤️ for tennis fans and data enthusiasts**
