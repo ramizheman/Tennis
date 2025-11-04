@@ -207,6 +207,45 @@ class TennisChatAgentEmbeddingQALocal:
         
         return None
     
+    def _detect_multiple_set_references(self, query: str) -> List[int]:
+        """
+        Detect if the query references MULTIPLE specific sets (for comparison questions).
+        Returns a list of set numbers [1, 5] or empty list if not a multi-set comparison.
+        Examples: "Set 1 vs Set 5", "Set 1 versus Set 5", "compare Set 1 and Set 5"
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Find all set number references
+        set_numbers = []
+        
+        # Match "set 1", "set 5", etc.
+        for match in re.finditer(r'set\s+(\d+)', query_lower):
+            set_num = int(match.group(1))
+            if 1 <= set_num <= 5 and set_num not in set_numbers:
+                set_numbers.append(set_num)
+        
+        # Also check for word-based references
+        set_words = {
+            'first': 1, 'second': 2, 'third': 3, 'fourth': 4, 'fifth': 5,
+            '1st': 1, '2nd': 2, '3rd': 3, '4th': 4, '5th': 5
+        }
+        
+        for word, num in set_words.items():
+            if f"{word} set" in query_lower and num not in set_numbers:
+                set_numbers.append(num)
+        
+        # Only return if we found multiple sets AND it's a comparison question
+        if len(set_numbers) >= 2:
+            comparison_indicators = ['vs', 'versus', 'compared to', 'compare', 'vs.', 'v.']
+            if any(indicator in query_lower for indicator in comparison_indicators):
+                set_numbers.sort()  # Return in order [1, 5]
+                print(f"[MULTI-SET] Detected multi-set comparison: Sets {set_numbers}")
+                return set_numbers
+        
+        return []
+    
     def _detect_game_reference(self, query: str) -> str:
         """
         Detect if the query references a specific game or game score.
@@ -679,8 +718,74 @@ class TennisChatAgentEmbeddingQALocal:
         game_score = header_match.group(5)
         point_score = header_match.group(6)
         
-        # Parse rally
+        # CRITICAL: Validate and fix server == returner bug using rally structure
+        # SEMICOLONS INDICATE A CHANGE IN HITTER
         rally_text = point_text[header_match.end():].strip()
+        
+        # Check if server == returner (this is the bug!)
+        if server.strip().lower() == returner.strip().lower() and self.player1 and self.player2:
+            # Use rally structure (semicolons = hitter alternation) to determine correct returner
+            shots = [s.strip() for s in rally_text.split(';') if s.strip()]
+            
+            if len(shots) >= 2:
+                # Rally structure: Shot 0 = server, Shot 1 = returner, Shot 2 = server, etc.
+                # First shot should be serve (by server), second shot is return (by returner)
+                first_shot = shots[0].lower()
+                is_serve = '1st serve' in first_shot or '2nd serve' in first_shot or 'serve' in first_shot
+                
+                if is_serve:
+                    # Determine which player the server is by matching server name
+                    server_lower = server.lower().strip()
+                    p1_lower = self.player1.lower().strip()
+                    p2_lower = self.player2.lower().strip()
+                    
+                    # Use fuzzy matching to determine server
+                    if server_lower == p1_lower or (p1_lower in server_lower or server_lower in p1_lower):
+                        # Server is player1, returner is player2
+                        returner = self.player2
+                    elif server_lower == p2_lower or (p2_lower in server_lower or server_lower in p2_lower):
+                        # Server is player2, returner is player1
+                        returner = self.player1
+                    else:
+                        # Can't match - use context from player names
+                        # If server name is closer to player1, returner is player2
+                        sim1 = 1.0 if server_lower == p1_lower else (0.9 if p1_lower in server_lower or server_lower in p1_lower else 0.0)
+                        sim2 = 1.0 if server_lower == p2_lower else (0.9 if p2_lower in server_lower or server_lower in p2_lower else 0.0)
+                        returner = self.player2 if sim1 > sim2 else self.player1
+                    
+                    print(f"[FIXED] Point {point_num}: Server == Returner bug detected. Server: '{server}', Fixed returner to: '{returner}' (using rally structure: {len(shots)} shots)")
+                else:
+                    # First shot is not a serve - can't infer from structure, use best guess
+                    server_lower = server.lower().strip()
+                    p1_lower = self.player1.lower().strip()
+                    p2_lower = self.player2.lower().strip()
+                    sim1 = 1.0 if server_lower == p1_lower else (0.9 if p1_lower in server_lower or server_lower in p1_lower else 0.0)
+                    sim2 = 1.0 if server_lower == p2_lower else (0.9 if p2_lower in server_lower or server_lower in p2_lower else 0.0)
+                    returner = self.player2 if sim1 > sim2 else self.player1
+                    print(f"[FIXED] Point {point_num}: Server == Returner bug detected. Server: '{server}', Fixed returner to: '{returner}' (inferred from player names)")
+            else:
+                # Single shot (ace/service winner) - CRITICAL: Server ALWAYS hits the shot
+                # Since server is correct, returner MUST be the other player
+                server_lower = server.lower().strip()
+                p1_lower = self.player1.lower().strip()
+                p2_lower = self.player2.lower().strip()
+                
+                # Match server to determine which player it is, then returner is the other
+                if server_lower == p1_lower or (p1_lower in server_lower or server_lower in p1_lower):
+                    # Server is player1, returner is player2
+                    returner = self.player2
+                elif server_lower == p2_lower or (p2_lower in server_lower or server_lower in p2_lower):
+                    # Server is player2, returner is player1
+                    returner = self.player1
+                else:
+                    # Can't match - use similarity as fallback
+                    sim1 = 1.0 if server_lower == p1_lower else (0.9 if p1_lower in server_lower or server_lower in p1_lower else 0.0)
+                    sim2 = 1.0 if server_lower == p2_lower else (0.9 if p2_lower in server_lower or server_lower in p2_lower else 0.0)
+                    returner = self.player2 if sim1 > sim2 else self.player1
+                
+                print(f"[FIXED] Point {point_num}: Server == Returner bug detected. Server: '{server}', Fixed returner to: '{returner}' (single shot ace/winner - server always hits, returner is other player)")
+        
+        # Parse rally with corrected returner
         rally_shots = self._parse_rally_sequence(rally_text, server, returner)
         
         # Determine point winner
@@ -1400,6 +1505,13 @@ class TennisChatAgentEmbeddingQALocal:
         if top_k is None:
             top_k = self._determine_optimal_chunk_count(query)
         
+        # BOOST chunk count for multi-set comparisons (need data from multiple sets)
+        multiple_sets = self._detect_multiple_set_references(query)
+        if multiple_sets and len(multiple_sets) >= 2:
+            original_top_k = top_k
+            top_k = 20  # Ensure we get enough chunks from all requested sets
+            print(f"[MULTI-SET] Boosting chunk count from {original_top_k} to {top_k} for multi-set comparison")
+        
         print(f"[TARGET] Using {top_k} chunks for query complexity analysis")
         
         if not self.index:
@@ -1908,8 +2020,8 @@ class TennisChatAgentEmbeddingQALocal:
                                 found_chunk = {
                                     "text": chunk['text'],
                                     "metadata": chunk['metadata'],
-                                    "distance": 0.0,  # Perfect match
-                                    "relevance_score": 8.0  # High score
+                                    "distance": 0.0,
+                                    "relevance_score": 8.0
                                 }
                                 found_chunks.append(found_chunk)
                                 print(f"[DEBUG] DEBUG: Found {chunk_name}")
@@ -2175,75 +2287,143 @@ class TennisChatAgentEmbeddingQALocal:
                 filtered_chunks.insert(0, match_overview_chunk)
                 print(f"[MATCH] FORCED match_overview to top for match result question")
         
-        # CRITICAL FIX: For set-specific questions
-        set_number = self._detect_set_reference(query)
-        if set_number and hasattr(self, 'set_mapping') and set_number in self.set_mapping:
-            target_set_score = self.set_mapping[set_number]
-            print(f"[SET/GAME] SET-SPECIFIC QUERY DETECTED: Set {set_number} (Set Score: {target_set_score})")
+        # CRITICAL FIX: For MULTI-SET comparison questions (must come BEFORE single-set logic)
+        multiple_sets = self._detect_multiple_set_references(query)
+        if multiple_sets and hasattr(self, 'set_mapping'):
+            print(f"[MULTI-SET] MULTI-SET COMPARISON DETECTED: Sets {multiple_sets}")
             
-            # Generate ALL possible score patterns for this set
-            # For Set 3 with mapping "2-0", we need to match BOTH "2-0" AND "0-2" (server perspective)
-            # Also handle "1-1" if it's a tied situation
-            score_parts = target_set_score.split('-')
-            if len(score_parts) == 2:
-                set_score_patterns = [
-                    target_set_score,  # e.g., "2-0"
-                    f"{score_parts[1]}-{score_parts[0]}",  # e.g., "0-2" (reversed)
-                ]
-                # Add "1-1" pattern if the total is 2 (for set 3)
-                total = int(score_parts[0]) + int(score_parts[1])
-                if total == 2 and score_parts[0] != score_parts[1]:
-                    set_score_patterns.append("1-1")
-                
-                print(f"[SET/GAME] Searching for set score patterns: {set_score_patterns}")
-            else:
-                set_score_patterns = [target_set_score]
-            
-            # Find all point-by-point chunks containing ANY points from this set
-            # Use metadata filtering (fast) with text fallback (backward compatibility)
-            set_specific_chunks = []
-            for chunk in self.chunks:
-                if 'point-by-point_narrative' in chunk['metadata'].get('section', ''):
-                    chunk_metadata = chunk.get('metadata', {})
-                    chunk_set_numbers = chunk_metadata.get('set_numbers', [])
+            # Collect chunks from ALL requested sets
+            multi_set_chunks = []
+            for set_num in multiple_sets:
+                if set_num in self.set_mapping:
+                    target_set_score = self.set_mapping[set_num]
+                    print(f"[MULTI-SET] Retrieving chunks for Set {set_num} (Set Score: {target_set_score})")
                     
-                    # Method 1: Use metadata (preferred - fast and accurate)
-                    if set_number in chunk_set_numbers:
-                        set_specific_chunks.append({
-                            "text": chunk['text'],
-                            "metadata": chunk['metadata'],
-                            "distance": 0.0,
-                            "relevance_score": 10.0  # Maximum score for set-specific
-                        })
-                        print(f"[SET/GAME] METADATA MATCH: Found chunk with set_numbers={chunk_set_numbers}")
-                    # Method 2: Text search fallback (for old chunks without metadata)
-                    elif not chunk_set_numbers:  # Only if metadata is missing
-                        chunk_text = chunk['text']
-                        for pattern in set_score_patterns:
-                            if f"Score: {pattern}" in chunk_text:
-                                set_specific_chunks.append({
+                    # Generate score patterns for this set
+                    score_parts = target_set_score.split('-')
+                    if len(score_parts) == 2:
+                        set_score_patterns = [
+                            target_set_score,
+                            f"{score_parts[1]}-{score_parts[0]}",
+                        ]
+                        total = int(score_parts[0]) + int(score_parts[1])
+                        if total == 2 and score_parts[0] != score_parts[1]:
+                            set_score_patterns.append("1-1")
+                    else:
+                        set_score_patterns = [target_set_score]
+                    
+                    # Find chunks for this set
+                    for chunk in self.chunks:
+                        if 'point-by-point_narrative' in chunk['metadata'].get('section', ''):
+                            chunk_metadata = chunk.get('metadata', {})
+                            chunk_set_numbers = chunk_metadata.get('set_numbers', [])
+                            
+                            # Use metadata or text fallback
+                            if set_num in chunk_set_numbers:
+                                multi_set_chunks.append({
                                     "text": chunk['text'],
                                     "metadata": chunk['metadata'],
                                     "distance": 0.0,
-                                    "relevance_score": 10.0
+                                    "relevance_score": 10.0,
+                                    "set_number": set_num  # Track which set this is from
                                 })
-                                print(f"[SET/GAME] TEXT MATCH: Found chunk via pattern '{pattern}'")
-                                break  # Don't add the same chunk twice
+                                print(f"[MULTI-SET] Found chunk for Set {set_num} via metadata")
+                            elif not chunk_set_numbers:
+                                chunk_text = chunk['text']
+                                for pattern in set_score_patterns:
+                                    if f"Score: {pattern}" in chunk_text:
+                                        multi_set_chunks.append({
+                                            "text": chunk['text'],
+                                            "metadata": chunk['metadata'],
+                                            "distance": 0.0,
+                                            "relevance_score": 10.0,
+                                            "set_number": set_num
+                                        })
+                                        print(f"[MULTI-SET] Found chunk for Set {set_num} via text pattern")
+                                        break
             
-            # CRITICAL: Remove ALL point-by-point chunks from OTHER sets
-            # Only keep chunks that match the target set score
-            if set_specific_chunks:
-                print(f"[SET/GAME] REMOVING point-by-point chunks from other sets, keeping ONLY Set {set_number}")
+            # Remove ALL point-by-point chunks and add the multi-set chunks
+            if multi_set_chunks:
+                print(f"[MULTI-SET] REMOVING all PBP chunks, adding {len(multi_set_chunks)} chunks from Sets {multiple_sets}")
                 filtered_chunks = [c for c in filtered_chunks if 'point-by-point_narrative' not in c['metadata'].get('section', '')]
-                print(f"[SET/GAME] Removed all PBP chunks. Remaining chunks: {len(filtered_chunks)}")
                 
-                # Now add ONLY the Set 3 chunks at the top
-                print(f"[FORCED] FORCING {len(set_specific_chunks)} point-by-point chunks for Set {set_number} ONLY")
-                for chunk_to_add in set_specific_chunks:
+                # Add chunks in set order (Set 1 first, then Set 5, etc.)
+                for chunk_to_add in multi_set_chunks:
                     filtered_chunks.insert(0, chunk_to_add)
-                    print(f"[FORCED] ADDED {chunk_to_add['metadata']['section']} for Set {set_number}")
+                    print(f"[MULTI-SET] ADDED chunk for Set {chunk_to_add['set_number']}")
+                
+                print(f"[MULTI-SET] Final chunk count: {len(filtered_chunks)} (includes Sets {multiple_sets})")
+        
+        # CRITICAL FIX: For set-specific questions (single set only)
+        elif not multiple_sets:  # Only run single-set logic if NOT a multi-set comparison
+            set_number = self._detect_set_reference(query)
+            if set_number and hasattr(self, 'set_mapping') and set_number in self.set_mapping:
+                target_set_score = self.set_mapping[set_number]
+                print(f"[SET/GAME] SET-SPECIFIC QUERY DETECTED: Set {set_number} (Set Score: {target_set_score})")
+                
+                # Generate ALL possible score patterns for this set
+                # For Set 3 with mapping "2-0", we need to match BOTH "2-0" AND "0-2" (server perspective)
+                # Also handle "1-1" if it's a tied situation
+                score_parts = target_set_score.split('-')
+                if len(score_parts) == 2:
+                    set_score_patterns = [
+                        target_set_score,  # e.g., "2-0"
+                        f"{score_parts[1]}-{score_parts[0]}",  # e.g., "0-2" (reversed)
+                    ]
+                    # Add "1-1" pattern if the total is 2 (for set 3)
+                    total = int(score_parts[0]) + int(score_parts[1])
+                    if total == 2 and score_parts[0] != score_parts[1]:
+                        set_score_patterns.append("1-1")
                     
-                print(f"[SET/GAME] Final chunk count: {len(filtered_chunks)} (all from Set {set_number} or stats)")
+                    print(f"[SET/GAME] Searching for set score patterns: {set_score_patterns}")
+                else:
+                    set_score_patterns = [target_set_score]
+                
+                # Find all point-by-point chunks containing ANY points from this set
+                # Use metadata filtering (fast) with text fallback (backward compatibility)
+                set_specific_chunks = []
+                for chunk in self.chunks:
+                    if 'point-by-point_narrative' in chunk['metadata'].get('section', ''):
+                        chunk_metadata = chunk.get('metadata', {})
+                        chunk_set_numbers = chunk_metadata.get('set_numbers', [])
+                        
+                        # Method 1: Use metadata (preferred - fast and accurate)
+                        if set_number in chunk_set_numbers:
+                            set_specific_chunks.append({
+                                "text": chunk['text'],
+                                "metadata": chunk['metadata'],
+                                "distance": 0.0,
+                                "relevance_score": 10.0  # Maximum score for set-specific
+                            })
+                            print(f"[SET/GAME] METADATA MATCH: Found chunk with set_numbers={chunk_set_numbers}")
+                        # Method 2: Text search fallback (for old chunks without metadata)
+                        elif not chunk_set_numbers:  # Only if metadata is missing
+                            chunk_text = chunk['text']
+                            for pattern in set_score_patterns:
+                                if f"Score: {pattern}" in chunk_text:
+                                    set_specific_chunks.append({
+                                        "text": chunk['text'],
+                                        "metadata": chunk['metadata'],
+                                        "distance": 0.0,
+                                        "relevance_score": 10.0
+                                    })
+                                    print(f"[SET/GAME] TEXT MATCH: Found chunk via pattern '{pattern}'")
+                                    break  # Don't add the same chunk twice
+                
+                # CRITICAL: Remove ALL point-by-point chunks from OTHER sets
+                # Only keep chunks that match the target set score
+                if set_specific_chunks:
+                    print(f"[SET/GAME] REMOVING point-by-point chunks from other sets, keeping ONLY Set {set_number}")
+                    filtered_chunks = [c for c in filtered_chunks if 'point-by-point_narrative' not in c['metadata'].get('section', '')]
+                    print(f"[SET/GAME] Removed all PBP chunks. Remaining chunks: {len(filtered_chunks)}")
+                    
+                    # Now add ONLY the Set 3 chunks at the top
+                    print(f"[FORCED] FORCING {len(set_specific_chunks)} point-by-point chunks for Set {set_number} ONLY")
+                    for chunk_to_add in set_specific_chunks:
+                        filtered_chunks.insert(0, chunk_to_add)
+                        print(f"[FORCED] ADDED {chunk_to_add['metadata']['section']} for Set {set_number}")
+                        
+                    print(f"[SET/GAME] Final chunk count: {len(filtered_chunks)} (all from Set {set_number} or stats)")
         
         # CRITICAL FIX: For game-specific questions
         game_reference = self._detect_game_reference(query)
@@ -6841,6 +7021,7 @@ Answer:"""
                     player = self.player2
                 else:
                     # Try dynamic initials extraction as fallback
+                    pass
                     player = "Unknown Player"
                     if self.player1 and self.player2:
                         player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
