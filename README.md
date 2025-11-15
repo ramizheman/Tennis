@@ -15,18 +15,19 @@ pinned: false
 
 An AI-powered interface that lets you ask natural language questions about professional tennis matches. Get instant answers about match statistics, player performance, and detailed point-by-point analysis.
 
-Designed for coaches, analysts, and fans who want to explore tactical insights from professional matches — without paying for expensive data feeds.
+Designed for coaches, analysts, and fans who want to explore 
+tactical insights from professional matches using Tennis Abstract's 
+comprehensive match charting data.
 
-👉 [View on GitHub](https://github.com/ramizheman/Tennis)
 
 ## Features
 
-- **Natural Language Queries**: Ask questions in plain English about any tennis match
+- **Natural Language Queries**: Ask questions in plain English about any tennis match covered by Tennis Abstract Match Charting Project 
 - **Advanced RAG System**: Intelligent retrieval with metadata-enhanced chunking and semantic search
 - **Player Search**: Search and filter through 2000+ professional players (ATP & WTA)
 - **Match History**: Browse complete head-to-head match history between any two players
 - **Multi-Tier Analysis**: Automatically scales complexity from simple stats to deep tactical analysis
-- **Per-Set Analytics**: Count and analyze statistics on a per-set or per-game basis
+
 - **Comprehensive Coverage**:
   - Match scores and set-by-set results
   - Serve statistics (aces, double faults, first serve %, placement effectiveness)
