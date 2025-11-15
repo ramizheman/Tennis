@@ -933,7 +933,6 @@ class TennisChatAgentEmbeddingQALocal:
             if 'point-by-point' in section.lower():
                 set_numbers = self._extract_set_numbers_from_chunk(chunk)
                 game_scores = self._extract_game_scores_from_chunk(chunk)
-                if set_numbers or game_scores:
             
             result_chunks.append({
                 "text": chunk,
@@ -1281,6 +1280,9 @@ class TennisChatAgentEmbeddingQALocal:
                     self.set_mapping = metadata_bundle.get('set_mapping', {})
                     self.total_sets = metadata_bundle.get('total_sets', 0)
                     if self.match_score:
+                        print(f"[CACHE] Loaded match score: {self.match_score}")
+                    if self.set_mapping:
+                        print(f"[CACHE] Loaded set mapping with {len(self.set_mapping)} entries")
                 else:
                     # Old format - just metadata_store
                     self.metadata_store = metadata_bundle
@@ -1713,7 +1715,6 @@ class TennisChatAgentEmbeddingQALocal:
                         filtered_chunks = [chunk for chunk in filtered_chunks if "explicit_totals_for_shot_direction_+_outcome_combinations" not in chunk['metadata']['section']]
                         # Insert at the very beginning
                         filtered_chunks.insert(0, explicit_totals_found)
-                        print(f"[TARGET] FORCED explicit_otals_for_shot_direction_+_outcome_combinations to top for {detected_direction} {detected_outcome} query ({player_mentioned})")
                     
                     # Add chunk if not already in results
                     if target_chunk and not any(target_chunk_name in chunk['metadata']['section'] for chunk in filtered_chunks):
@@ -1972,16 +1973,16 @@ class TennisChatAgentEmbeddingQALocal:
                     # Find all matching chunks (handle variable-length lists)
                     found_chunks = []
                     for chunk_name in chunk_names:
-                    for chunk in self.chunks:
+                        for chunk in self.chunks:
                             if chunk_name in chunk['metadata']['section']:
                                 found_chunk = {
-                                "text": chunk['text'],
-                                "metadata": chunk['metadata'],
+                                    "text": chunk['text'],
+                                    "metadata": chunk['metadata'],
                                     "distance": 0.0,
                                     "relevance_score": 8.0
                                 }
                                 found_chunks.append(found_chunk)
-                            break
+                                break
                     
                     # Remove existing instances and add with high priority
                     for found_chunk in found_chunks:
@@ -2429,6 +2430,7 @@ class TennisChatAgentEmbeddingQALocal:
             original_count = len(filtered_chunks)
             filtered_chunks = [chunk for chunk in filtered_chunks if 'netpts' not in chunk['metadata']['section']]
             if len(filtered_chunks) < original_count:
+                pass
         
         # For complex analytical questions, ensure we have diverse chunk types
         if top_k > 8:
@@ -6136,7 +6138,7 @@ Answer:"""
         sentences = []
         
         # Determine player from row label dynamically
-            player = "Unknown Player"
+        player = "Unknown Player"
         if self.player1 and self.player2:
             player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
             player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
@@ -6725,7 +6727,7 @@ Answer:"""
             
             if label and values:
                 # Determine player dynamically from initials
-                    player = "Unknown Player"
+                player = "Unknown Player"
                 if self.player1 and self.player2:
                     player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
                     player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
@@ -6766,7 +6768,7 @@ Answer:"""
             
             if label and values:
                 # Determine player dynamically from initials
-                    player = "Unknown Player"
+                player = "Unknown Player"
                 if self.player1 and self.player2:
                     player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
                     player2_initials = ''.join([word[0] for word in self.player2.split()]).upper()
