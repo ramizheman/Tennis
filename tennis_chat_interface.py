@@ -142,7 +142,6 @@ class TennisChatInterface:
             
             # Search for matches (without scraping details)
             matches = collector.search_player_matches(player1.strip(), player2.strip())
-            print(f"DEBUG: search_player_matches returned {len(matches)} matches")
             
             if not matches:
                 return gr.update(choices=[f"No matches found between {player1} and {player2}."], value=None)
@@ -161,9 +160,6 @@ class TennisChatInterface:
                 match_text = f"{date} - {tournament}: {p1} vs {p2}"
                 match_options.append(match_text)
             
-            print(f"DEBUG: Created {len(match_options)} match options")
-            print(f"DEBUG: First option: {match_options[0] if match_options else 'None'}")
-            
             # Return Radio update with all matches
             return gr.update(choices=match_options, value=None)
             
@@ -172,8 +168,6 @@ class TennisChatInterface:
     
     def load_match(self, match_selection) -> str:
         """Load a specific match by scraping its data"""
-        print(f"DEBUG: load_match called with match_selection: {match_selection}")
-        print(f"DEBUG: self.matches length: {len(self.matches) if self.matches else 0}")
         
         if not match_selection or match_selection == "":
             return "Please select a match from the dropdown."
@@ -221,12 +215,10 @@ class TennisChatInterface:
                 skip_scraping = True
                 status_message = f"**Loading Match Data...**\n\n"
                 status_message += f"**Selected Match:** {match_selection}\n\n"
-                # status_message += f"**Step 1/4:** ⚡ Using cached match data (already scraped)...\n"
             else:
                 print(f"[SCRAPE] First time loading this match, scraping from Tennis Abstract...")
                 status_message = f"**Loading Match Data...**\n\n"
                 status_message += f"**Selected Match:** {match_selection}\n\n"
-                # status_message += f"**Step 1/4:** [SCRAPE] Scraping detailed match data from TennisAbstract.com...\n"
             
             # Only scrape if cache doesn't exist
             if not skip_scraping:
@@ -235,7 +227,6 @@ class TennisChatInterface:
                 import sys
                 
                 print(f"[SCRAPE] Scraping data for match {match_index}: {match_selection}")
-                print(f"DEBUG: player1 = {player1}, player2 = {player2}")
                 
                 # Run the data collection script with the match index
                 result = subprocess.run([
@@ -247,21 +238,11 @@ class TennisChatInterface:
                     return f"❌ **Error during data scraping:** {result.stderr}"
                 
                 print("[SUCCESS] Data collection completed successfully")
-                print(f"DEBUG: Data collection stdout: {result.stdout}")
-                print(f"DEBUG: Data collection stderr: {result.stderr}")
-                
-                # status_message += f"[SUCCESS] **Step 1 Complete:** Match data scraped successfully!\n\n"
-            # else:
-                # status_message += f"[SUCCESS] **Step 1 Complete:** Using cached data (instant load)!\n\n"
-            
-            # Step 2: Update status
-            # status_message += f"**Step 2/4:** 📁 Loading JSON data file...\n"
             
             # Load the JSON file (either just scraped or from cache)
             import json
             
             filename = expected_filename
-            print(f"DEBUG: Loading JSON file: {filename}")
             
             if not os.path.exists(filename):
                 return f"❌ **Error:** Could not find the JSON file: {filename}"
@@ -270,9 +251,6 @@ class TennisChatInterface:
             with open(filename, 'r', encoding='utf-8') as f:
                 match_data = json.load(f)
             
-            # Step 3: Update status
-            # status_message += f"[SUCCESS] **Step 2 Complete:** JSON data loaded!\n\n"
-            
             # Create match-specific filename prefix (without .json extension)
             match_prefix = expected_filename.replace('.json', '')
             embeddings_cache_file = f"{match_prefix}_faiss.pkl"  # Check for the FAISS index file
@@ -280,27 +258,20 @@ class TennisChatInterface:
             # Check if embeddings are already cached
             if os.path.exists(embeddings_cache_file):
                 print(f"[CACHE] Embeddings already cached: {embeddings_cache_file}")
-                # status_message += f"**Step 3/4:** ⚡ Loading cached embeddings (instant!)...\n"
                 
                 # Load pre-computed embeddings directly
                 success = self.chat_agent.load_embeddings_from_disk(match_prefix)
                 
                 if success:
-                    # status_message += f"[SUCCESS] **Step 3 Complete:** Embeddings loaded from cache!\n\n"
-                    # status_message += f"**Step 4/4:** ✅ Match ready for questions!\n"
                     pass
                 else:
                     # Cache corrupted, regenerate
                     print("[WARN] Cached embeddings corrupted, regenerating...")
-                    # status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
                     natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
                     nl_filename = f"{match_prefix}_NL.md"
                     with open(nl_filename, 'w', encoding='utf-8') as f:
                         f.write(natural_language)
                     print(f"[SAVE] Natural language saved as '{nl_filename}'")
-                    
-                    # status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
-                    # status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
                     
                     self.chat_agent.load_exact_full_format(nl_filename)
                     self.chat_agent.save_embeddings_to_disk(match_prefix)
@@ -308,16 +279,12 @@ class TennisChatInterface:
             else:
                 # No cache - generate fresh
                 print("[CONVERT] First time loading this match, converting to natural language...")
-                # status_message += f"**Step 3/4:** [CONVERT] Converting match data to natural language...\n"
                 
                 natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
                 nl_filename = f"{match_prefix}_NL.md"
                 with open(nl_filename, 'w', encoding='utf-8') as f:
                     f.write(natural_language)
                 print(f"[SAVE] Natural language saved as '{nl_filename}'")
-                
-                # status_message += f"[SUCCESS] **Step 3 Complete:** Natural language conversion done!\n\n"
-                # status_message += f"**Step 4/4:** [EMBED] Generating embeddings...\n"
                 
                 print("[EMBED] Generating embeddings from converted match data...")
                 self.chat_agent.load_exact_full_format(nl_filename)
@@ -367,8 +334,6 @@ class TennisChatInterface:
             return final_message
             
         except Exception as e:
-            print(f"DEBUG: Exception caught: {str(e)}")
-            print(f"DEBUG: player1 = {player1}, player2 = {player2}")
             return f"❌ **Error loading match:** {str(e)}"
     
     def ask_question(self, question: str, model: str = None) -> str:
