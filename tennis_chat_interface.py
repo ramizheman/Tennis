@@ -581,10 +581,14 @@ def main():
     chat_interface = TennisChatInterface()
     interface = chat_interface.create_interface()
     
-    # Launch the interface - let Gradio find an available port
+    # Launch the interface
+    # On Hugging Face Spaces, the correct port is provided via the PORT environment variable.
+    # Locally, this will default to 7860.
+    port = int(os.getenv("PORT", "7860"))
     interface.launch(
         server_name="0.0.0.0",
-        share=False,  # Set to False when using ngrok for sharing
+        server_port=port,
+        share=False,
         show_error=True,
         quiet=False
     )
