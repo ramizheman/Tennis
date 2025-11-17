@@ -14,7 +14,13 @@ def extract_structured_tables_from_details_flat(details_flat: dict, player1: str
     # Group data by section (same as working method)
     sections = {}
     for k, v in details_flat.items():
-        if isinstance(v, str) and '<table' in v.lower():
+        # Skip internal metadata keys (not meant for table extraction)
+        if k == '_pointlog_ordered_list':
+            continue
+        # Skip non-string values (lists, dicts, etc.)
+        if not isinstance(v, str):
+            continue
+        if '<table' in v.lower():
             continue  # Skip raw HTML tables
         sec = k.split(" - ")[0] if " - " in k else "Other Data"
         sections.setdefault(sec, []).append((k, v))
@@ -107,35 +113,128 @@ def main(player1=None, player2=None, match_index=0):
         print("Error: Could not collect match data.")
         return None
     
+    # DEBUG: Check if _pointlog_ordered_list exists
+    print(f"\n[DEBUG] '_pointlog_ordered_list' exists: {'_pointlog_ordered_list' in match_details}")
+    if '_pointlog_ordered_list' in match_details:
+        print(f"[DEBUG] Number of points in ordered list: {len(match_details['_pointlog_ordered_list'])}")
+    else:
+        print(f"[DEBUG] Available keys with 'point': {[k for k in match_details.keys() if 'point' in k.lower()][:10]}")
+    
     # Extract point-by-point data from the collected details
     pointlog_rows = []
     if isinstance(match_details, dict):
-        # Look for point-by-point data in the collected details
-        for key, value in match_details.items():
-            if key.startswith('Point-by-point -'):
-                # Extract the point data from the key format: "Point-by-point - {server} {sets} {games} {points}"
-                parts = key.replace('Point-by-point - ', '').split(' ')
-                if len(parts) >= 4:
-                    # Create the exact format needed for the narrative
-                    point_number = len(pointlog_rows) + 1  # Sequential numbering
-                    point_description = value
-                    server = parts[0]  # Extract server name
-                    sets = parts[1]   # Extract sets score
-                    games = parts[2]  # Extract games score
-                    points = parts[3] # Extract points score
+        # CRITICAL: Use ordered list from scraper if available (preserves HTML table order)
+        # This is the most reliable source as it maintains the exact order from the source HTML
+        if '_pointlog_ordered_list' in match_details:
+            point_entries = match_details['_pointlog_ordered_list']
+            print(f"[OK] Using ordered point list from scraper ({len(point_entries)} points)")
+            # Debug: Show first few and last few points to verify extraction
+            if len(point_entries) > 0:
+                print(f"[DEBUG] First point: {point_entries[0]}")
+                if len(point_entries) > 1:
+                    print(f"[DEBUG] Last point: {point_entries[-1]}")
+        else:
+            # Fallback: collect from dictionary keys (may not be in correct order)
+            point_entries = []
+            for key, value in match_details.items():
+                if key.startswith('Point-by-point -'):
+                    # Extract the point data from the key format: "Point-by-point - {server} {sets} {games} {points}"
+                    parts = key.replace('Point-by-point - ', '').split(' ')
+                    if len(parts) >= 4:
+                        server = parts[0]  # Extract server name
+                        sets = parts[1]   # Extract sets score
+                        games = parts[2]  # Extract games score
+                        points = parts[3] # Extract points score
+                        point_description = value
+                        
+                        point_entries.append({
+                            'server': server,
+                            'sets': sets,
+                            'games': games,
+                            'points': points,
+                            'description': point_description
+                        })
+            
+            # CRITICAL: Sort points chronologically by score (sets, games, points)
+            # This ensures correct point numbering regardless of dictionary iteration order
+            def sort_key(entry):
+                """Sort by sets, then games, then points score"""
+                sets_parts = entry['sets'].split('-')
+                games_parts = entry['games'].split('-')
+                points_parts = entry['points'].split('-')
+                
+                # Convert to integers for proper sorting (handle special scores like "AD-40")
+                try:
+                    set1 = int(sets_parts[0]) if sets_parts[0] else 0
+                    set2 = int(sets_parts[1]) if len(sets_parts) > 1 and sets_parts[1] else 0
+                    game1 = int(games_parts[0]) if games_parts[0] else 0
+                    game2 = int(games_parts[1]) if len(games_parts) > 1 and games_parts[1] else 0
                     
-                    # Format: "Point {number}: {description}"
-                    formatted_point = f"Point {point_number}: {point_description}"
+                    # Handle point scores (can be "0-0", "15-0", "40-30", "AD-40", etc.)
+                    if len(points_parts) == 2:
+                        p1_str, p2_str = points_parts[0].strip(), points_parts[1].strip()
+                        # Convert point scores to sortable values
+                        point_values = {'0': 0, '15': 1, '30': 2, '40': 3, 'AD': 4, 'ad': 4}
+                        p1_val = point_values.get(p1_str, 0)
+                        p2_val = point_values.get(p2_str, 0)
+                    else:
+                        p1_val, p2_val = 0, 0
                     
-                    pointlog_rows.append({
-                        'point_number': point_number,
-                        'server': server,
-                        'sets': sets,
-                        'games': games,
-                        'points': points,
-                        'description': point_description,
-                        'formatted': formatted_point
-                    })
+                    return (set1, set2, game1, game2, p1_val, p2_val)
+                except (ValueError, IndexError):
+                    # Fallback for malformed scores
+                    return (0, 0, 0, 0, 0, 0)
+            
+            point_entries.sort(key=sort_key)
+            print(f"[OK] Collected and sorted {len(point_entries)} points from dictionary keys")
+        
+        # CRITICAL: TennisAbstract's HTML table only contains SELECTED points, not all points
+        # The table shows key points or points with descriptions, but skips many routine points
+        # We assign sequential numbers based on the order in the HTML table, but this creates gaps
+        # Example: If HTML has points at scores 0-0 1-2 30-15, 0-0 1-2 40-15, 0-0 2-2 0-0,
+        # we number them 1, 2, 3, but there may be missing points between them
+        
+        # Assign sequential point numbers in the order they appear (already sorted if from ordered list)
+        for i, entry in enumerate(point_entries, 1):
+            point_number = i
+            formatted_point = f"Point {point_number}: {entry['description']}"
+            
+            pointlog_rows.append({
+                'point_number': point_number,
+                'server': entry['server'],
+                'sets': entry['sets'],
+                'games': entry['games'],
+                'points': entry['points'],
+                'description': entry['description'],
+                'formatted': formatted_point
+            })
+        
+        # Warn if we detect large gaps in score progression (indicates missing points)
+        if len(point_entries) > 1:
+            # Check for score jumps that suggest missing points
+            prev_entry = point_entries[0]
+            large_gaps = []
+            for i, entry in enumerate(point_entries[1:], 1):
+                # If sets/games changed significantly, there might be missing points
+                prev_sets = prev_entry['sets'].split('-')
+                curr_sets = entry['sets'].split('-')
+                prev_games = prev_entry['games'].split('-')
+                curr_games = entry['games'].split('-')
+                
+                try:
+                    if (prev_sets[0] != curr_sets[0] or prev_sets[1] != curr_sets[1] or
+                        abs(int(prev_games[0]) - int(curr_games[0])) > 1 or
+                        abs(int(prev_games[1]) - int(curr_games[1])) > 1):
+                        large_gaps.append(i)
+                except (ValueError, IndexError):
+                    pass
+                
+                prev_entry = entry
+            
+            if large_gaps:
+                print(f"[WARN] Detected {len(large_gaps)} potential gaps in point sequence. "
+                      f"TennisAbstract HTML table only shows selected points, not all points.")
+                print(f"[WARN] This is expected - the table contains key points, not every point in the match.")
     
     # If no point-by-point data was found, try to extract from other sources
     if not pointlog_rows:

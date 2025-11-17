@@ -16,6 +16,7 @@ def clean_unicode_text(text: str) -> str:
     
     # Replace common Unicode issues
     text = text.replace('\u00c2\u00a0', ' ')  # Non-breaking space
+    text = text.replace('\xa0', ' ')  # Non-breaking space to regular space
     text = text.replace('â€', '-')  # Em dash
     text = text.replace('â€˜', '-')  # En dash
     text = text.replace('\u2011', '-')  # Non-breaking hyphen
@@ -369,17 +370,58 @@ class TennisDataCollector:
                             if pointlog_data:
                                 pointlog_soup = BeautifulSoup(pointlog_data, 'html.parser')
                                 rows = pointlog_soup.find_all('tr')
-                                for row in rows:
+                                pointlog_list = []
+                                
+                                for row_idx, row in enumerate(rows):
                                     cells = row.find_all(['td', 'th'])
-                                    if len(cells) >= 5:
-                                        server = clean_unicode_text(cells[0].get_text(strip=True))
-                                        sets = clean_unicode_text(cells[1].get_text(strip=True))
-                                        games = clean_unicode_text(cells[2].get_text(strip=True))
-                                        points = clean_unicode_text(cells[3].get_text(strip=True))
-                                        description = clean_unicode_text(cells[4].get_text(strip=True))
-                                        # Skip completely empty separators
-                                        if server and description:
-                                            stats[f"Point-by-point - {server} {sets} {games} {points}"] = description
+                                    
+                                    # Skip rows with insufficient cells
+                                    if len(cells) < 4:
+                                        continue
+                                    
+                                    # Extract cell data
+                                    server = clean_unicode_text(cells[0].get_text(strip=True))
+                                    sets = clean_unicode_text(cells[1].get_text(strip=True))
+                                    games = clean_unicode_text(cells[2].get_text(strip=True))
+                                    points = clean_unicode_text(cells[3].get_text(strip=True))
+                                    description = clean_unicode_text(cells[4].get_text(strip=True)) if len(cells) >= 5 else ""
+                                    
+                                    # FIXED: Better header detection
+                                    # Headers typically have specific text patterns or are the first row
+                                    is_header = (
+                                        row_idx == 0 or  # First row is usually header
+                                        cells[0].name == 'th' or  # Explicit header cell
+                                        server.lower() in ['server', 'sets', 'games', 'points', 'description'] or
+                                        (not server or not sets or not games or not points)  # Missing required data
+                                    )
+                                    
+                                    # FIXED: Only skip if it's actually a header
+                                    if is_header:
+                                        print(f"[DEBUG] Skipping header row {row_idx}: server='{server}', sets='{sets}'")
+                                        continue
+                                    
+                                    # FIXED: Include ALL valid data rows (even with empty descriptions)
+                                    if server and sets and games and points:
+                                        pointlog_list.append({
+                                            'server': server,
+                                            'sets': sets,
+                                            'games': games,
+                                            'points': points,
+                                            'description': description
+                                        })
+                                        # Also store in stats dict for backward compatibility
+                                        stats[f"Point-by-point - {server} {sets} {games} {points}"] = description
+                                    else:
+                                        print(f"[DEBUG] Skipping incomplete row {row_idx}: server='{server}', sets='{sets}', games='{games}', points='{points}'")
+                                
+                                if pointlog_list:
+                                    print(f"[DEBUG] Extracted {len(pointlog_list)} points from pointlog HTML table")
+                                    if len(pointlog_list) > 0:
+                                        print(f"[DEBUG] First point: {pointlog_list[0]}")
+                                        print(f"[DEBUG] Last point: {pointlog_list[-1]}")
+                                    stats['_pointlog_ordered_list'] = pointlog_list
+                                else:
+                                    print(f"[WARN] No points extracted from pointlog HTML table")
                     
                     # Also look for any JavaScript variable that might contain point-by-point data
                     point_log_patterns = re.findall(r'var\s+(\w+)\s*=\s*[\'\"](.*?point.*?log.*?)[\'\"]', script_text, re.DOTALL | re.IGNORECASE)

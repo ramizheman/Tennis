@@ -1518,6 +1518,31 @@ class TennisChatAgentEmbeddingQALocal:
         # Apply intelligent filtering based on query content
         filtered_chunks = self._filter_chunks_by_query(query, candidates)
         
+        # CRITICAL FIX: For specific point number questions, force include the chunk containing that point
+        import re
+        point_match = re.search(r'point\s+(\d+)', query.lower())
+        if point_match:
+            requested_point = int(point_match.group(1))
+            # Find the chunk containing this point
+            point_chunk = None
+            for chunk in self.chunks:
+                if 'point-by-point' in chunk['metadata'].get('section', '').lower():
+                    chunk_text = chunk['text']
+                    if f"Point {requested_point}" in chunk_text or f"Point {requested_point} [" in chunk_text:
+                        point_chunk = {
+                            "text": chunk['text'],
+                            "metadata": chunk['metadata'],
+                            "distance": 0.0,  # Perfect match
+                            "relevance_score": 10.0  # Maximum score for specific point questions
+                        }
+                        break
+            
+            # Force include the point chunk at the top
+            if point_chunk:
+                # Remove any existing point-by-point chunks and add this one
+                filtered_chunks = [c for c in filtered_chunks if 'point-by-point' not in c['metadata'].get('section', '').lower()]
+                filtered_chunks.insert(0, point_chunk)
+        
         # Initialize fix flags FIRST (must be before any code path that uses them!)
         direction_outcome_fix_applied = False
         bp_gp_fix_applied = False
@@ -2720,6 +2745,20 @@ class TennisChatAgentEmbeddingQALocal:
         relevant_chunks.sort(key=lambda x: x["relevance_score"], reverse=True)
         return relevant_chunks[:top_k]
     
+    def _extract_specific_point(self, text: str, point_number: int) -> str:
+        """
+        Extract only the specific point from point-by-point text.
+        Returns the point text if found, empty string otherwise.
+        """
+        import re
+        # Pattern to match "Point X [" where X is the point number
+        pattern = rf"Point {point_number}\s*\[.*?\]:(.*?)(?=Point \d+\s*\[|$)"
+        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if match:
+            point_text = match.group(0).strip()
+            return point_text
+        return ""
+    
     def answer_query_with_llm(self, query: str, relevant_chunks: List[Dict]) -> str:
         """
         Use LLM to answer the query based on retrieved chunks.
@@ -2727,11 +2766,58 @@ class TennisChatAgentEmbeddingQALocal:
         if not relevant_chunks:
             return "I don't have enough relevant information to answer this question."
         
+        # Check if query asks about a specific point number
+        import re
+        point_match = re.search(r'point\s+(\d+)', query.lower())
+        requested_point = None
+        if point_match:
+            requested_point = int(point_match.group(1))
+        
         # Prepare context from retrieved chunks
         context_parts = []
         for chunk in relevant_chunks:
             section_info = f"[{chunk['metadata']['section']} - {chunk['metadata']['type']}]"
-            context_parts.append(f"{section_info}\n{chunk['text']}")
+            # Add player identification to section info if available
+            player_focus = chunk['metadata'].get('player_focus', '')
+            if player_focus:
+                if player_focus == self.player1:
+                    section_info += f" [PLAYER: {self.player1}]"
+                elif player_focus == self.player2:
+                    section_info += f" [PLAYER: {self.player2}]"
+                elif player_focus == "Both":
+                    section_info += f" [PLAYER: BOTH PLAYERS]"
+            # Also check section name for player indicators
+            section_name = chunk['metadata'].get('section', '').lower()
+            if 'return1' in section_name or 'serve1' in section_name or 'shots1' in section_name:
+                section_info += f" [PLAYER: {self.player1 if self.player1 else 'Player 1'}]"
+            elif 'return2' in section_name or 'serve2' in section_name or 'shots2' in section_name:
+                section_info += f" [PLAYER: {self.player2 if self.player2 else 'Player 2'}]"
+            
+            # If asking about a specific point, extract only that point from point-by-point chunks
+            chunk_text = chunk['text']
+            if requested_point and 'point-by-point' in chunk['metadata'].get('section', '').lower():
+                extracted_point = self._extract_specific_point(chunk_text, requested_point)
+                if extracted_point:
+                    chunk_text = extracted_point
+                    section_info += f" [EXTRACTED POINT {requested_point} ONLY]"
+                elif f"Point {requested_point}" in chunk_text:
+                    # Fallback: try to extract manually if regex didn't work
+                    lines = chunk_text.split('\n')
+                    point_lines = []
+                    in_point = False
+                    for line in lines:
+                        if f"Point {requested_point}" in line:
+                            in_point = True
+                            point_lines.append(line)
+                        elif in_point and line.strip() and not line.strip().startswith("Point "):
+                            point_lines.append(line)
+                        elif in_point and line.strip().startswith("Point "):
+                            break
+                    if point_lines:
+                        chunk_text = '\n'.join(point_lines)
+                        section_info += f" [EXTRACTED POINT {requested_point} ONLY]"
+            
+            context_parts.append(f"{section_info}\n{chunk_text}")
         
         context = "\n\n".join(context_parts)
         
@@ -2753,30 +2839,51 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
   - When Alcaraz serves: "Score: 0-2 4-5" ← SET 3 (SAME SET!)
 - **DO NOT call this an "inconsistency"** - it's normal server/returner perspective
 
-**RULE #2: Each Point Shows the Winner Explicitly**
-- Every point includes: "[Point won by: PLAYER_NAME]"
+**RULE #2: Point Header Format - READ IT CAREFULLY**
+- Every point starts with: "Point X [Server: PLAYER_NAME | Returner: PLAYER_NAME | Score: ...]"
+- **CRITICAL**: The Server is the player who SERVES the point
+- **CRITICAL**: The Returner is the player who RETURNS the serve
+- **CRITICAL**: The Score shows [Sets_Server]-[Sets_Returner] [Games_Server]-[Games_Returner] [Points_Server]-[Points_Returner]
+- **CRITICAL**: The format is ALWAYS: "Score: X-Y A-B C-D" where:
+  - X-Y = Sets (X sets won by Server, Y sets won by Returner)
+  - A-B = Games (A games won by Server in current set, B games won by Returner in current set)
+  - C-D = Points (C points for Server in current game, D points for Returner in current game)
+- **CRITICAL**: When Server has 1 game and Returner has 2 games, the score is "1-2" (NOT "0-0" or "2-1")
+- **DO NOT flip or confuse Server/Returner roles** - read them directly from the header
+- Example: "Point 24 [Server: Jannik Sinner | Returner: Ben Shelton | Score: 0-0 1-2 40-15]"
+  - Jannik Sinner is serving
+  - Ben Shelton is returning
+  - Score: 0-0 in sets, 1-2 in games (Sinner has 1 game, Shelton has 2 games - Shelton leads), 40-15 in current game (Sinner serving, 40-15)
+
+**RULE #3: Each Point Shows the Winner Explicitly**
+- Every point ends with: "[Point won by: PLAYER_NAME]"
 - Use this tag to determine who won each point - don't guess!
 - To determine game outcomes: count sequential point winners
 - Example: If Points 204-207 all show "[Point won by: Alcaraz]" → Alcaraz won all 4 points
 
-**RULE #3: Each Shot Shows Who Hit It**
-- Rally shots are tagged with player names: "forehand winner [ALCARAZ]"
+**RULE #4: Each Shot Shows Who Hit It**
+- The FIRST shot in a point is ALWAYS by the Server (from the header)
+- The SECOND shot is ALWAYS by the Returner (from the header)
+- Subsequent rally shots are tagged with player names: "forehand winner [ALCARAZ]"
 - Don't try to track alternation - just read the tags!
+- Example: "1st serve down the T [Jannik Sinner]; forehand chip/slice return [Ben Shelton]"
+  - Jannik Sinner served (matches Server in header)
+  - Ben Shelton returned (matches Returner in header)
 
-**RULE #4: Never Fabricate - Verify Everything**
+**RULE #5: Never Fabricate - Verify Everything**
 - DO NOT say "held to love" or "broke serve" without counting actual point winners
 - DO NOT guess game outcomes - count the "[Point won by:]" tags
 - If you see mixed sets in a chunk, filter by score pattern (Score: 0-2 vs Score: 1-2)
 - DO NOT explain score notation or reasoning in your answer (e.g. don't say "the score structure suggests...")
 - Just provide clean, narrative answers without showing your internal reasoning process
 
-**RULE #4B: When Asked About a Set - Describe ALL Games, Not Just the Tiebreak**
+**RULE #5B: When Asked About a Set - Describe ALL Games, Not Just the Tiebreak**
 - If asked "what happened in Set X", describe ALL games from 0-0 through the end
 - DO NOT only describe the tiebreak and skip the regular games (1-0, 2-1, 3-2, etc.)
 - Tiebreaks are important, but so are the 12+ regular games that came before them
 - Example: For "what happened in Set 5", describe games from 0-0, 1-0, 1-1... all the way to 6-6 AND the tiebreak
 
-**RULE #5: TENNIS SET SCORING - CRITICAL FOR SET/GAME QUESTIONS**
+**RULE #6: TENNIS SET SCORING - CRITICAL FOR SET/GAME QUESTIONS**
 - A set is won by the first player to win 6 games (with a 2-game margin), or 7-6 in a tiebreak
 - IMPORTANT: If a player is leading 5-4 and wins the next game → They win the set 6-4 (NOT 5-5!)
 - IMPORTANT: If a set is tied 5-5, the next game makes it 6-5 (NOT the end of the set)
@@ -2787,7 +2894,7 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
   * Tied 5-5, hold serve → Score becomes 6-5 (set continues) ✓
   * Leading 6-5, hold serve → Set ends 7-5 ✓
 
-**RULE #6: MATCH FORMAT SCORING - WHICH SET ARE WE IN?**
+**RULE #7: MATCH FORMAT SCORING - WHICH SET ARE WE IN?**
 - Best-of-3 matches: First to win 2 sets (men's non-Slams, all women's matches)
 - Best-of-5 matches: First to win 3 sets (men's Grand Slams)
 - CRITICAL: Count completed sets to determine which set is being played:
@@ -2812,6 +2919,12 @@ Player leading 5-4 WINS Game 10 → Score becomes 6-4 → SET OVER! ✓
 IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
 - **CRITICAL: When asked "who won" or "who won the match"**, ALWAYS include BOTH the winner's name AND the final score in your answer (e.g., "Carlos Alcaraz won the match, defeating Novak Djokovic 6-4 7-6(4) 6-2")
 - **CRITICAL: When asked for the "score" or "final score"**, provide the complete score including the winner (e.g., "Carlos Alcaraz d. Novak Djokovic 6-4 7-6(4) 6-2")
+- **CRITICAL: When asked about BOTH or EACH players' statistics** (e.g., "Ben Shelton's returning effectiveness" AND "Jannik Sinner's returning effectiveness"):
+  - **ALWAYS check the section headers** -(e.g. look for "RETURN1 STATISTICS (DETAILED):" vs "RETURN2 STATISTICS (DETAILED):" or "SERVE1 STATISTICS" vs "SERVE2 STATISTICS")
+  - **ALWAYS check player names in the text** - each statistic line includes the player name (e.g., "Ben Shelton returned 21 times" vs "Jannik Sinner returned 19 times")
+  - **DO NOT assume both players have the same statistics** - even if numbers look similar, verify which player each number belongs to by checking the player name in that line
+  - **Report statistics separately for each player** - clearly label which statistics belong to which player
+  - **If you see identical numbers for both players, double-check the player names in the source text** - this is likely an error if the numbers are truly identical
 - When asked for "counts" or "numbers", always return the raw count if available (e.g., "12 points"). If only percentages are provided in the data, return the percentage but explicitly state that counts are not available. Never infer or estimate counts from percentages.
 - [WARN] When adding categories (e.g., unforced + forced errors), only add if both are raw counts
 - [ERROR] Never add percentages together
@@ -3053,6 +3166,21 @@ Always stop at the highest-priority source available. Do not combine across diff
 **For RALLY questions** (longest rally, specific rallies):
 - Focus on the specific rally details requested
 - Include shot sequences and outcomes
+
+**For SPECIFIC POINT NUMBER QUESTIONS** (e.g., "what happened on point 24", "point 24"):
+- **CRITICAL**: Find the EXACT point header that says "Point X" where X EXACTLY matches the requested number
+- **CRITICAL**: If asked about "point 24", you MUST find the line that starts with "Point 24" - NOT "Point 23", NOT "Point 25", NOT "Point 26"
+- **CRITICAL**: Scan through the text and locate the line that begins with "Point [NUMBER]" where NUMBER matches exactly
+- **CRITICAL**: Read the point header EXACTLY as written: "Point X [Server: PLAYER | Returner: PLAYER | Score: ...]"
+- **DO NOT** read a different point number - if you see "Point 23" or "Point 25" or "Point 26", that's NOT the point being asked about
+- **DO NOT** assume nearby points are the same - each point number is unique
+- **DO NOT** flip Server/Returner - read them directly from the header
+- **DO NOT** guess or infer the score - read it directly from the header
+- **DO NOT** make up shots - read them exactly as written in the point description
+- **DO NOT** guess who won - read the "[Point won by: PLAYER]" tag at the end
+- **VERIFICATION STEP**: After reading the point, verify the point number in your answer matches the requested number
+- Example: If asked "what happened on point 24", you MUST find and read ONLY the line that starts with "Point 24 [Server: ..." - ignore all other point numbers
+- Report the point exactly as written, with correct Point Number, Server, Returner, Score, shots, and winner
 
 **For SET/GAME NARRATIVE QUESTIONS:**
 - Each point explicitly shows "[Point won by: PLAYER_NAME]" - use this to count game outcomes
@@ -6404,7 +6532,13 @@ Answer:"""
         
         for i, point in enumerate(point_log, 1):
             # Extract point information
-            point_num = point.get('point', f'Point {i}')
+            # Use point_number from JSON as primary source (matches TennisStrategyFormulator)
+            # Fall back to enumerate index if point_number is missing
+            point_num = point.get('point_number') or point.get('point')
+            if point_num:
+                point_num = f'Point {point_num}' if isinstance(point_num, (int, float)) else point_num
+            else:
+                point_num = f'Point {i}'
             server = point.get('server', '')
             sets = point.get('sets', '')
             games = point.get('games', '')
