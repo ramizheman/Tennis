@@ -776,10 +776,14 @@ class TennisChatAgentEmbeddingQALocal:
         # Determine point winner
         point_winner = None
         if rally_shots:
-            # Check for double fault (2nd serve fault)
+            # Check for double fault
             for shot in rally_shots:
-                if '2nd serve' in shot['description'] and shot.get('outcome') == 'FAULT':
+                if shot.get('outcome') == 'DOUBLE_FAULT':
                     # Double fault - returner wins
+                    point_winner = returner
+                    break
+                # Also check for "2nd serve" + "fault" pattern (legacy)
+                if '2nd serve' in shot['description'].lower() and 'fault' in shot['description'].lower():
                     point_winner = returner
                     break
             
@@ -827,9 +831,15 @@ class TennisChatAgentEmbeddingQALocal:
         current_player = server  # Server always starts
         in_rally = False  # Track if we're in rally (after successful serve)
         
-        # CRITICAL: Handle "1st serve fault. 2nd serve" pattern
-        # Replace period-space between serves with marker for proper splitting
+        # CRITICAL: Handle "fault. 2nd serve" patterns - ensure 2nd serve is a separate segment
+        # Pattern 1: "fault (reason). 2nd serve" - with reason in parentheses
         rally_text = re.sub(r'fault \([^)]+\)\.\s+(2nd serve)', r'fault. SERVE_SEPARATOR \1', rally_text)
+        # Pattern 2: "fault. 2nd serve" - without reason
+        rally_text = re.sub(r'fault\.\s+(2nd serve)', r'fault. SERVE_SEPARATOR \1', rally_text, flags=re.IGNORECASE)
+        # Pattern 3: ", fault. 2nd serve" - comma before fault
+        rally_text = re.sub(r',\s*fault\.\s+(2nd serve)', r', fault. SERVE_SEPARATOR \1', rally_text, flags=re.IGNORECASE)
+        # Pattern 4: Handle let serves - "let. 1st serve" or "let. 2nd serve"
+        rally_text = re.sub(r'let\.\s+(\d(?:st|nd)\s+serve)', r'let. SERVE_SEPARATOR \1', rally_text, flags=re.IGNORECASE)
         
         # Split by semicolons (each shot)
         shot_parts = rally_text.split(';')
@@ -852,19 +862,29 @@ class TennisChatAgentEmbeddingQALocal:
             # Clean up
             shot_clean = shot_part.strip()
             
-            # Check for outcomes
+            # Check for outcomes - ORDER MATTERS! Check specific outcomes before generic ones
             outcome = None
-            if 'winner' in shot_clean.lower():
+            shot_lower = shot_clean.lower()
+            if 'double fault' in shot_lower or ('2nd serve' in shot_lower and 'fault' in shot_lower):
+                outcome = 'DOUBLE_FAULT'
+            elif 'ace' in shot_lower:
+                outcome = 'ACE'
+            elif 'service winner' in shot_lower:
+                outcome = 'SERVICE_WINNER'
+            elif 'winner' in shot_lower:
                 outcome = 'WINNER'
-            elif 'unforced error' in shot_clean.lower():
+            elif 'unforced error' in shot_lower:
                 outcome = 'UNFORCED ERROR'
-            elif 'forced error' in shot_clean.lower():
+            elif 'forced error' in shot_lower:
                 outcome = 'FORCED ERROR'
-            elif 'fault' in shot_clean.lower():
+            elif 'fault' in shot_lower and ('1st serve' in shot_lower or '2nd serve' in shot_lower):
+                # Only mark as FAULT if it's a serve fault, not other uses of "fault"
                 outcome = 'FAULT'
+            elif 'let' in shot_lower and ('1st serve' in shot_lower or '2nd serve' in shot_lower):
+                outcome = 'LET'
             
-            # Handle serves
-            if '1st serve' in shot_clean or '2nd serve' in shot_clean:
+            # Handle serves - ALWAYS assigned to server
+            if '1st serve' in shot_clean.lower() or '2nd serve' in shot_clean.lower():
                 # Serve is always by the server
                 shots.append({
                     'player': server,  # Always server, not current_player
@@ -872,11 +892,12 @@ class TennisChatAgentEmbeddingQALocal:
                     'outcome': outcome
                 })
                 # If successful serve, next shot is returner's
-                if outcome != 'FAULT':
+                # CRITICAL: Faults and Lets do NOT start the rally - server serves again
+                if outcome not in ('FAULT', 'LET', None) or (outcome is None and 'fault' not in shot_clean.lower() and 'let' not in shot_clean.lower()):
                     current_player = returner
                     in_rally = True
                 else:
-                    # Fault - next serve attempt, stay on server
+                    # Fault or Let - next serve attempt, stay on server
                     current_player = server
                     in_rally = False
             else:
@@ -7047,7 +7068,6 @@ Answer:"""
                     player = self.player2
                 else:
                     # Try dynamic initials extraction as fallback
-                    pass
                     player = "Unknown Player"
                     if self.player1 and self.player2:
                         player1_initials = ''.join([word[0] for word in self.player1.split()]).upper()
