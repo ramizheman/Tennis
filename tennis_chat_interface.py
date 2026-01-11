@@ -336,7 +336,7 @@ class TennisChatInterface:
         except Exception as e:
             return f"❌ **Error loading match:** {str(e)}"
     
-    def ask_question(self, question: str, model: str = None) -> str:
+    def ask_question(self, question: str) -> str:
         """Ask a question about the currently loaded match"""
         if not question.strip():
             return "Please enter a question."
@@ -345,16 +345,14 @@ class TennisChatInterface:
             return "No match is currently loaded. Please search for and load a match first."
         
         try:
-            # Temporarily switch model if specified
+            # Always use gemini-2.5-flash
             original_model = self.chat_agent.model
-            if model:
-                self.chat_agent.model = model
+            self.chat_agent.model = "gemini-2.5-flash"
             
             answer = self.chat_agent.ask_question(question.strip())
             
             # Restore original model
-            if model:
-                self.chat_agent.model = original_model
+            self.chat_agent.model = original_model
             
             return answer
             
@@ -451,17 +449,6 @@ class TennisChatInterface:
                 with gr.Column(scale=1):
                     gr.Markdown("### Ask Questions")
                     
-                    # Model selection
-                    model_choice = gr.Radio(
-                        choices=[
-                            ("Gemini 2.0 - Good answers, fast", "gemini-2.0-flash-exp"),
-                            ("Gemini 2.5 - Best answers, slower", "gemini-2.5-flash")
-                        ],
-                        value="gemini-2.5-flash",
-                        label="Analysis Model",
-                        info="Choose speed vs quality tradeoff"
-                    )
-                    
                     question_input = gr.Textbox(
                         label="Your Question",
                         placeholder="e.g., What were the serve statistics? How many aces were hit?",
@@ -503,14 +490,14 @@ class TennisChatInterface:
             
             ask_btn.click(
                 fn=self.ask_question,
-                inputs=[question_input, model_choice],
+                inputs=[question_input],
                 outputs=[answer_output]
             )
             
             # Allow Enter key to submit questions
             question_input.submit(
                 fn=self.ask_question,
-                inputs=[question_input, model_choice],
+                inputs=[question_input],
                 outputs=[answer_output]
             )
         
