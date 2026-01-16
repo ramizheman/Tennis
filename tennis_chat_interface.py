@@ -10,11 +10,11 @@ from datetime import datetime, timedelta
 # Load environment variables from .env file
 load_dotenv()
 
-# Import the LOCAL embedding agent (uses free transformers + OpenAI)
+# Import the match questions agent (uses taxonomy-based routing)
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), 'agents'))
-from chat_agent_embedding_qa_local import TennisChatAgentEmbeddingQALocal
+from chat_match_questions import TennisChatAgentEmbeddingQALocal
 from data_collection_agent import TennisDataCollector
 
 class TennisChatInterface:
@@ -255,6 +255,23 @@ class TennisChatInterface:
             match_prefix = expected_filename.replace('.json', '')
             embeddings_cache_file = f"{match_prefix}_faiss.pkl"  # Check for the FAISS index file
             
+            # Always generate the natural language file in markdown format
+            # Get the Tennis folder path (where this script is located)
+            tennis_folder = os.path.dirname(os.path.abspath(__file__))
+            
+            print("[CONVERT] Converting match data to natural language format...")
+            natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
+            nl_filename = os.path.join(tennis_folder, f"{match_prefix}_NL.md")
+            
+            with open(nl_filename, 'w', encoding='utf-8') as f:
+                f.write(natural_language)
+            print(f"[SAVE] Natural language file saved as '{nl_filename}'")
+            
+            # Extract structured point-by-point data from JSON
+            match = match_data['matches'][0]
+            pointlog_rows = match.get('pointlog_rows', [])
+            print(f"[EXTRACT] Found {len(pointlog_rows)} points in structured data")
+            
             # Check if embeddings are already cached
             if os.path.exists(embeddings_cache_file):
                 print(f"[CACHE] Embeddings already cached: {embeddings_cache_file}")
@@ -262,32 +279,26 @@ class TennisChatInterface:
                 # Load pre-computed embeddings directly
                 success = self.chat_agent.load_embeddings_from_disk(match_prefix)
                 
-                if success:
-                    pass
-                else:
+                if not success:
                     # Cache corrupted, regenerate
                     print("[WARN] Cached embeddings corrupted, regenerating...")
-                    natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
-                    nl_filename = f"{match_prefix}_NL.md"
-                    with open(nl_filename, 'w', encoding='utf-8') as f:
-                        f.write(natural_language)
-                    print(f"[SAVE] Natural language saved as '{nl_filename}'")
-                    
                     self.chat_agent.load_exact_full_format(nl_filename)
+                    # NOTE: load_exact_full_format already extracts PBP from NL file
+                    # which has [Point won by:] tags - DON'T overwrite with JSON!
                     self.chat_agent.save_embeddings_to_disk(match_prefix)
                     print(f"[CACHE] Embeddings saved for future use: {embeddings_cache_file}")
+                else:
+                    # Even if embeddings are cached, we need to load point-by-point from NL file
+                    # (not JSON) to get [Point won by:] tags
+                    if not self.chat_agent.point_by_point:
+                        print("[EXTRACT] Loading point-by-point from NL file (with point winners)...")
+                        self.chat_agent._extract_point_by_point_from_nl_file(nl_filename)
             else:
-                # No cache - generate fresh
-                print("[CONVERT] First time loading this match, converting to natural language...")
-                
-                natural_language = self.chat_agent.convert_json_to_natural_language(match_data['matches'][0])
-                nl_filename = f"{match_prefix}_NL.md"
-                with open(nl_filename, 'w', encoding='utf-8') as f:
-                    f.write(natural_language)
-                print(f"[SAVE] Natural language saved as '{nl_filename}'")
-                
+                # No cache - generate fresh embeddings
                 print("[EMBED] Generating embeddings from converted match data...")
                 self.chat_agent.load_exact_full_format(nl_filename)
+                # NOTE: load_exact_full_format already extracts PBP from NL file
+                # which has [Point won by:] tags - DON'T overwrite with JSON!
                 
                 # Save embeddings for future loads
                 self.chat_agent.save_embeddings_to_disk(match_prefix)
@@ -357,6 +368,8 @@ class TennisChatInterface:
             return answer
             
         except Exception as e:
+            import traceback
+            traceback.print_exc()  # Print full traceback to console
             return f"Error answering question: {str(e)}"
     
     def create_interface(self):
