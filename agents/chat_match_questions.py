@@ -729,7 +729,8 @@ class TennisChatAgentEmbeddingQALocal:
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['forced error']
+            'keywords': ['forced error'],  # Must match 'forced error' specifically, not 'unforced error'
+            'exclude_keywords': ['unforced']  # Exclude unforced errors
         },
         
         # Game-level metrics (aggregated from points)
@@ -938,11 +939,43 @@ class TennisChatAgentEmbeddingQALocal:
         if extraction_method == 'metadata_path':
             path = config.get('metadata_path', [])
             if path:
-                value = metadata
-                for key in path:
-                    value = value.get(key, {}) if isinstance(value, dict) else None
-                    if value is None:
-                        break
+                # SPECIAL CASE: For shot_type grouping with error metrics, use error_shot_type instead of winning_shot.shot_type
+                if group_by == 'shot_type' and path == ['winning_shot', 'shot_type']:
+                    current_metric = filters.get('_current_metric', '')
+                    error_metrics = ['unforced_errors', 'forced_errors', 'errors']
+                    if current_metric in error_metrics:
+                        # Use error_shot_type for error metrics (stored in error_info)
+                        error_info = metadata.get('error_info', {})
+                        error_shot_type = error_info.get('error_shot_type')
+                        if error_shot_type:
+                            value = error_shot_type
+                            # DEBUG: Show that we're using error_shot_type
+                            if not hasattr(self, '_error_shot_debug_count'):
+                                self._error_shot_debug_count = 0
+                            if self._error_shot_debug_count < 3:
+                                self._error_shot_debug_count += 1
+                                print(f"[GROUP-DEBUG] Using error_shot_type='{error_shot_type}' for error metric '{current_metric}' (not winning_shot)")
+                        else:
+                            # Fallback to winning_shot path if error_shot_type not available
+                            value = metadata
+                            for key in path:
+                                value = value.get(key, {}) if isinstance(value, dict) else None
+                                if value is None:
+                                    break
+                    else:
+                        # Normal path for non-error metrics
+                        value = metadata
+                        for key in path:
+                            value = value.get(key, {}) if isinstance(value, dict) else None
+                            if value is None:
+                                break
+                else:
+                    # Normal metadata_path extraction
+                    value = metadata
+                    for key in path:
+                        value = value.get(key, {}) if isinstance(value, dict) else None
+                        if value is None:
+                            break
                 if value and isinstance(value, dict):
                     value = None  # Don't return dicts
         
@@ -3623,10 +3656,24 @@ class TennisChatAgentEmbeddingQALocal:
             # Error info
             outcome = last_shot.get('outcome', '')
             if outcome in ['UNFORCED ERROR', 'FORCED ERROR']:
+                # Extract error shot type from description - find the FIRST (leftmost) occurrence
+                # This is more accurate than checking in a fixed order
+                last_description = last_shot.get('description', '').lower()
+                error_shot_type = None
+                earliest_pos = len(last_description)
+                for shot in ['backhand', 'forehand', 'serve']:
+                    pos = last_description.find(shot)
+                    if pos != -1 and pos < earliest_pos:
+                        earliest_pos = pos
+                        error_shot_type = shot
+                # Fallback to shot_type from parsed metadata if description parsing fails
+                if not error_shot_type:
+                    error_shot_type = last_shot.get('shot_type')
+                
                 error_info = {
                     'error_player': last_shot.get('player', ''),
                     'error_type': 'unforced' if 'UNFORCED' in outcome else 'forced',
-                    'error_shot_type': last_shot.get('shot_type')
+                    'error_shot_type': error_shot_type
                 }
         
         # === SERVE INFO ===
@@ -7393,24 +7440,32 @@ Answer:"""
         known_shot_types = inventory.get('shot_types', [])
         if 'by shot type' in query_lower:
             return 'shot_type'
+        
         # Check if multiple shot types are mentioned for comparison
-        # Also check for error-related queries (check in order: unforced error, forced error, error)
+        # Works with OR without inventory - tries inventory first, falls back to direct detection
+        mentioned_types = 0
         if len(known_shot_types) >= 2:
+            # Use inventory if available
             mentioned_types = sum(1 for st in known_shot_types if st and st.lower() in query_lower)
-            # Check for error terms in priority order
-            has_error_context = False
-            if 'unforced error' in query_lower or 'unforced errors' in query_lower:
-                has_error_context = True
-            elif 'forced error' in query_lower or 'forced errors' in query_lower:
-                has_error_context = True
-            elif 'error' in query_lower or 'errors' in query_lower:
-                has_error_context = True
-            
-            # Trigger shot_type grouping if:
-            # 1. Multiple shot types mentioned + comparison words, OR
-            # 2. Multiple shot types mentioned + error context (implies comparison)
-            if mentioned_types >= 2 and (any(word in query_lower for word in comparison_words) or has_error_context):
-                return 'shot_type'
+        else:
+            # Fallback: direct detection of common shot types
+            common_shot_types = ['forehand', 'backhand', 'volley', 'serve', 'overhead', 'slice']
+            mentioned_types = sum(1 for st in common_shot_types if st in query_lower)
+        
+        # Check for error terms in priority order
+        has_error_context = False
+        if 'unforced error' in query_lower or 'unforced errors' in query_lower:
+            has_error_context = True
+        elif 'forced error' in query_lower or 'forced errors' in query_lower:
+            has_error_context = True
+        elif 'error' in query_lower or 'errors' in query_lower:
+            has_error_context = True
+        
+        # Trigger shot_type grouping if:
+        # 1. Multiple shot types mentioned + comparison words, OR
+        # 2. Multiple shot types mentioned + error context (implies comparison)
+        if mentioned_types >= 2 and (any(word in query_lower for word in comparison_words) or has_error_context):
+            return 'shot_type'
         
         # Direction breakdown (uses directions from inventory)
         known_directions = inventory.get('directions', [])
@@ -7539,22 +7594,22 @@ Answer:"""
         print(f"[DETECT-FILTERS] Checking for situations in: '{query_lower[:80]}...'")
         if 'break point' in query_lower or 'breakpoint' in query_lower or 'break points' in query_lower:
             filters['situation'] = 'break_point'
-            print(f"[DETECT-FILTERS] ✓✓✓ FOUND break_point ✓✓✓")
+            print(f"[DETECT-FILTERS] *** FOUND break_point ***")
         elif 'game point' in query_lower or 'game points' in query_lower:
             filters['situation'] = 'game_point'
-            print(f"[DETECT-FILTERS] ✓✓✓ FOUND game_point ✓✓✓")
+            print(f"[DETECT-FILTERS] *** FOUND game_point ***")
         elif 'set point' in query_lower or 'set points' in query_lower:
             filters['situation'] = 'set_point'
-            print(f"[DETECT-FILTERS] ✓✓✓ FOUND set_point ✓✓✓")
+            print(f"[DETECT-FILTERS] *** FOUND set_point ***")
         elif 'match point' in query_lower or 'match points' in query_lower:
             filters['situation'] = 'match_point'
-            print(f"[DETECT-FILTERS] ✓✓✓ FOUND match_point ✓✓✓")
+            print(f"[DETECT-FILTERS] *** FOUND match_point ***")
         elif 'tiebreak' in query_lower or 'tie-break' in query_lower or 'tie break' in query_lower:
             filters['situation'] = 'tiebreak'
-            print(f"[DETECT-FILTERS] ✓✓✓ FOUND tiebreak ✓✓✓")
+            print(f"[DETECT-FILTERS] *** FOUND tiebreak ***")
         elif 'deuce' in query_lower and 'court' not in query_lower:
             filters['situation'] = 'deuce'
-            print(f"[DETECT-FILTERS] ✓✓✓ FOUND deuce ✓✓✓")
+            print(f"[DETECT-FILTERS] *** FOUND deuce ***")
         else:
             print(f"[DETECT-FILTERS] No direct situation match")
         
@@ -7743,8 +7798,11 @@ Answer:"""
             # Check aliases in order (longer phrases first to avoid partial matches)
             sorted_aliases = sorted(serve_target_aliases.items(), key=lambda x: -len(x[0]))
             for alias, canonical in sorted_aliases:
-                # Match phrase in query (case-insensitive)
-                if alias.lower() in query_lower:
+                # Match phrase in query (case-insensitive) using word boundaries
+                # CRITICAL: Use regex to avoid matching 't' in "shot", "to", etc.
+                import re
+                pattern = r'\b' + re.escape(alias.lower()) + r'\b'
+                if re.search(pattern, query_lower):
                     # Normalize using existing system (in case alias matches SHOT_ALIASES)
                     normalized = self._normalize_value(alias) or canonical
                     # Verify normalized value exists in inventory
@@ -7951,7 +8009,7 @@ Answer:"""
         # CRITICAL: Check for "break point" FIRST (situation/points) before "break" (games)
         # Break points are POINTS in a specific situation, breaks are GAMES won on opponent's serve
         if 'break point' in query_lower or 'break points' in query_lower or 'breakpoint' in query_lower or 'bp' in query_lower:
-            print(f"[DETECT-METRICS] ✓✓✓ BREAK POINT query detected - using points_won ✓✓✓")
+            print(f"[DETECT-METRICS] *** BREAK POINT query detected - using points_won ***")
             # This is about break POINTS (situation), not games broken
             # Remove any incorrectly added game metrics
             if 'breaks' in metrics:
@@ -8320,6 +8378,13 @@ Answer:"""
         for dim, val in dimension_order:
             # Skip None and string "null" values
             if val is not None and not (isinstance(val, str) and val.lower() == 'null'):
+                # EXCEPTION: Skip shot_type filter when using shot_count metrics
+                # shot_count needs ALL points to iterate through shots, filtering happens at SHOT level
+                if dim == 'shot_type':
+                    is_shot_level_query = any(m.startswith('shot_count') or m.startswith('shots_count') or m in ['shots', 'shot'] for m in metrics)
+                    if is_shot_level_query:
+                        print(f"[TREE] Skipping shot_type='{val}' filter because shot_count metric filters at shot level, not point level")
+                        continue
                 # EXCEPTION: Skip shot_type='serve' when role='server' is present
                 # (serve effectiveness means ALL service points, not just aces/DFs)
                 if dim == 'shot_type' and isinstance(val, str) and val.lower() == 'serve' and filters.get('role') == 'server':
@@ -8350,7 +8415,16 @@ Answer:"""
         # Primary group (if not already set_groups)
         group_by = classification.get('group_by')
         if is_valid(group_by) and group_by != 'set_groups':
-            group_dimensions.append(group_by)
+            # CRITICAL: Skip shot_type grouping at POINT level when using shot_count metric
+            # shot_count needs ALL points to iterate through shots, grouping happens at SHOT level
+            # Check for both 'shot_count' (transformed) and 'shots' (pre-transform)
+            # Also handle multiple shot_count metrics like ['shot_count', 'shot_count_1']
+            is_shot_level_query = any(m.startswith('shot_count') or m.startswith('shots_count') or m in ['shots', 'shot'] for m in metrics)
+            print(f"[TREE-DEBUG] Checking shot_type skip: metrics={metrics}, is_shot_level_query={is_shot_level_query}, group_by={group_by}")
+            if group_by == 'shot_type' and is_shot_level_query:
+                print(f"[TREE] Skipping shot_type grouping at point level (shot_count metric will group at shot level)")
+            else:
+                group_dimensions.append(group_by)
         
         # Secondary group (2D) - skip if string "null"
         secondary = classification.get('secondary_group_by')
@@ -8734,10 +8808,21 @@ Answer:"""
                 passes_filter = (court_side == value)
             
             elif dimension == 'shot_type':
-                # Use metadata for winning shot type WITH NORMALIZATION
-                winning_shot_type = meta.get('winning_shot', {}).get('shot_type')
+                # GENERIC: For error metrics, use error_shot_type; for others, use winning_shot_type
+                metrics = classification.get('metrics', [])
+                current_metric = metrics[0] if metrics else None
+                error_metrics = ['unforced_errors', 'forced_errors', 'errors']
+                
+                if current_metric in error_metrics:
+                    # Use error_shot_type for error metrics
+                    error_info = meta.get('error_info', {})
+                    shot_type_to_check = error_info.get('error_shot_type')
+                else:
+                    # Use winning_shot_type for non-error metrics
+                    shot_type_to_check = meta.get('winning_shot', {}).get('shot_type')
+                
                 # Use _values_match for alias handling and hierarchy expansion
-                passes_filter = self._values_match(value, winning_shot_type) if value else True
+                passes_filter = self._values_match(value, shot_type_to_check) if value else True
             
             elif dimension == 'direction':
                 # Use metadata for winning shot direction WITH NORMALIZATION
@@ -8782,7 +8867,7 @@ Answer:"""
                 player_filter = (filters.get('player') or '').lower()
                 # GENERIC role handling using ROLE_CONFIG
                 if value in self.ROLE_CONFIG:
-                    role_player = self._get_player_for_role(value, server, returner, meta.get('point_winner', ''), meta.get('error_player', ''))
+                    role_player = self._get_player_for_role(value, server, returner, meta.get('point_winner', ''), point_data.get('error_player', ''))
                     if player_filter and player_filter != 'both':
                         # Player specified with role → filter by that role's player
                         passes_filter = player_filter in role_player.lower() if role_player else True
@@ -8815,7 +8900,7 @@ Answer:"""
                 # ALWAYS filter by the role, NOT by who won the point
                 # This ensures win_percentage is calculated correctly - GENERIC using ROLE_CONFIG
                 elif role_filter:
-                    role_player = self._get_player_for_role(role_filter, server, returner, point_winner, meta.get('error_player', ''))
+                    role_player = self._get_player_for_role(role_filter, server, returner, point_winner, point_data.get('error_player', ''))
                     passes_filter = self._names_match_robust(value, role_player)
                 # For domain-based queries, filter by the domain's associated player - GENERIC
                 elif domain and domain in self.DOMAIN_CONFIG:
@@ -8847,10 +8932,18 @@ Answer:"""
                             'server': server,
                             'returner': returner,
                             'point_winner': point_winner,
-                            'error_player': meta.get('error_player', '')
+                            'error_player': point_data.get('error_player', '')  # CRITICAL: error_player stored in point_data, not meta
                         }
                         target_player = field_to_player.get(player_field, '')
                         passes_filter = self._names_match_robust(value, target_player)
+                        
+                        # DEBUG: Show player matching for first few points
+                        point_num = point_data.get('point_number', '?')
+                        if not hasattr(self, '_player_filter_debug_count'):
+                            self._player_filter_debug_count = 0
+                        if self._player_filter_debug_count < 5:
+                            self._player_filter_debug_count += 1
+                            print(f"[PLAYER-FILTER-DEBUG] Point {point_num} | Filter: '{value}' | player_field: {player_field} | target_player: '{target_player}' | Match: {passes_filter}")
                     else:
                         # player_role='both' or unknown → filter to points player was involved in
                         passes_filter = self._names_match_robust(value, server) or self._names_match_robust(value, returner)
@@ -9148,6 +9241,15 @@ Answer:"""
             # Count actual shots (exclude faults and lets)
             actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
             rally_len = len(actual_shots)
+            
+            # 1b. Compute and store error_player (needed for error metrics filtering)
+            _, _, error_player = self._determine_point_winner(
+                actual_shots, 
+                point.get('server', ''), 
+                point.get('returner', ''),
+                return_details=True
+            )
+            point['error_player'] = error_player or ''
             
             # 2. Extract winner for momentum tracking
             winner = self._extract_winner_from_point(point)
@@ -9702,6 +9804,8 @@ Answer:"""
                 actual_shots, server, returner, return_details=True
             )
             
+            # NOTE: error_player is already stored during _enrich_point_data at load time
+            
             # Count wins (using robust name matching)
             if point_winner:
                 if player1 and self._names_match_robust(player1, point_winner):
@@ -9731,24 +9835,117 @@ Answer:"""
             for metric in metrics:
                 # === SHOT-LEVEL METRICS (count individual shots, not point outcomes) ===
                 # Dynamic shot counting based on metadata - no hard-coded shot types
-                if metric == 'shot_count':
-                    # Get filters to apply (shot_type, direction, etc. from classification)
-                    shot_type_filter = classification.get('filters', {}).get('shot_type')
-                    direction_filter = classification.get('filters', {}).get('direction')
+                # Handle 'shot_count', 'shot_count_1', 'shots_count', etc. (for multiple metrics_parsed)
+                is_shot_count_metric = (metric.startswith('shot_count') or 
+                                       metric.startswith('shots_count') or 
+                                       metric in ['shots', 'shot'])
+                if is_shot_count_metric:
+                    # Get filters - check metric_filters first (from metrics_parsed), then global
+                    metric_filter_data = classification.get('metric_filters', {}).get(metric, {})
+                    per_metric_filters = metric_filter_data.get('filters', {}) if metric_filter_data else {}
+                    global_filters = classification.get('filters', {})
                     
-                    # Count shots from this point that match all applicable filters
+                    # Per-metric filters override global filters
+                    shot_type_filter = per_metric_filters.get('shot_type') or global_filters.get('shot_type')
+                    direction_filter = per_metric_filters.get('direction') or global_filters.get('direction')
+                    metric_player_filter = per_metric_filters.get('player') or player_filter
+                    group_by = classification.get('group_by')
+                    
+                    # When group_by='shot_type', we need to count shots BY TYPE
+                    # This is different from point-level grouping!
+                    if group_by == 'shot_type':
+                        # Initialize per-shot-type counts if not present
+                        if 'shot_counts_by_type' not in results:
+                            results['shot_counts_by_type'] = {}
+                        
+                        # Debug first point only
+                        if not hasattr(self, '_shot_count_debug_done'):
+                            self._shot_count_debug_done = True
+                            print(f"[SHOT-COUNT-DEBUG] metric='{metric}', metric_player_filter='{metric_player_filter}', shot_type_filter='{shot_type_filter}', group_by='{group_by}'")
+                            print(f"[SHOT-COUNT-DEBUG] First point has {len(actual_shots)} shots")
+                            if actual_shots:
+                                print(f"[SHOT-COUNT-DEBUG] Sample shot: {actual_shots[0]}")
+                        
+                        # Also track detailed breakdown by contact_type and intent
+                        if 'shot_breakdown' not in results:
+                            results['shot_breakdown'] = {}
+                        
+                        for shot in actual_shots:
+                            shot_player = shot.get('player', '')
+                            shot_type = (shot.get('shot_type') or '').lower()
+                            shot_direction = shot.get('direction', '')
+                            contact_type = shot.get('contact_type', 'groundstroke')
+                            intent = shot.get('intent', '')
+                            
+                            # Skip if no shot_type
+                            if not shot_type:
+                                continue
+                            
+                            # Apply player filter - only count this player's shots
+                            if metric_player_filter:
+                                match = self._names_match_robust(metric_player_filter, shot_player)
+                                # Debug first few shots
+                                if not hasattr(self, '_shot_player_debug_count'):
+                                    self._shot_player_debug_count = 0
+                                if self._shot_player_debug_count < 5:
+                                    self._shot_player_debug_count += 1
+                                    print(f"[SHOT-PLAYER-DEBUG] filter='{metric_player_filter}' vs shot_player='{shot_player}' -> match={match}")
+                                if not match:
+                                    continue
+                            
+                            # Apply shot_type filter from metric_filters (for metrics_parsed)
+                            if shot_type_filter and shot_type != shot_type_filter.lower():
+                                continue
+                            
+                            # Apply direction filter if present
+                            if direction_filter and shot_direction != direction_filter:
+                                continue
+                            
+                            # Count by shot type (simple total)
+                            if shot_type not in results['shot_counts_by_type']:
+                                results['shot_counts_by_type'][shot_type] = 0
+                            results['shot_counts_by_type'][shot_type] += 1
+                            
+                            # Track detailed breakdown by contact_type + intent (they don't overlap)
+                            if shot_type not in results['shot_breakdown']:
+                                results['shot_breakdown'][shot_type] = {
+                                    'groundstroke': 0,
+                                    'volley': 0,
+                                    'swinging_volley': 0,
+                                    'half_volley': 0,
+                                    'overhead': 0,
+                                    'drop_shot': 0,
+                                    'lob': 0
+                                }
+                            
+                            # Categorize by contact_type and intent
+                            # NOTE: Approach shots are included in groundstrokes (not a separate category)
+                            if intent in ['drop_shot', 'lob']:
+                                results['shot_breakdown'][shot_type][intent] += 1
+                            elif contact_type in ['volley', 'swinging_volley', 'half_volley', 'overhead']:
+                                results['shot_breakdown'][shot_type][contact_type] += 1
+                            else:  # Default to groundstroke (includes approach shots)
+                                results['shot_breakdown'][shot_type]['groundstroke'] += 1
+                        
+                        continue
+                    
+                    # Standard shot_count (no grouping) - count all shots matching filters
+                    # If there's a shot_type filter, populate shot_counts_by_type for formatting
+                    if shot_type_filter and 'shot_counts_by_type' not in results:
+                        results['shot_counts_by_type'] = {}
+                    
                     shot_count = 0
                     for shot in actual_shots:
                         shot_player = shot.get('player', '')
-                        shot_type = shot.get('shot_type', '')
+                        shot_type_val = (shot.get('shot_type') or '').lower()
                         shot_direction = shot.get('direction', '')
                         
-                        # Apply player filter
-                        if player_filter and not self._names_match_robust(player_filter, shot_player):
+                        # Apply player filter (use metric-specific if available)
+                        if metric_player_filter and not self._names_match_robust(metric_player_filter, shot_player):
                             continue
                         
                         # Apply shot type filter dynamically from classification
-                        if shot_type_filter and shot_type != shot_type_filter:
+                        if shot_type_filter and shot_type_val != shot_type_filter.lower():
                             continue
                         
                         # Apply direction filter if present
@@ -9756,6 +9953,12 @@ Answer:"""
                             continue
                         
                         shot_count += 1
+                        
+                        # If filtering by shot_type, track in shot_counts_by_type for formatting
+                        if shot_type_filter:
+                            if shot_type_val not in results['shot_counts_by_type']:
+                                results['shot_counts_by_type'][shot_type_val] = 0
+                            results['shot_counts_by_type'][shot_type_val] += 1
                     
                     results['metrics'][metric]['count'] += shot_count
                     continue
@@ -9824,6 +10027,11 @@ Answer:"""
                 # _serve_total is same as total (unified structure)
                 results['metrics'][metric]['_serve_total'] = player_data['total']
         
+        # DEBUG: Show shot counts if we have them
+        if 'shot_counts_by_type' in results and results['shot_counts_by_type']:
+            total = sum(results['shot_counts_by_type'].values())
+            print(f"[DEBUG] Shot counts by type: {results['shot_counts_by_type']} (total: {total})")
+        
         return results
     
     def _track_per_player_metric(self, metric: str, results: Dict, point_text: str, 
@@ -9859,17 +10067,26 @@ Answer:"""
         # Tree traversal filters with global filters, but metric-specific filters need per-metric checks
         # This ensures each metric only counts points matching ITS specific filters
         
-        # DEBUG: Track point for detailed filter checking
+        # DEBUG: Track point for detailed filter checking (limit to first 3 points)
         point_num = point_data_for_metric.get('point_number', '?')
         debug_prefix = f"[METRIC-FILTER] Point {point_num} | Metric: {metric}"
+        
+        # Track debug output count per metric to limit spam
+        debug_key = f"_metric_filter_debug_{metric}"
+        if not hasattr(self, debug_key):
+            setattr(self, debug_key, 0)
+        debug_count = getattr(self, debug_key)
+        should_debug = debug_count < 3
         
         # serve_number filter
         serve_number_filter = filters.get('serve_number')
         if serve_number_filter is not None:
             if serve_number != serve_number_filter:
-                print(f"{debug_prefix} | FILTERED: serve_number={serve_number} != filter={serve_number_filter}")
+                if should_debug:
+                    print(f"{debug_prefix} | FILTERED: serve_number={serve_number} != filter={serve_number_filter}")
                 return
-            print(f"{debug_prefix} | ✓ serve_number={serve_number} matches filter={serve_number_filter}")
+            if should_debug:
+                print(f"{debug_prefix} | ✓ serve_number={serve_number} matches filter={serve_number_filter}")
         
         # situation filter
         situation_filter = filters.get('situation')
@@ -9878,9 +10095,11 @@ Answer:"""
             situation_key = f"is_{situation_filter}"
             situation_match = point_situation.get(situation_key, False) or point_data_for_metric.get(situation_key, False)
             if not situation_match:
-                print(f"{debug_prefix} | FILTERED: situation={situation_filter} not found (key={situation_key})")
+                if should_debug:
+                    print(f"{debug_prefix} | FILTERED: situation={situation_filter} not found (key={situation_key})")
                 return
-            print(f"{debug_prefix} | ✓ situation={situation_filter} matches")
+            if should_debug:
+                print(f"{debug_prefix} | ✓ situation={situation_filter} matches")
         
         # Generic shot-based filter check (for shot_type, direction, court_zone, depth)
         # These filters check if any shot in the rally matches the filter value
@@ -9896,18 +10115,23 @@ Answer:"""
                         shot_matches = any(safe_lower(shot.get(filter_key)) == filter_str for shot in actual_shots)
                         if not shot_matches:
                             shot_types_found = [safe_lower(s.get(filter_key) or '') for s in actual_shots if s.get(filter_key) is not None]
-                            print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} not found (winning={safe_lower(winning_shot_type)}, shots={shot_types_found})")
+                            if should_debug:
+                                print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} not found (winning={safe_lower(winning_shot_type)}, shots={shot_types_found})")
                             return
-                        print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches in rally shots (not winning shot)")
+                        if should_debug:
+                            print(f"{debug_prefix} | MATCH {filter_key}={filter_str} matches in rally shots (not winning shot)")
                     else:
-                        print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches winning_shot_type={safe_lower(winning_shot_type)}")
+                        if should_debug:
+                            print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches winning_shot_type={safe_lower(winning_shot_type)}")
                 else:
                     shot_matches = any(safe_lower(shot.get(filter_key) or '') == filter_str for shot in actual_shots)
                     if not shot_matches:
                         values_found = [safe_lower(s.get(filter_key) or '') for s in actual_shots if s.get(filter_key) is not None]
-                        print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} not found in shots (found={values_found})")
+                        if should_debug:
+                            print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} not found in shots (found={values_found})")
                         return
-                    print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches in rally shots")
+                    if should_debug:
+                        print(f"{debug_prefix} | MATCH {filter_key}={filter_str} matches in rally shots")
         
         # Generic point-level string filter check (for court_side, serve_target)
         point_string_filters = ['court_side', 'serve_target']
@@ -9917,22 +10141,28 @@ Answer:"""
                 filter_str = safe_lower(filter_val)
                 point_val = safe_lower(point_data_for_metric.get(filter_key))
                 if point_val != filter_str:
-                    print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} != point_value={point_val}")
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} != point_value={point_val}")
                     return
-                print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches point_value={point_val}")
+                if should_debug:
+                    print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches point_value={point_val}")
         
         # set filter (exact match, not string comparison)
         set_filter = filters.get('set')
         if set_filter is not None:
             point_set = point_data_for_metric.get('set')
             if point_set != set_filter:
-                print(f"{debug_prefix} | FILTERED: set={set_filter} != point_set={point_set}")
+                if should_debug:
+                    print(f"{debug_prefix} | FILTERED: set={set_filter} != point_set={point_set}")
                 return
-            print(f"{debug_prefix} | ✓ set={set_filter} matches point_set={point_set}")
+            if should_debug:
+                print(f"{debug_prefix} | ✓ set={set_filter} matches point_set={point_set}")
         
-        # DEBUG: Point passed all filters
+        # DEBUG: Point passed all filters (only show first 3)
         active_filters = {k: v for k, v in filters.items() if v is not None}
-        print(f"{debug_prefix} | ✓✓✓ PASSED ALL FILTERS: {active_filters} | Will count for metric")
+        if should_debug:
+            print(f"{debug_prefix} | *** PASSED ALL FILTERS: {active_filters} | Will count for metric")
+            setattr(self, debug_key, debug_count + 1)
         
         # role filter is handled via player_role override below
         
@@ -9942,6 +10172,7 @@ Answer:"""
         total_filter = config['total_filter']
         count_filter = config['count_filter']
         keywords = config.get('keywords', [])
+        exclude_keywords = config.get('exclude_keywords', [])
         
         # Override player_role if role_filter is set (e.g., "as server") - GENERIC
         if role_filter and role_filter in self.ROLE_CONFIG:
@@ -9951,7 +10182,11 @@ Answer:"""
         def keywords_match():
             if not keywords:
                 return True
-            return any(kw in point_lower for kw in keywords)
+            # Check that at least one keyword matches
+            has_keyword = any(kw in point_lower for kw in keywords)
+            # Check that NO exclude keywords match
+            has_exclude = any(ex in point_lower for ex in exclude_keywords) if exclude_keywords else False
+            return has_keyword and not has_exclude
         
         # Helper: check total filter condition
         def passes_total_filter():
@@ -10158,6 +10393,20 @@ Answer:"""
         "On break points (1), serving to T (2), on Ad court (3), 
          in sets he won (4), compare 1st vs 2nd serve (5) win %"
         """
+        # Reset debug counters for this query (fresh start)
+        metrics = classification.get('metrics', [])
+        for metric in metrics:
+            debug_key = f"_metric_filter_debug_{metric}"
+            setattr(self, debug_key, 0)
+        
+        # Reset shot count debug flag
+        if hasattr(self, '_shot_count_debug_done'):
+            delattr(self, '_shot_count_debug_done')
+        
+        # Reset error shot type debug count
+        if hasattr(self, '_error_shot_debug_count'):
+            delattr(self, '_error_shot_debug_count')
+        
         # Build the query tree
         tree = self._build_query_tree(classification)
         
@@ -11343,7 +11592,9 @@ Answer:"""
             has_per_player = bool(first_results.get('per_player_metrics'))
             
             # Dynamic per-player table for any metric (when NOT grouping by player)
-            if has_per_player and metrics:
+            # IMPORTANT: Only use per-player table when NO player filter (showing both players)
+            # When filtered to single player, use simple format showing just that player's counts
+            if has_per_player and metrics and not player_filter:
                 primary_metric = metrics[0]
                 metric_label = primary_metric.replace('_', ' ').title()
                 
@@ -11412,6 +11663,46 @@ Answer:"""
         
         elif 'total_points' in results:
             # Leaf node directly
+            
+            # === SHOT-LEVEL RESULTS (when counting individual shots grouped by type) ===
+            if 'shot_counts_by_type' in results and results['shot_counts_by_type']:
+                shot_counts = results['shot_counts_by_type']
+                total_shots = sum(shot_counts.values())
+                
+                response += f"\n**Shot Counts by Type:**\n"
+                response += f"| Shot Type | Count | Percentage |\n"
+                response += "|---|---|---|\n"
+                
+                # Sort by count descending
+                for shot_type, count in sorted(shot_counts.items(), key=lambda x: -x[1]):
+                    pct = round(100 * count / total_shots, 1) if total_shots > 0 else 0
+                    response += f"| **{shot_type.title()}** | {count} | {pct}% |\n"
+                
+                response += f"\n**Total Shots: {total_shots}**\n"
+                
+                # Calculate ratio if forehand and backhand both present
+                if 'forehand' in shot_counts and 'backhand' in shot_counts:
+                    fh = shot_counts['forehand']
+                    bh = shot_counts['backhand']
+                    if bh > 0:
+                        ratio = round(fh / bh, 2)
+                        response += f"**Forehand to Backhand Ratio: {ratio} : 1**\n"
+                
+                # Display detailed breakdown by contact_type + intent
+                if 'shot_breakdown' in results and results['shot_breakdown']:
+                    response += f"\n**Detailed Breakdown by Shot Subtype:**\n"
+                    for shot_type, breakdown in results['shot_breakdown'].items():
+                        response += f"\n**{shot_type.title()} Breakdown:**\n"
+                        response += f"| Subtype | Count |\n"
+                        response += "|---|---|\n"
+                        
+                        # Sort by count descending
+                        for subtype, count in sorted(breakdown.items(), key=lambda x: -x[1]):
+                            if count > 0:  # Only show non-zero counts
+                                response += f"| {subtype.replace('_', ' ').title()} | {count} |\n"
+                
+                return response
+            
             response += f"\n**Results:**\n"
             response += f"- Total Points: {results['total_points']}\n"
             response += f"- {player1}: {results.get('player1_wins', 0)} ({results.get('player1_pct', 0)}%)\n"
@@ -11429,33 +11720,88 @@ Answer:"""
             pct_metrics = {'first_serve_pct', 'first_serve_win_pct', 'second_serve_pct', 'second_serve_win_pct',
                           'win_percentage', 'points_won'}
             
-            for m, m_data in metrics_results.items():
-                count = m_data.get('count', 0)
-                total = m_data.get('total', 0) or m_data.get('_serve_total', 0)  # Unified: use total
+            # SHOT-LEVEL PERCENTAGE: Detect cross-metric percentage (e.g., winners / shot_count)
+            # When we have TWO metrics and one is shot_count, calculate percentage across metrics
+            metrics_list = list(metrics_results.keys())
+            shot_count_metrics = [m for m in metrics_list if m.startswith('shot_count') or m.startswith('shots_count') or m in ['shots', 'shot']]
+            non_shot_metrics = [m for m in metrics_list if m not in shot_count_metrics]
+            
+            is_shot_percentage = (len(metrics_list) == 2 and 
+                                 len(shot_count_metrics) == 1 and 
+                                 len(non_shot_metrics) == 1)
+            
+            print(f"[FORMAT-DEBUG] metrics_list={metrics_list}, shot_count_metrics={shot_count_metrics}, non_shot_metrics={non_shot_metrics}, is_shot_percentage={is_shot_percentage}")
+            
+            if is_shot_percentage:
+                # CROSS-METRIC PERCENTAGE: Calculate percentage of first metric relative to shot_count
+                numerator_metric = non_shot_metrics[0]
+                denominator_metric = shot_count_metrics[0]
                 
-                if m in game_metrics and m in per_player:
-                    # Format game-level metrics with per-player breakdown
-                    p1_data = per_player.get(m, {}).get('player1', {})
-                    p2_data = per_player.get(m, {}).get('player2', {})
-                    response += f"\n**{m.replace('_', ' ').title()}:**\n"
-                    response += f"  - {player1}: {p1_data.get('count', 0)}\n"
-                    response += f"  - {player2}: {p2_data.get('count', 0)}\n"
-                elif m in pct_metrics or total > 0:
-                    # UNIFIED: All metrics with a total get percentage display
-                    if total > 0:
-                        pct = round(100 * count / total, 1)
-                        response += f"- {m.replace('_', ' ').title()}: {pct}% ({count} of {total})\n"
-                    else:
-                        response += f"- {m.replace('_', ' ').title()}: 0% (no data)\n"
+                # Try both 'count' and 'total' for shot_count (it might be stored as total)
+                numerator_count = metrics_results.get(numerator_metric, {}).get('count', 0)
+                denominator_data = metrics_results.get(denominator_metric, {})
+                denominator_count = denominator_data.get('count', 0) or denominator_data.get('total', 0)
+                
+                # If shot_count is not in metrics_results (due to player filter), check per_player_metrics
+                # shot_count might be stored per-player or as a total
+                if denominator_count == 0 and per_player and denominator_metric in per_player:
+                    # Try to get total from per_player_metrics (sum of both players)
+                    p1_data = per_player.get(denominator_metric, {}).get('player1', {})
+                    p2_data = per_player.get(denominator_metric, {}).get('player2', {})
+                    p1_total = p1_data.get('count', 0) or p1_data.get('total', 0)
+                    p2_total = p2_data.get('count', 0) or p2_data.get('total', 0)
+                    denominator_count = p1_total + p2_total
+                    print(f"[FORMAT-DEBUG] Got shot_count from per_player_metrics: p1={p1_total}, p2={p2_total}, total={denominator_count}")
+                
+                # If still 0, shot_count might be stored directly in results (not in metrics dict)
+                # Check if there's a 'shot_count' or 'total_shots' field in results
+                if denominator_count == 0:
+                    # shot_count might be computed but not stored in metrics - check debug output from traversal
+                    # For now, try to compute from matching_points if available
+                    # But actually, we should trust the metric count - if it's 0, there might be a bug
+                    print(f"[FORMAT-DEBUG] WARNING: shot_count is 0 in metrics_results and per_player_metrics")
+                
+                print(f"[FORMAT-DEBUG] Inside is_shot_percentage block: numerator={numerator_metric} ({numerator_count}), denominator={denominator_metric} (count={denominator_data.get('count', 0)}, total={denominator_data.get('total', 0)}, final={denominator_count})")
+                
+                if denominator_count > 0:
+                    pct = round(100 * numerator_count / denominator_count, 1)
+                    response += f"- {numerator_metric.replace('_', ' ').title()}: {pct}% ({numerator_count} of {denominator_count} shots)\n"
+                    print(f"[FORMAT] Shot-level percentage: {numerator_metric} = {numerator_count}/{denominator_count} shots = {pct}%")
                 else:
-                    response += f"- {m.replace('_', ' ').title()}: {count}"
+                    print(f"[FORMAT-DEBUG] denominator_count is 0 or None, using fallback message")
+                    response += f"- {numerator_metric.replace('_', ' ').title()}: 0% (no shots)\n"
+                
+                # Skip iterating over individual metrics since we handled the calculation
+                print(f"[FORMAT-DEBUG] Skipping standard metric iteration, response so far: {response[:200]}")
+            else:
+                # STANDARD METRIC ITERATION: Process each metric independently
+                for m, m_data in metrics_results.items():
+                    count = m_data.get('count', 0)
+                    total = m_data.get('total', 0) or m_data.get('_serve_total', 0)  # Unified: use total
                     
-                    # Calculate percentage of shots if we have total_shots
-                    if total_shots > 0 and m != 'total_shots':
-                        pct = round(100 * count / total_shots, 1)
-                        response += f" ({pct}% of total shots)"
-                    
-                    response += "\n"
+                    if m in game_metrics and m in per_player:
+                        # Format game-level metrics with per-player breakdown
+                        p1_data = per_player.get(m, {}).get('player1', {})
+                        p2_data = per_player.get(m, {}).get('player2', {})
+                        response += f"\n**{m.replace('_', ' ').title()}:**\n"
+                        response += f"  - {player1}: {p1_data.get('count', 0)}\n"
+                        response += f"  - {player2}: {p2_data.get('count', 0)}\n"
+                    elif m in pct_metrics or total > 0:
+                        # UNIFIED: All metrics with a total get percentage display
+                        if total > 0:
+                            pct = round(100 * count / total, 1)
+                            response += f"- {m.replace('_', ' ').title()}: {pct}% ({count} of {total})\n"
+                        else:
+                            response += f"- {m.replace('_', ' ').title()}: 0% (no data)\n"
+                    else:
+                        response += f"- {m.replace('_', ' ').title()}: {count}"
+                        
+                        # Calculate percentage of shots if we have total_shots
+                        if total_shots > 0 and m != 'total_shots':
+                            pct = round(100 * count / total_shots, 1)
+                            response += f" ({pct}% of total shots)"
+                        
+                        response += "\n"
         
         return response
     
@@ -11627,12 +11973,15 @@ Answer:"""
                 # Set error_player for error outcomes
                 if player_attribution == 'error':
                     error_player = last_player
-                    # Detect shot type of the error from description
+                    # Detect shot type of the error from description - find FIRST (leftmost) occurrence
+                    # GENERIC: Check which shot type appears first in the description
                     shot_type_detected = None
+                    earliest_pos = len(last_description)
                     for shot in ['backhand', 'forehand', 'serve']:
-                        if shot in last_description:
+                        pos = last_description.find(shot)
+                        if pos != -1 and pos < earliest_pos:
+                            earliest_pos = pos
                             shot_type_detected = shot
-                            break
                     if shot_type_detected:
                         error_shot_type = shot_type_detected
             
@@ -16722,14 +17071,21 @@ CRITICAL RULES:
 
 2. **NET POINTS**: When query asks about "net points", set location: "net" and metric: "net_points_won". Do NOT set shot_type: "volley"!
 3. When comparing "sets he won vs sets he lost", ALWAYS populate BOTH set_a AND set_b
-4. **COMPARISON DETECTION**: If query contains "compared to", "vs", "versus", or lists multiple values for any dimension, that dimension goes ONLY in group_by, NOT in filters. Leave the filter as null.
+4. **COMPARISON DETECTION**: If query contains "compared to", "vs", "versus", "on X vs Y", "X vs Y", comparing ONE dimension's values:
+   - Use group_by (NOT metrics_parsed)
+   - That dimension goes ONLY in group_by, NOT in filters
+   - Leave the filter as null
+   - Examples:
    - "Ad Court compared to Deuce Court" → {{"group_by": "court_side", "court_side": null}}
    - "T vs Wide vs Body" → {{"group_by": "serve_direction", "serve_target": null}}
-   - "Forehand vs Backhand" → {{"group_by": "shot_type", "shot_type": null}}
+   - "Forehand vs Backhand winners" → {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+   - "Sinner's forehand vs backhand errors" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+   - "Errors on forehand vs backhand" → {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
    - "Crosscourt vs Down the Line" → {{"group_by": "shot_direction", "direction": null}}
    - "1st serve vs 2nd serve" → {{"group_by": "serve_number", "serve_number": null}}
    - "Shallow vs Deep returns" → {{"group_by": "return_depth", "depth": null}}
    - "Short vs Long rallies" → {{"group_by": "rally_length_category"}}
+   - DO NOT use metrics_parsed for these - use group_by!
 5. For ratio questions (winners to errors), set analysis_type: "ratio"
 6. For trend questions (across sets), set analysis_type: "trend"
 7. For 2D analysis (direction ratio in sets won vs lost), use BOTH group_by AND secondary_group_by
@@ -16757,6 +17113,11 @@ GROUPING/COMPARISON (CRITICAL - dimension being compared goes in group_by, NOT f
 - "T vs Wide serves" → {{"group_by": "serve_direction", "serve_target": null}}
 - "T vs Wide vs Body" → {{"group_by": "serve_direction", "serve_target": null}}
 - "Forehand vs Backhand winners" → {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "Sinner's forehand vs backhand winners" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "How many forehand winners did Sinner hit compared to backhand winners?" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "How many unforced errors did Sinner make on forehand vs backhand?" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "unforced_errors"}}
+- "Forehand errors vs backhand errors" → {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+- "Forced errors on forehand vs backhand" → {{"group_by": "shot_type", "shot_type": null, "metric": "forced_errors"}}
 - "Crosscourt vs Down the Line" → {{"group_by": "shot_direction", "direction": null}}
 - "1st serve vs 2nd serve win %" → {{"group_by": "serve_number", "serve_number": null, "metric": "win_percentage"}}
 - "Shallow vs Deep vs Very Deep returns" → {{"group_by": "return_depth", "depth": null}}
@@ -16777,6 +17138,11 @@ SITUATION COMPARISON:
 - "Break points vs non-break points" → {{"group_by": "situation", "situation_comparison": {{"situation_a": "break_point", "situation_b": "non_break_point"}}}}
 
 MULTI-METRIC QUERIES (N metrics in one question - GENERIC FOR ALL METRIC TYPES):
+**CRITICAL DISTINCTION:**
+- Use "metrics_parsed" for DIFFERENT metrics or UNRELATED filters (e.g., "aces AND double faults")
+- Use "group_by" for SAME metric with different values of ONE dimension (e.g., "forehand VS backhand winners")
+- Keywords: "vs"/"compared to"/"versus" → group_by | "and"/"plus"/"also" → metrics_parsed
+
 - "First serve % and first serve win %" → {{
     "metrics_parsed": [
       {{"metric": "first_serve_pct", "filters": {{"role": "server"}}, "context": "serve"}},
@@ -16806,46 +17172,16 @@ MULTI-METRIC QUERIES (N metrics in one question - GENERIC FOR ALL METRIC TYPES):
       {{"metric": "winners", "filters": {{"court_zone": "baseline"}}, "context": "rally"}}
     ]
   }}
-- "Forehand winners and backhand winners" → {{
+- "Set 1 aces plus Set 3 aces" → {{
     "metrics_parsed": [
-      {{"metric": "winners", "filters": {{"shot_type": "forehand"}}, "context": "rally"}},
-      {{"metric": "winners", "filters": {{"shot_type": "backhand"}}, "context": "rally"}}
-    ]
-  }}
-- "Crosscourt winners and down the line winners" → {{
-    "metrics_parsed": [
-      {{"metric": "winners", "filters": {{"direction": "crosscourt"}}, "context": "rally"}},
-      {{"metric": "winners", "filters": {{"direction": "down_the_line"}}, "context": "rally"}}
-    ]
-  }}
-- "Ad court winners and deuce court winners" → {{
-    "metrics_parsed": [
-      {{"metric": "winners", "filters": {{"court_side": "ad"}}, "context": "rally"}},
-      {{"metric": "winners", "filters": {{"court_side": "deuce"}}, "context": "rally"}}
-    ]
-  }}
-- "Set 1 winners and Set 3 winners" → {{
-    "metrics_parsed": [
-      {{"metric": "winners", "filters": {{"set": 1}}, "context": "rally"}},
-      {{"metric": "winners", "filters": {{"set": 3}}, "context": "rally"}}
+      {{"metric": "aces", "filters": {{"set": 1}}, "context": "serve"}},
+      {{"metric": "aces", "filters": {{"set": 3}}, "context": "serve"}}
     ]
   }}
 - "Game point winners and break point winners" → {{
     "metrics_parsed": [
       {{"metric": "winners", "filters": {{"situation": "game_point"}}, "context": "situation"}},
       {{"metric": "winners", "filters": {{"situation": "break_point"}}, "context": "situation"}}
-    ]
-  }}
-- "Shallow return winners and deep return winners" → {{
-    "metrics_parsed": [
-      {{"metric": "winners", "filters": {{"role": "returner", "depth": "shallow"}}, "context": "return"}},
-      {{"metric": "winners", "filters": {{"role": "returner", "depth": "deep"}}, "context": "return"}}
-    ]
-  }}
-- "T serve winners and wide serve winners" → {{
-    "metrics_parsed": [
-      {{"metric": "winners", "filters": {{"role": "server", "serve_target": "t"}}, "context": "serve"}},
-      {{"metric": "winners", "filters": {{"role": "server", "serve_target": "wide"}}, "context": "serve"}}
     ]
   }}
 - GENERIC: Each metric has its OWN complete filter set - works for ANY filter type (serve_number, situation, shot_type, direction, court_zone, court_side, set, depth, serve_target, role, etc.)
@@ -17120,27 +17456,15 @@ Return ONLY the JSON:"""
                 if not metric_name:
                     continue
                 
-                # Generate unique key if same metric appears multiple times with different filters
-                # e.g., win_percentage for server vs win_percentage for returner
-                metric_key = metric_name
-                if metric_key in classification['metric_filters']:
-                    metric_key = f"{metric_name}_{i}"
-                
-                classification['metrics'].append(metric_key)
-                
-                # Store COMPLETE filter set for this metric (LLM decides everything)
-                metric_filters = mp.get('filters', {})
-                
-                # CRITICAL: Type coercion for serve_number (LLM might return string)
-                if 'serve_number' in metric_filters and metric_filters['serve_number'] is not None:
-                    try:
-                        metric_filters['serve_number'] = int(metric_filters['serve_number'])
-                    except (ValueError, TypeError):
-                        pass
-                
-                # CRITICAL: Map invalid metric names to correct base metrics
+                # CRITICAL: Map invalid metric names to correct base metrics FIRST
                 # LLM might return "ace_percentage" instead of "aces", etc.
+                # ALSO map "shots" → "shot_count" (shots = individual shots in rallies, not points)
                 metric_name_map = {
+                    'shots': 'shot_count',  # CRITICAL: "shots" means count individual shots, not points
+                    'shots_hit': 'shot_count',  # LLM sometimes returns this variant
+                    'shots_count': 'shot_count',  # LLM sometimes returns this variant (with 's')
+                    'total_shots': 'shot_count',  # LLM sometimes returns this variant
+                    'shot': 'shot_count',  # Singular form
                     'ace_percentage': 'aces',
                     'ace_pct': 'aces',
                     'winner_percentage': 'winners',
@@ -17153,9 +17477,49 @@ Return ONLY the JSON:"""
                     'service_game_percentage': 'service_games_held',
                     'service_game_win_percentage': 'service_games_held',
                 }
-                if metric_name in metric_name_map:
-                    print(f"[LLM-PARSE] WARNING: Mapping '{metric_name}' -> '{metric_name_map[metric_name]}' (use base metric names)")
+                # CRITICAL: "count" with context="rally" means count individual shots
+                # Also: "count" with shot_type filter means count individual shots (even if context is missing)
+                context = mp.get('context', '')
+                metric_filters_check = mp.get('filters', {})
+                if metric_name == 'count':
+                    if context == 'rally':
+                        print(f"[LLM-PARSE] Mapping 'count' with context='rally' -> 'shot_count' (count individual shots)")
+                        metric_name = 'shot_count'
+                    elif 'shot_type' in metric_filters_check:
+                        # Fallback: if counting by shot_type, it's clearly a shot-level query
+                        print(f"[LLM-PARSE] Mapping 'count' with shot_type filter -> 'shot_count' (count individual shots by type)")
+                        metric_name = 'shot_count'
+                elif metric_name in metric_name_map:
+                    print(f"[LLM-PARSE] Mapping '{metric_name}' -> '{metric_name_map[metric_name]}' (use base metric names)")
                     metric_name = metric_name_map[metric_name]
+                
+                # Generate unique key if same metric appears multiple times with different filters
+                # e.g., win_percentage for server vs win_percentage for returner
+                metric_key = metric_name
+                if metric_key in classification['metric_filters']:
+                    metric_key = f"{metric_name}_{i}"
+                
+                classification['metrics'].append(metric_key)
+                
+                # Store COMPLETE filter set for this metric (LLM decides everything)
+                metric_filters = mp.get('filters', {})
+                
+                # CRITICAL: Merge top-level filters into metric-specific filters
+                # LLM sometimes puts player/role/set at top level but not in metric filters
+                # Merge global filters if not already present in metric-specific filters
+                top_level_filters = ['player', 'role', 'set', 'situation']
+                for filter_key in top_level_filters:
+                    top_value = llm_parse.get(filter_key)
+                    if top_value and filter_key not in metric_filters:
+                        metric_filters[filter_key] = top_value
+                        print(f"[LLM-PARSE] Merging top-level '{filter_key}={top_value}' into metric filters")
+                
+                # CRITICAL: Type coercion for serve_number (LLM might return string)
+                if 'serve_number' in metric_filters and metric_filters['serve_number'] is not None:
+                    try:
+                        metric_filters['serve_number'] = int(metric_filters['serve_number'])
+                    except (ValueError, TypeError):
+                        pass
                 
                 # CRITICAL: first_serve_pct should NOT have serve_number filter
                 # It needs ALL serve attempts (1st and 2nd) to calculate percentage
@@ -17173,6 +17537,25 @@ Return ONLY the JSON:"""
                 filter_str = ', '.join(f"{k}={v}" for k, v in metric_filters.items() if v is not None)
                 print(f"[LLM-PARSE] Metric '{metric_key}' with filters: {{{filter_str}}}")
             
+            # CRITICAL: If metrics_parsed has different shot_type filters, remove global shot_type filter
+            # Global filter would conflict with per-metric filters (e.g., one metric for forehand, one for backhand)
+            shot_types_in_metrics = set()
+            for mp in metrics_parsed:
+                metric_filters = mp.get('filters', {})
+                if 'shot_type' in metric_filters:
+                    shot_types_in_metrics.add(metric_filters['shot_type'])
+            
+            if len(shot_types_in_metrics) > 1:
+                # Multiple different shot_type filters - remove global filter
+                if 'shot_type' in filters:
+                    removed_shot_type = filters.pop('shot_type')
+                    print(f"[LLM-PARSE] Removed global shot_type='{removed_shot_type}' filter (metrics_parsed has multiple shot_type filters: {shot_types_in_metrics})")
+                if 'shot_base' in filters:
+                    removed_shot_base = filters.pop('shot_base')
+                    print(f"[LLM-PARSE] Removed global shot_base='{removed_shot_base}' filter (metrics_parsed has multiple shot_type filters)")
+                # Update classification filters after removal
+                classification['filters'] = filters
+            
             # Check if metrics are related (same context) for narrative synthesis
             contexts = set(mp.get('context') for mp in metrics_parsed if mp.get('context'))
             if len(contexts) == 1 and len(metrics_parsed) > 1:
@@ -17180,18 +17563,103 @@ Return ONLY the JSON:"""
                 classification['metric_context_type'] = list(contexts)[0]
                 print(f"[LLM-PARSE] Related metrics detected (context: {list(contexts)[0]}) - will synthesize in narrative")
         else:
-            # LEGACY: Use single metric + secondary_metric (backward compatibility)
-            if llm_parse.get('metric'):
-                print(f"[LLM-PARSE] Using LLM metric: {llm_parse['metric']}")
-                classification['metrics'] = [llm_parse['metric']]
-            
-            # Secondary metric (legacy - no special handling, just add it)
-            if llm_parse.get('secondary_metric'):
-                secondary = llm_parse['secondary_metric']
-                classification['secondary_metric'] = secondary
-                if secondary not in classification.get('metrics', []):
-                    classification.setdefault('metrics', []).append(secondary)
+            # UNIFIED: Convert single metric to metrics_parsed format for consistent processing
+            # This eliminates duplication and ensures all metrics go through the same logic
+            if llm_parse.get('metric') or llm_parse.get('secondary_metric'):
+                print(f"[LLM-PARSE] Converting single metric to metrics_parsed format for unified processing")
+                metrics_to_add = []
+                
+                # Primary metric
+                if llm_parse.get('metric'):
+                    llm_metric = llm_parse['metric']
+                    print(f"[LLM-PARSE-DEBUG] Raw metric from LLM: '{llm_metric}' (type: {type(llm_metric).__name__}, repr: {repr(llm_metric)})")
+                    
+                    # CRITICAL: If metric='count' AND group_by='shot_type', it means count individual shots
+                    if llm_metric == 'count' and llm_parse.get('group_by') == 'shot_type':
+                        print(f"[LLM-PARSE] Detected 'count' with group_by='shot_type' -> treating as shot_count (count individual shots)")
+                        llm_metric = 'shot_count'
+                    
+                    metrics_to_add.append({
+                        'metric': llm_metric,
+                        'filters': {},
+                        'context': llm_parse.get('context')
+                    })
+                
+                # Secondary metric (if any)
+                if llm_parse.get('secondary_metric'):
+                    secondary = llm_parse['secondary_metric']
+                    metrics_to_add.append({
+                        'metric': secondary,
+                        'filters': {},
+                        'context': llm_parse.get('context')
+                    })
                     print(f"[LLM-PARSE] Added secondary metric: {secondary}")
+                
+                # Convert to metrics_parsed and reprocess through unified path
+                llm_parse['metrics_parsed'] = metrics_to_add
+                # Recursive call to process through unified metrics_parsed path
+                # This ensures all mappings happen in one place
+                return self._apply_llm_parse_to_classification(classification, llm_parse, original_question)
+        
+        # === GENERIC: Transform metrics based on action verbs (create/cause/induce) ===
+        # When asking "how many errors did X create/cause/induce", we want the INDUCED version
+        # The player mentioned CAUSED the error (opponent made it), not made the error themselves
+        if original_question:
+            q_lower = original_question.lower()
+            # Note: 'force/forced/forcing' removed - too ambiguous with 'forced error'
+            action_verbs = ['create', 'created', 'creating', 'cause', 'caused', 'causing',  
+                           'induce', 'induced', 'inducing', 'generate', 'generated', 
+                           'draw', 'drew', 'drawing', 'elicit', 'elicited']
+            matched_verbs = [v for v in action_verbs if v in q_lower]
+            has_action_verb = len(matched_verbs) > 0
+            
+            if has_action_verb:
+                # GENERIC: Map error metrics to their induced counterparts
+                # The pattern: X_errors → induced_X_errors (player caused opponent's error)
+                metric_transforms = {
+                    'forced_errors': 'induced_forced_errors',
+                    # Add more transforms as needed (e.g., if we track 'induced_unforced_errors' someday)
+                }
+                
+                current_metrics = classification.get('metrics', [])
+                transformed = False
+                for i, metric in enumerate(current_metrics):
+                    if metric in metric_transforms:
+                        new_metric = metric_transforms[metric]
+                        current_metrics[i] = new_metric
+                        transformed = True
+                        print(f"[LLM-PARSE] Action verb detected {matched_verbs} - Transforming metric '{metric}' to '{new_metric}'")
+                
+                # Also transform in metric_filters if using metrics_parsed
+                if 'metric_filters' in classification and transformed:
+                    for key, mf in classification['metric_filters'].items():
+                        old_metric = mf.get('metric')
+                        if old_metric in metric_transforms:
+                            new_metric = metric_transforms[old_metric]
+                            mf['metric'] = new_metric
+                            print(f"[LLM-PARSE] Also transformed metric_filter '{key}': '{old_metric}' to '{new_metric}'")
+        
+        # === GENERIC: Add shot_count for shot-level queries ===
+        # When asking about individual shots (not points), need shot_count as denominator
+        # Matches the same patterns as rule-based detection in _detect_metrics
+        if original_question:
+            q_lower = original_question.lower()
+            
+            # Check for shot-level query patterns (consistent with _detect_metrics line 7849)
+            shot_level_patterns = ['how many shot', 'total shot', 'shot count', 
+                                  'number of shot', 'percentage of shot', 
+                                  'percent of shot', '% of shot']
+            is_shot_query = any(phrase in q_lower for phrase in shot_level_patterns)
+            
+            # Also check for "percentage...shots" pattern (with words in between)
+            is_shot_percentage = (('percentage' in q_lower or 'percent' in q_lower or '%' in q_lower) and 
+                                 ('shots' in q_lower or 'shot' in q_lower))
+            
+            if is_shot_query or is_shot_percentage:
+                current_metrics = classification.get('metrics', [])
+                if 'shot_count' not in current_metrics:
+                    current_metrics.append('shot_count')
+                    print(f"[LLM-PARSE] Detected shot-level query -> Adding 'shot_count' for denominator")
         
         # Update query category
         if llm_parse.get('query_type'):
@@ -17235,14 +17703,21 @@ Return ONLY the JSON:"""
             print(f"[LLM-PARSE] Question contains 'returnable' -> Overriding to narrative route")
             classification['query_category'] = 'narrative'
         
-        # CRITICAL: Questions asking about "shots" (not winners) must go to narrative
-        # "shots" requires shot-by-shot rally analysis, not point outcome counting
+        # CRITICAL: Questions asking about "shots" descriptively must go to narrative
+        # But quantitative shot queries (ratio, count, percentage) should be analytical
         if original_question:
             q_lower = original_question.lower()
             if (' shot' in q_lower or q_lower.startswith('shot')):
-                # Allow analytical only if specifically about winners/errors
-                if not any(kw in q_lower for kw in ['winner', 'winners', 'error', 'errors', 'winning shot']):
-                    print(f"[LLM-PARSE] Question asks about 'shots' (not winners) -> Overriding to narrative route")
+                # Allow analytical if:
+                # 1. About winners/errors/outcomes
+                # 2. About shot counts/ratios/percentages/rates
+                is_quantitative = any(kw in q_lower for kw in [
+                    'winner', 'winners', 'error', 'errors', 'winning shot',
+                    'ratio', 'percentage', 'percent', 'how many', 'count', 
+                    'total', 'number of', 'shot count', 'rate', 'success'
+                ])
+                if not is_quantitative:
+                    print(f"[LLM-PARSE] Question asks about 'shots' descriptively (not quantitative) -> Overriding to narrative route")
                     classification['query_category'] = 'narrative'
         
         # Handle group_by from LLM (e.g., 'sets' for per-set breakdown)

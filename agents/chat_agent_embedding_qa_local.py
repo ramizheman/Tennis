@@ -1370,6 +1370,71 @@ class TennisChatAgentEmbeddingQALocal:
         else:
             return "_player_1"  # Default fallback
 
+    def _detect_shot_from_query(self, query: str) -> Dict[str, Any]:
+        """
+        Detect shot type, modifier, and direction from a query.
+        Consolidates duplicated shot detection logic.
+        
+        Returns dict with:
+        - shot_base: 'forehand' or 'backhand' or None
+        - shot_modifier: 'slice', 'drop shot', 'volley', 'lob', 'approach', 'topspin' or None
+        - shot_type: combined description (e.g., "backhand slice") or None
+        - shot_direction: 'down the line', 'crosscourt', 'inside-out', etc. or None
+        """
+        query_lower = query.lower()
+        
+        # Detect shot base (forehand or backhand)
+        shot_base = None
+        if 'backhand' in query_lower:
+            shot_base = 'backhand'
+        elif 'forehand' in query_lower:
+            shot_base = 'forehand'
+        
+        # Detect shot modifier
+        shot_modifier = None
+        if 'slice' in query_lower or 'chip' in query_lower:
+            shot_modifier = 'slice'
+        elif 'drop shot' in query_lower:
+            shot_modifier = 'drop shot'
+        elif 'volley' in query_lower:
+            shot_modifier = 'volley'
+        elif 'lob' in query_lower:
+            shot_modifier = 'lob'
+        elif 'approach' in query_lower:
+            shot_modifier = 'approach'
+        elif 'topspin' in query_lower:
+            shot_modifier = 'topspin'
+        
+        # Combine into shot_type for display
+        if shot_base and shot_modifier:
+            shot_type = f"{shot_base} {shot_modifier}"
+        elif shot_base:
+            shot_type = shot_base
+        elif shot_modifier:
+            shot_type = shot_modifier
+        else:
+            shot_type = None
+        
+        # Detect shot direction
+        shot_direction = None
+        if 'down the line' in query_lower or 'dtl' in query_lower:
+            shot_direction = 'down the line'
+        elif 'crosscourt' in query_lower or 'cross-court' in query_lower or 'cross court' in query_lower:
+            shot_direction = 'crosscourt'
+        elif 'inside-out' in query_lower or 'inside out' in query_lower:
+            shot_direction = 'inside-out'
+        elif 'inside-in' in query_lower or 'inside in' in query_lower:
+            shot_direction = 'inside-in'
+        elif 'down the middle' in query_lower or 'up the middle' in query_lower:
+            shot_direction = 'down the middle'
+        
+        return {
+            'shot_base': shot_base,
+            'shot_modifier': shot_modifier,
+            'shot_type': shot_type,
+            'shot_direction': shot_direction
+        }
+
     def _determine_optimal_chunk_count(self, query: str) -> int:
         """
         Determine optimal number of chunks based on question complexity.
@@ -3268,14 +3333,3673 @@ Answer:"""
         except Exception as e:
             return f"Error generating response: {e}"
     
+    def _is_situational_shot_query(self, query: str) -> bool:
+        """
+        Detect if query asks about shots in specific situations (break point, game point, etc.)
+        
+        Example queries that return True:
+        - "How often does Djokovic hit a backhand down the line on break point?"
+        - "What percentage of forehand crosscourts does Nadal hit at game point?"
+        - "Does Federer change his shot selection on deuce points?"
+        """
+        situational_keywords = [
+            'break point', 'game point', 'set point', 'match point', 
+            'deuce', 'ad point', 'advantage point',
+            '30-40', '15-40', '0-40', '40-30', '40-15', '40-ad', 'ad-40',
+            'pressure point', 'big point', 'crucial point'
+        ]
+        shot_keywords = [
+            'backhand', 'forehand', 'down the line', 'dtl', 'crosscourt', 
+            'cross court', 'inside-out', 'inside out', 'inside-in', 'inside in',
+            'drop shot', 'slice', 'volley', 'approach', 'lob'
+        ]
+        query_lower = query.lower()
+        has_situation = any(kw in query_lower for kw in situational_keywords)
+        has_shot = any(kw in query_lower for kw in shot_keywords)
+        return has_situation and has_shot
+    
+    def _is_rally_sequence_query(self, query: str) -> bool:
+        """
+        Detect if query asks about rally sequences like "first shot after serve" (3rd ball attack).
+        
+        Example queries that return True:
+        - "What was Djokovic's win percentage on points where his first shot after the serve was a forehand?"
+        - "How often does Nadal hit a forehand on his third ball?"
+        - "When Federer's first groundstroke after serving was a backhand, what happened?"
+        """
+        sequence_keywords = [
+            'first shot after', 'first shot after the serve', 'first shot after serving',
+            'third ball', '3rd ball', 'third shot', '3rd shot',
+            'first groundstroke', 'opening shot after', 'after the serve',
+            'first rally shot', 'after serving'
+        ]
+        query_lower = query.lower()
+        return any(kw in query_lower for kw in sequence_keywords)
+    
+    def _is_serve_pattern_query(self, query: str) -> bool:
+        """
+        Detect if query asks about serve patterns/directions with specific filters.
+        
+        Example queries that return True:
+        - "Did Novak serve more to the T or Wide on the Deuce side during the fifth set tiebreak?"
+        - "What percentage of serves did Federer hit wide in the third set?"
+        - "How often did Nadal serve to the body in tiebreaks?"
+        """
+        serve_keywords = [
+            'serve to', 'served to', 'serves to',
+            'serve more', 'served more',
+            'serve wide', 'serve t', 'serve body',
+            'wide serve', 't serve', 'body serve',
+            'serve direction', 'serve pattern',
+            'first serve', 'second serve',
+            '1st serve', '2nd serve',
+            'serving to', 'win percentage'  # Added for comparison queries
+        ]
+        direction_keywords = [
+            'wide', ' t ', 'to the t', 'down the t', "'t'", 'body', 'middle',
+            'deuce', 'ad side', 'ad court', 'deuce side', 'deuce court',
+            'compared to'  # Added for comparison queries
+        ]
+        query_lower = query.lower()
+        has_serve = any(kw in query_lower for kw in serve_keywords)
+        has_direction = any(kw in query_lower for kw in direction_keywords)
+        return has_serve and has_direction
+    
+    # =========================================================================
+    # QUERY TAXONOMY TREE - Unified Query Classification System
+    # MCP-Certified: Supports Match Charting Project notation
+    # =========================================================================
+    
+    # Known left-handed players for direction mapping
+    KNOWN_LEFT_HANDED_PLAYERS = {
+        "rafael nadal", "nadal", "john mcenroe", "mcenroe", 
+        "jimmy connors", "connors", "rod laver", "laver",
+        "goran ivanisevic", "ivanisevic", "thomas muster", "muster",
+        "petr korda", "korda", "feliciano lopez", "lopez",
+        "denis shapovalov", "shapovalov", "cameron norrie", "norrie",
+        # Women's WTA
+        "martina navratilova", "navratilova", "monica seles", "seles",
+        "petra kvitova", "kvitova", "angelique kerber", "kerber",
+        "lucie safarova", "safarova"
+    }
+    
+    def _classify_query(self, query: str) -> Dict[str, Any]:
+        """
+        Classify a query using the tennis query taxonomy tree.
+        MCP-Certified: Supports Match Charting Project dimensions.
+        
+        Returns a structured classification:
+        {
+            'domain': 'serve' | 'return' | 'rally' | 'net' | 'match_flow' | 'all',
+            'analysis_type': 'count' | 'percentage' | 'comparison' | 'outcome_after' | 
+                            'breakdown' | 'pattern' | 'sequence' | 'chain',
+            'filters': {
+                'player': str or None,
+                'situation': str or None,
+                'set': int or None,
+                'shot_type': str or None,
+                'shot_modifier': str or None,
+                'direction': str or None,
+                'depth': str or None,
+                'rally_length': int or None,
+                # MCP-specific filters
+                'serve_target': 'wide' | 'body' | 't' or None,  # MCP: 4, 5, 6
+                'shot_number': int or None,  # 1=serve, 2=return, 3=serve+1, etc.
+                'court_zone': 'baseline' | 'midcourt' | 'net' or None,
+                'court_side': 'deuce' | 'ad' or None,
+                'handedness': 'left' | 'right' or None  # For direction mapping
+            },
+            'metrics': ['winners', 'forced_errors', 'induced_fe', 'aces', etc.],
+            'chain': {'from_shot': str, 'to_outcome': str} or None  # For A→B queries
+        }
+        """
+        query_lower = query.lower()
+        
+        classification = {
+            'domain': self._detect_domain(query_lower),
+            'analysis_type': self._detect_analysis_type(query_lower),
+            'filters': self._detect_filters_mcp(query),
+            'metrics': self._detect_metrics_mcp(query_lower),
+            'chain': self._detect_chain_logic(query_lower),
+            'group_by': self._detect_group_by(query_lower),
+            'query_category': self._detect_query_category(query_lower),  # NEW: analytical/comparative/narrative
+            'raw_query': query
+        }
+        
+        return classification
+    
+    def _detect_query_category(self, query_lower: str) -> str:
+        """
+        Detect the category of query to route appropriately.
+        
+        Categories:
+        - 'analytical': Count, percentage, specific stats → PBP parsing
+        - 'comparative': Trends, changes, evolution → PBP + LLM synthesis
+        - 'narrative': Summary, story, what happened → NL retrieval + LLM
+        """
+        # NARRATIVE indicators - needs LLM synthesis, not just data
+        narrative_keywords = [
+            'what happened', 'tell me about', 'describe', 'summary', 'summarize',
+            'strategic summary', 'story', 'journey', 'narrative', 'explain',
+            'mental state', 'tactical state', 'evolved', 'momentum carry-over',
+            'parallel journey', 'how did the match', 'turning point',
+            'key moments', 'critical moments', 'overview'
+        ]
+        if any(kw in query_lower for kw in narrative_keywords):
+            return 'narrative'
+        
+        # COMPARATIVE indicators - needs data from multiple conditions + synthesis
+        comparative_keywords = [
+            'change', 'changed', 'changing', 'evolution', 'evolve', 'evolved',
+            'versus', ' vs ', 'compared to', 'difference between',
+            'across sets', 'across the match', 'over time', 'trend',
+            'set 1 vs', 'set 1 versus', 'in set 1 compared',
+            'when facing', 'after winning', 'after losing',
+            'did they play more', 'did he play more',
+            'effectiveness change', 'tactics change', 'strategy change'
+        ]
+        if any(kw in query_lower for kw in comparative_keywords):
+            return 'comparative'
+        
+        # Default: ANALYTICAL - specific data extraction
+        return 'analytical'
+    
+    def _detect_group_by(self, query_lower: str) -> str:
+        """
+        Detect how results should be grouped.
+        
+        Examples:
+        - "by rally length category" → 'rally_length_category'
+        - "in sets 2,4 vs sets 1,3,5" → 'set_groups'
+        - "deuce vs ad court" → 'court_side'
+        - "1st serve vs 2nd serve" → 'serve_number'
+        """
+        # Rally length category grouping
+        if any(kw in query_lower for kw in ['rally length category', 'by rally length', 
+               'short rallies', 'medium rallies', 'long rallies', '1-3', '4-6', '7-9', '10+',
+               'which category', 'highest win percentage', 'best rally length']):
+            return 'rally_length_category'
+        
+        # Set group comparison
+        if ('sets' in query_lower and ('vs' in query_lower or 'versus' in query_lower or 'compared to' in query_lower)) or \
+           ('sets he won' in query_lower or 'sets he lost' in query_lower):
+            return 'set_groups'
+        
+        # Court side comparison
+        if ('deuce' in query_lower and 'ad' in query_lower) or \
+           ('deuce court' in query_lower and 'compared' in query_lower):
+            return 'court_side'
+        
+        # Serve number comparison
+        if ('1st serve' in query_lower and '2nd serve' in query_lower) or \
+           ('first serve' in query_lower and 'second serve' in query_lower):
+            return 'serve_number'
+        
+        # Shot type breakdown
+        if 'by shot type' in query_lower or 'forehand vs backhand' in query_lower:
+            return 'shot_type'
+        
+        # Direction breakdown
+        if 'by direction' in query_lower or ('crosscourt' in query_lower and 'down the line' in query_lower):
+            return 'direction'
+        
+        return None  # No grouping needed
+    
+    def _detect_domain(self, query_lower: str) -> str:
+        """Detect which domain of tennis the query is about."""
+        # Serve domain
+        if any(kw in query_lower for kw in ['serve', 'serving', 'ace', 'double fault', 'first serve', 'second serve']):
+            if 'return' not in query_lower and 'then' not in query_lower:
+                return 'serve'
+        
+        # Return domain
+        if any(kw in query_lower for kw in ['return', 'returning', 'return of serve']):
+            return 'return'
+        
+        # Net domain
+        if any(kw in query_lower for kw in ['volley', 'net point', 'approach', 'at the net', 'net play']):
+            return 'net'
+        
+        # Rally domain (groundstrokes after serve/return)
+        if any(kw in query_lower for kw in ['rally', 'groundstroke', 'baseline', 'third ball', 
+                                            'first shot after', 'serve+1', 'serve + 1']):
+            return 'rally'
+        
+        # Match flow domain
+        if any(kw in query_lower for kw in ['momentum', 'consecutive', 'streak', 'run of', 
+                                            'service game', 'hold', 'break']):
+            return 'match_flow'
+        
+        # Default to 'all' for general questions
+        return 'all'
+    
+    def _detect_analysis_type(self, query_lower: str) -> str:
+        """Detect what type of analysis the query requires."""
+        # Sequence analysis (MCP: shot number / serve+1)
+        if any(kw in query_lower for kw in ['serve+1', 'serve + 1', 'third ball', '3rd ball',
+                                            'first shot after', 'second shot', 'shot number']):
+            return 'sequence'
+        
+        # Chain analysis (MCP: shot A led to shot B)
+        if any(kw in query_lower for kw in ['then hit', 'followed by', 'led to', 'resulted in',
+                                            'and then', 'which caused']):
+            return 'chain'
+        
+        # Comparison
+        if any(kw in query_lower for kw in ['compared to', 'vs', 'versus', 'more than', 'less than', 
+                                            'or', 'which', 'who won more', 'better']):
+            return 'comparison'
+        
+        # Percentage/Rate
+        if any(kw in query_lower for kw in ['percentage', 'percent', 'rate', 'win %', 'conversion',
+                                            'how often', 'frequency']):
+            return 'percentage'
+        
+        # Outcome after event
+        if any(kw in query_lower for kw in ['after', 'go on to', 'went on to']):
+            return 'outcome_after'
+        
+        # Breakdown by category
+        if any(kw in query_lower for kw in ['breakdown', 'by type', 'categorize', 'split by',
+                                            'distribution']):
+            return 'breakdown'
+        
+        # Pattern/trend
+        if any(kw in query_lower for kw in ['pattern', 'trend', 'over time', 'changed', 'evolution',
+                                            'set 1 vs set', 'early vs late']):
+            return 'pattern'
+        
+        # Default to count
+        return 'count'
+    
+    def _detect_filters_mcp(self, query: str) -> Dict[str, Any]:
+        """
+        Extract all filters from the query.
+        MCP-Certified: Includes serve targets, shot numbers, court zones.
+        """
+        import re
+        query_lower = query.lower()
+        
+        filters = {
+            # Standard filters
+            'player': self._detect_player_mentioned(query),
+            'situation': None,
+            'set': None,
+            'shot_type': None,
+            'shot_modifier': None,
+            'direction': None,
+            'depth': None,
+            'rally_length': None,
+            # MCP-specific filters
+            'serve_target': None,  # wide/body/t (MCP codes 4/5/6)
+            'shot_number': None,   # 1=serve, 2=return, 3=serve+1
+            'court_zone': None,    # baseline/midcourt/net
+            'court_side': None,    # deuce/ad
+            'handedness': None,    # left/right (for direction mapping)
+            'error_location': None  # net/wide/deep/wide_deep (MCP: n/w/d/x)
+        }
+        
+        # Use shared shot detection
+        shot_info = self._detect_shot_from_query(query)
+        filters['shot_type'] = shot_info['shot_base']
+        filters['shot_modifier'] = shot_info['shot_modifier']
+        filters['direction'] = shot_info['shot_direction']
+        
+        # Situation filter
+        if 'break point' in query_lower:
+            filters['situation'] = 'break_point'
+        elif 'game point' in query_lower:
+            filters['situation'] = 'game_point'
+        elif 'set point' in query_lower:
+            filters['situation'] = 'set_point'
+        elif 'match point' in query_lower:
+            filters['situation'] = 'match_point'
+        elif 'deuce' in query_lower and 'court' not in query_lower:
+            filters['situation'] = 'deuce'
+        elif 'tiebreak' in query_lower or 'tie-break' in query_lower:
+            filters['situation'] = 'tiebreak'
+        
+        # Set filter - single set or set groups
+        # Check for set group comparison first (e.g., "sets 2 and 4 versus sets 1, 3, and 5")
+        set_group_pattern = r'sets?\s*([\d,\s]+(?:and\s+\d+)?)\s*(?:versus|vs\.?|compared to|against)\s*(?:the\s+)?(?:three\s+)?sets?\s*([\d,\s]+(?:and\s+\d+)?)'
+        set_group_match = re.search(set_group_pattern, query_lower)
+        if set_group_match:
+            # Parse both groups of sets
+            def parse_set_list(s):
+                # Extract all digits from the string
+                return [int(d) for d in re.findall(r'\d', s)]
+            filters['set_group_a'] = parse_set_list(set_group_match.group(1))
+            filters['set_group_b'] = parse_set_list(set_group_match.group(2))
+            filters['set'] = None  # Use groups instead
+        else:
+            # Single set filter
+            set_match = re.search(r'(\d)(?:st|nd|rd|th)?\s*set|set\s*(\d)', query_lower)
+            if set_match:
+                filters['set'] = int(set_match.group(1) or set_match.group(2))
+        
+        # Depth filter
+        if 'very deep' in query_lower:
+            filters['depth'] = 'very_deep'
+        elif 'deep' in query_lower:
+            filters['depth'] = 'deep'
+        elif 'shallow' in query_lower or 'short' in query_lower:
+            filters['depth'] = 'shallow'
+        
+        # Rally length filter
+        length_match = re.search(r'(\d+)\+?\s*(?:shot|stroke)', query_lower)
+        if length_match:
+            filters['rally_length'] = int(length_match.group(1))
+        elif 'long rall' in query_lower:
+            filters['rally_length'] = 9
+        elif 'short rall' in query_lower or 'short point' in query_lower:
+            filters['rally_length'] = 4
+        
+        # ===== MCP-SPECIFIC FILTERS =====
+        
+        # Serve target (MCP: 4=Wide, 5=Body, 6=T)
+        if 'wide serve' in query_lower or 'serve wide' in query_lower or 'served wide' in query_lower:
+            filters['serve_target'] = 'wide'
+        elif 'body serve' in query_lower or 'serve body' in query_lower or 'serve to body' in query_lower:
+            filters['serve_target'] = 'body'
+        elif 'down the t' in query_lower or 'serve t' in query_lower or 't serve' in query_lower:
+            filters['serve_target'] = 't'
+        
+        # Shot number (MCP sequence)
+        if 'serve+1' in query_lower or 'serve + 1' in query_lower or 'third ball' in query_lower or '3rd ball' in query_lower:
+            filters['shot_number'] = 3
+        elif 'first shot after serve' in query_lower:
+            filters['shot_number'] = 3
+        elif 'return' in query_lower:
+            filters['shot_number'] = 2
+        elif 'serve' in query_lower and 'after' not in query_lower:
+            filters['shot_number'] = 1
+        
+        # Court zone
+        if 'at the net' in query_lower or 'net approach' in query_lower or 'volley' in query_lower:
+            filters['court_zone'] = 'net'
+        elif 'baseline' in query_lower:
+            filters['court_zone'] = 'baseline'
+        elif "no man's land" in query_lower or 'midcourt' in query_lower:
+            filters['court_zone'] = 'midcourt'
+        
+        # Court side
+        if 'deuce court' in query_lower or 'deuce side' in query_lower:
+            filters['court_side'] = 'deuce'
+        elif 'ad court' in query_lower or 'ad side' in query_lower or 'advantage court' in query_lower:
+            filters['court_side'] = 'ad'
+        
+        # Handedness detection (for direction mapping)
+        player = filters['player']
+        if player:
+            player_lower = player.lower()
+            if any(lefty in player_lower for lefty in self.KNOWN_LEFT_HANDED_PLAYERS):
+                filters['handedness'] = 'left'
+            else:
+                filters['handedness'] = 'right'
+        
+        # Error location (MCP: n=net, w=wide, d=deep, x=wide&deep)
+        if 'into the net' in query_lower or 'net error' in query_lower:
+            filters['error_location'] = 'net'
+        elif 'wide' in query_lower and 'error' in query_lower:
+            filters['error_location'] = 'wide'
+        elif 'long' in query_lower and 'error' in query_lower:
+            filters['error_location'] = 'deep'
+        
+        return filters
+    
+    def _detect_metrics_mcp(self, query_lower: str) -> list:
+        """
+        Detect what metrics the query is asking about.
+        MCP-Certified: Distinguishes induced forced errors from clean winners.
+        """
+        metrics = []
+        
+        # Clean winners (MCP: *)
+        if 'winner' in query_lower and 'induced' not in query_lower:
+            metrics.append('winners')
+        
+        # Induced forced errors (MCP: # - opponent touched but couldn't control)
+        if 'forced error' in query_lower or "couldn't get it back" in query_lower or \
+           "couldn't return" in query_lower or 'induced' in query_lower:
+            metrics.append('induced_forced_errors')
+        
+        # Unforced errors (MCP: @ - player's own mistake)
+        if 'unforced error' in query_lower:
+            metrics.append('unforced_errors')
+        
+        # General errors (needs disambiguation)
+        if 'error' in query_lower and 'forced' not in query_lower and 'unforced' not in query_lower:
+            metrics.append('errors')
+        
+        # Aces (clean serve winner, no touch)
+        if 'ace' in query_lower:
+            metrics.append('aces')
+        
+        # Service winners (touched but not returned)
+        if 'service winner' in query_lower or 'unreturned serve' in query_lower:
+            metrics.append('service_winners')
+        
+        # Double faults
+        if 'double fault' in query_lower:
+            metrics.append('double_faults')
+        
+        # Points
+        if 'points won' in query_lower or 'won points' in query_lower:
+            metrics.append('points_won')
+        if 'points lost' in query_lower or 'lost points' in query_lower:
+            metrics.append('points_lost')
+        
+        # Games
+        if 'games won' in query_lower or 'hold' in query_lower:
+            metrics.append('games_won')
+        if 'games lost' in query_lower or 'broken' in query_lower or 'break' in query_lower:
+            metrics.append('games_lost')
+        
+        # Dominance ratio (MCP concept: winners + induced FE vs own errors)
+        if 'dominance' in query_lower or 'aggression' in query_lower:
+            metrics.append('dominance_ratio')
+        
+        return metrics if metrics else ['points_won']
+    
+    def _detect_chain_logic(self, query_lower: str) -> Dict[str, str]:
+        """
+        Detect chain/sequence logic: Shot A → Outcome B
+        MCP: Critical for understanding "slice led to error" type queries.
+        """
+        import re
+        
+        chain = None
+        
+        # Pattern: "[shot] then/led to/resulted in [outcome]"
+        chain_patterns = [
+            r'(forehand|backhand|slice|volley|drop shot|approach).*(?:then|led to|resulted in|caused).*?(winner|error|forced error)',
+            r'(wide serve|body serve|t serve).*(?:then|and then).*?(forehand|backhand|winner)',
+            r'after.*?(ace|double fault|winner).*?(hold|break|won|lost)'
+        ]
+        
+        for pattern in chain_patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                chain = {
+                    'from_shot': match.group(1),
+                    'to_outcome': match.group(2)
+                }
+                break
+        
+        return chain
+    
+    def _is_set_group_comparison_query(self, query: str) -> bool:
+        """
+        Detect if query compares metrics between different set groups.
+        
+        Example queries:
+        - "Compare Federer's forehand winners in sets 2 and 4 versus sets 1, 3, and 5"
+        - "Winner to error ratio in sets he won vs sets he lost"
+        """
+        query_lower = query.lower()
+        
+        # Must have set comparison indicators
+        has_set_groups = bool(re.search(r'sets?\s*[\d,\s]+.*(?:versus|vs\.?|compared to|against).*sets?\s*[\d,\s]+', query_lower))
+        has_won_lost_comparison = ('sets he won' in query_lower or 'sets he lost' in query_lower or 
+                                   'winning sets' in query_lower or 'losing sets' in query_lower)
+        
+        # Must have ratio or comparison keywords
+        has_ratio = any(kw in query_lower for kw in ['ratio', 'versus', 'vs', 'compared', 'comparison', 'to error'])
+        
+        return (has_set_groups or has_won_lost_comparison) and has_ratio
+    
+    def _analyze_set_group_comparison(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze and compare metrics between different set groups.
+        
+        Handles queries like:
+        - "Forehand winner to error ratio in sets 2,4 vs sets 1,3,5"
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect player
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # Detect shot filter
+        shot_info = self._detect_shot_from_query(query)
+        shot_filter = shot_info['shot_type']
+        
+        # Detect metrics (winner, error, etc.)
+        metrics_to_track = []
+        if 'winner' in query_lower:
+            metrics_to_track.append('winners')
+        if 'unforced error' in query_lower or 'error' in query_lower:
+            metrics_to_track.append('unforced_errors')
+        if 'forced error' in query_lower:
+            metrics_to_track.append('forced_errors')
+        if not metrics_to_track:
+            metrics_to_track = ['winners', 'unforced_errors']  # Default for ratio queries
+        
+        # Parse set groups
+        filters = self._detect_filters_mcp(query)
+        set_group_a = filters.get('set_group_a', [])
+        set_group_b = filters.get('set_group_b', [])
+        
+        # If no explicit groups found, try to infer from "won/lost" language
+        if not set_group_a or not set_group_b:
+            # Look for patterns like "sets he won (Sets 2 and 4)"
+            won_sets_match = re.search(r'sets?\s*(?:he|she)?\s*won\s*\(?(?:sets?)?\s*([\d,\s]+(?:and\s+\d+)?)', query_lower)
+            lost_sets_match = re.search(r'sets?\s*(?:he|she)?\s*lost\s*\(?(?:sets?)?\s*([\d,\s]+(?:and\s+\d+)?)', query_lower)
+            
+            if won_sets_match:
+                set_group_a = [int(d) for d in re.findall(r'\d', won_sets_match.group(1))]
+            if lost_sets_match:
+                set_group_b = [int(d) for d in re.findall(r'\d', lost_sets_match.group(1))]
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        results = {
+            'player': player_mentioned or 'both players',
+            'shot_filter': shot_filter,
+            'metrics': metrics_to_track,
+            'set_group_a': set_group_a,
+            'set_group_b': set_group_b,
+            'group_a_data': {metric: 0 for metric in metrics_to_track},
+            'group_b_data': {metric: 0 for metric in metrics_to_track},
+            'group_a_examples': [],
+            'group_b_examples': []
+        }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # Get current set from score - use robust extraction
+            current_set = self._extract_current_set(score)
+            if not current_set:
+                continue
+            
+            # Determine which group this set belongs to
+            in_group_a = current_set in set_group_a
+            in_group_b = current_set in set_group_b
+            
+            if not in_group_a and not in_group_b:
+                continue
+            
+            # Parse rally
+            rally_shots = self._parse_rally_sequence(point_text, server, returner)
+            
+            # Analyze shots for the specific player
+            for shot in rally_shots:
+                shot_player = shot.get('player', '')
+                shot_desc = shot.get('description', '').lower()
+                outcome = shot.get('outcome', '')
+                
+                # Check player filter
+                if player_mentioned and player_mentioned.lower() not in shot_player.lower():
+                    continue
+                
+                # Check shot type filter (e.g., forehand)
+                if shot_filter and shot_filter.lower() not in shot_desc:
+                    continue
+                
+                # Track metrics
+                for metric in metrics_to_track:
+                    matched = False
+                    
+                    if metric == 'winners' and outcome == 'WINNER':
+                        matched = True
+                    elif metric == 'unforced_errors' and outcome == 'UNFORCED ERROR':
+                        matched = True
+                    elif metric == 'forced_errors' and outcome == 'FORCED ERROR':
+                        matched = True
+                    
+                    if matched:
+                        if in_group_a:
+                            results['group_a_data'][metric] += 1
+                            if len(results['group_a_examples']) < 3:
+                                results['group_a_examples'].append({
+                                    'point': point_num, 'set': current_set,
+                                    'shot': shot_desc, 'outcome': outcome
+                                })
+                        elif in_group_b:
+                            results['group_b_data'][metric] += 1
+                            if len(results['group_b_examples']) < 3:
+                                results['group_b_examples'].append({
+                                    'point': point_num, 'set': current_set,
+                                    'shot': shot_desc, 'outcome': outcome
+                                })
+        
+        # Calculate ratios if we have winners and errors
+        if 'winners' in results['group_a_data'] and 'unforced_errors' in results['group_a_data']:
+            ue_a = results['group_a_data']['unforced_errors']
+            results['group_a_ratio'] = round(results['group_a_data']['winners'] / ue_a, 2) if ue_a > 0 else float('inf')
+        
+        if 'winners' in results['group_b_data'] and 'unforced_errors' in results['group_b_data']:
+            ue_b = results['group_b_data']['unforced_errors']
+            results['group_b_ratio'] = round(results['group_b_data']['winners'] / ue_b, 2) if ue_b > 0 else float('inf')
+        
+        return results
+    
+    def _format_set_group_comparison(self, analysis: Dict[str, Any]) -> str:
+        """Format set group comparison analysis."""
+        if 'error' in analysis:
+            return f"Unable to perform set group comparison: {analysis['error']}"
+        
+        shot_desc = analysis['shot_filter'] or 'All Shots'
+        group_a_sets = ', '.join(map(str, analysis['set_group_a']))
+        group_b_sets = ', '.join(map(str, analysis['set_group_b']))
+        
+        response = f"**Set Group Comparison: {shot_desc.title()}**\n\n"
+        response += f"**Player:** {analysis['player']}\n\n"
+        
+        response += f"**Group A (Sets {group_a_sets}):**\n"
+        response += f"| Metric | Count |\n"
+        response += f"|--------|-------|\n"
+        for metric, count in analysis['group_a_data'].items():
+            response += f"| {metric.replace('_', ' ').title()} | {count} |\n"
+        if 'group_a_ratio' in analysis:
+            response += f"\n**Winner:Error Ratio:** **{analysis['group_a_ratio']}:1**\n"
+        
+        response += f"\n**Group B (Sets {group_b_sets}):**\n"
+        response += f"| Metric | Count |\n"
+        response += f"|--------|-------|\n"
+        for metric, count in analysis['group_b_data'].items():
+            response += f"| {metric.replace('_', ' ').title()} | {count} |\n"
+        if 'group_b_ratio' in analysis:
+            response += f"\n**Winner:Error Ratio:** **{analysis['group_b_ratio']}:1**\n"
+        
+        # Comparison
+        if 'group_a_ratio' in analysis and 'group_b_ratio' in analysis:
+            ratio_a = analysis['group_a_ratio']
+            ratio_b = analysis['group_b_ratio']
+            
+            response += f"\n**Comparison:**\n"
+            if ratio_a > ratio_b:
+                diff = round(ratio_a - ratio_b, 2)
+                response += f"Sets {group_a_sets} had a **better** winner:error ratio ({ratio_a}:1 vs {ratio_b}:1, +{diff})\n"
+            elif ratio_b > ratio_a:
+                diff = round(ratio_b - ratio_a, 2)
+                response += f"Sets {group_b_sets} had a **better** winner:error ratio ({ratio_b}:1 vs {ratio_a}:1, +{diff})\n"
+            else:
+                response += f"Both groups had **equal** winner:error ratios ({ratio_a}:1)\n"
+        
+        return response
+    
+    def _detect_filters(self, query: str) -> Dict[str, Any]:
+        """Legacy wrapper - redirects to MCP version."""
+        return self._detect_filters_mcp(query)
+    
+    def _detect_metrics(self, query_lower: str) -> list:
+        """Legacy wrapper - redirects to MCP version."""
+        return self._detect_metrics_mcp(query_lower)
+    
+    def _analyze_by_taxonomy(self, classification: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        UNIFIED ANALYZER: Handles all query types via taxonomy classification.
+        
+        Supports:
+        - Filtering (player, situation, set, serve target, shot number, etc.)
+        - Grouping (by rally length, set, court side, shot type, etc.)
+        - Metrics (winners, errors, aces, points won, etc.)
+        - Comparisons and breakdowns
+        """
+        import re
+        
+        domain = classification['domain']
+        analysis_type = classification['analysis_type']
+        filters = classification['filters']
+        metrics = classification['metrics']
+        group_by = classification.get('group_by')  # NEW: Grouping support
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        player_filter = filters.get('player')
+        player1 = self.player1
+        player2 = self.player2
+        
+        # Initialize results based on whether grouping is needed
+        if group_by:
+            results = self._init_grouped_results(classification, group_by, player1, player2)
+        else:
+            results = {
+                'classification': classification,
+                'total_points': 0,
+                'metrics_data': {metric: {'count': 0, 'points': []} for metric in metrics},
+                'player1': player1,
+                'player2': player2,
+                'player1_wins': 0,
+                'player2_wins': 0
+            }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            point_lower = point_text.lower()
+            
+            # === APPLY FILTERS ===
+            # Situation filter
+            situation_filter = filters.get('situation')
+            if situation_filter:
+                if situation_filter == 'break_point' and not self._is_break_point_score(score):
+                    continue
+                elif situation_filter == 'game_point' and not self._is_game_point_score(score):
+                    continue
+                elif situation_filter == 'deuce' and not self._is_deuce_score(score):
+                    continue
+            
+            # Set filter
+            set_filter = filters.get('set')
+            if set_filter:
+                current_set = self._extract_current_set(score)
+                if current_set and current_set != set_filter:
+                    continue
+            
+            # Serve target filter (wide/body/t)
+            serve_target_filter = filters.get('serve_target')
+            if serve_target_filter:
+                if serve_target_filter == 'wide' and 'wide' not in point_lower[:50]:
+                    continue
+                elif serve_target_filter == 'body' and 'body' not in point_lower[:50]:
+                    continue
+                elif serve_target_filter == 't' and 'down the t' not in point_lower[:50]:
+                    continue
+            
+            # === PARSE RALLY ===
+            rally_shots = self._parse_rally_sequence(point_text, server, returner)
+            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
+            rally_length = len(actual_shots)
+            
+            # === DETERMINE POINT OUTCOME ===
+            point_winner = None
+            winning_shot_type = None
+            
+            if actual_shots:
+                last_shot = actual_shots[-1]
+                outcome = last_shot.get('outcome', '')
+                last_player = last_shot.get('player', '')
+                
+                if outcome == 'ACE':
+                    point_winner = server
+                    winning_shot_type = 'ace'
+                elif outcome == 'DOUBLE_FAULT':
+                    point_winner = returner
+                    winning_shot_type = 'double_fault'
+                elif outcome == 'WINNER' or outcome == 'SERVICE_WINNER':
+                    point_winner = last_player
+                    winning_shot_type = 'winner'
+                elif outcome in ['FORCED ERROR', 'UNFORCED ERROR']:
+                    point_winner = returner if last_player == server else server
+                    winning_shot_type = 'forced_error' if outcome == 'FORCED ERROR' else 'unforced_error'
+            
+            # === DETERMINE GROUP (if grouping) ===
+            group_key = None
+            if group_by:
+                group_key = self._determine_group_key(group_by, rally_length, score, point_lower, filters)
+                if group_key is None:
+                    continue  # Skip if can't determine group
+            
+            # === TRACK RESULTS ===
+            if group_by and group_key:
+                # Grouped tracking
+                if group_key in results['groups']:
+                    results['groups'][group_key]['total'] += 1
+                    if point_winner:
+                        if player1 and player1.lower() in point_winner.lower():
+                            results['groups'][group_key]['player1_wins'] += 1
+                        elif player2 and player2.lower() in point_winner.lower():
+                            results['groups'][group_key]['player2_wins'] += 1
+                        
+                        # Store example
+                        if len(results['groups'][group_key].get('examples', [])) < 3:
+                            results['groups'][group_key].setdefault('examples', []).append({
+                                'point': point_num, 'winner': point_winner, 'length': rally_length
+                            })
+                results['total_points'] += 1
+            else:
+                # Non-grouped tracking
+                results['total_points'] += 1
+                
+                if point_winner:
+                    if player1 and player1.lower() in point_winner.lower():
+                        results['player1_wins'] += 1
+                    elif player2 and player2.lower() in point_winner.lower():
+                        results['player2_wins'] += 1
+                
+                # Track metrics
+                for metric in metrics:
+                    matched = self._check_metric_match(metric, winning_shot_type, point_winner, 
+                                                       server, player_filter)
+                    if matched:
+                        results['metrics_data'][metric]['count'] += 1
+                        if len(results['metrics_data'][metric]['points']) < 5:
+                            results['metrics_data'][metric]['points'].append({
+                                'point': point_num, 'winner': point_winner, 
+                                'shot_type': winning_shot_type, 'excerpt': point_text[:200]
+                            })
+        
+        # === CALCULATE PERCENTAGES ===
+        if group_by:
+            self._calculate_group_percentages(results, player_filter)
+        else:
+            if results['total_points'] > 0:
+                results['player1_pct'] = round(100 * results['player1_wins'] / results['total_points'], 1)
+                results['player2_pct'] = round(100 * results['player2_wins'] / results['total_points'], 1)
+        
+        return results
+    
+    def _init_grouped_results(self, classification: Dict, group_by: str, player1: str, player2: str) -> Dict:
+        """Initialize results structure for grouped analysis."""
+        results = {
+            'classification': classification,
+            'group_by': group_by,
+            'total_points': 0,
+            'player1': player1,
+            'player2': player2,
+            'groups': {},
+            'best_group_for_player': None
+        }
+        
+        # Define groups based on group_by type
+        if group_by == 'rally_length_category':
+            results['groups'] = {
+                '1-3': {'label': 'Short (1-3 shots)', 'total': 0, 'player1_wins': 0, 'player2_wins': 0},
+                '4-6': {'label': 'Medium (4-6 shots)', 'total': 0, 'player1_wins': 0, 'player2_wins': 0},
+                '7-9': {'label': 'Extended (7-9 shots)', 'total': 0, 'player1_wins': 0, 'player2_wins': 0},
+                '10+': {'label': 'Long (10+ shots)', 'total': 0, 'player1_wins': 0, 'player2_wins': 0}
+            }
+        elif group_by == 'court_side':
+            results['groups'] = {
+                'deuce': {'label': 'Deuce Court', 'total': 0, 'player1_wins': 0, 'player2_wins': 0},
+                'ad': {'label': 'Ad Court', 'total': 0, 'player1_wins': 0, 'player2_wins': 0}
+            }
+        elif group_by == 'serve_number':
+            results['groups'] = {
+                '1st': {'label': '1st Serve', 'total': 0, 'player1_wins': 0, 'player2_wins': 0},
+                '2nd': {'label': '2nd Serve', 'total': 0, 'player1_wins': 0, 'player2_wins': 0}
+            }
+        elif group_by == 'set_groups':
+            # Dynamic - will be populated based on query
+            results['groups'] = {}
+        
+        return results
+    
+    def _determine_group_key(self, group_by: str, rally_length: int, score: str, point_lower: str, filters: Dict) -> str:
+        """Determine which group a point belongs to."""
+        if group_by == 'rally_length_category':
+            if 1 <= rally_length <= 3:
+                return '1-3'
+            elif 4 <= rally_length <= 6:
+                return '4-6'
+            elif 7 <= rally_length <= 9:
+                return '7-9'
+            elif rally_length >= 10:
+                return '10+'
+            return None
+        
+        elif group_by == 'court_side':
+            # Infer from score or point description
+            score_parts = score.split()
+            point_score = score_parts[-1] if score_parts else ""
+            point_values = {'0': 0, '15': 1, '30': 2, '40': 3, 'AD': 4}
+            parts = point_score.split('-')
+            if len(parts) == 2:
+                try:
+                    p1 = point_values.get(parts[0], 0)
+                    p2 = point_values.get(parts[1], 0)
+                    total = p1 + p2
+                    return 'deuce' if total % 2 == 0 else 'ad'
+                except:
+                    pass
+            return 'deuce'  # Default
+        
+        elif group_by == 'serve_number':
+            if '2nd serve' in point_lower or 'fault' in point_lower[:50]:
+                return '2nd'
+            return '1st'
+        
+        elif group_by == 'set_groups':
+            current_set = self._extract_current_set(score)
+            set_group_a = filters.get('set_group_a', [])
+            set_group_b = filters.get('set_group_b', [])
+            if current_set in set_group_a:
+                return 'group_a'
+            elif current_set in set_group_b:
+                return 'group_b'
+            return None
+        
+        return None
+    
+    def _check_metric_match(self, metric: str, winning_shot_type: str, point_winner: str, 
+                           server: str, player_filter: str) -> bool:
+        """Check if point matches the metric criteria."""
+        if metric == 'aces' and winning_shot_type == 'ace':
+            return not player_filter or (player_filter.lower() in server.lower())
+        elif metric == 'winners' and winning_shot_type == 'winner':
+            return not player_filter or (point_winner and player_filter.lower() in point_winner.lower())
+        elif metric == 'induced_forced_errors' and winning_shot_type == 'forced_error':
+            return not player_filter or (point_winner and player_filter.lower() in point_winner.lower())
+        elif metric == 'unforced_errors' and winning_shot_type == 'unforced_error':
+            return not player_filter or (point_winner and player_filter.lower() not in point_winner.lower())
+        elif metric == 'double_faults' and winning_shot_type == 'double_fault':
+            return not player_filter or (player_filter.lower() in server.lower())
+        elif metric == 'points_won':
+            return point_winner and (not player_filter or player_filter.lower() in point_winner.lower())
+        return False
+    
+    def _calculate_group_percentages(self, results: Dict, player_filter: str) -> None:
+        """Calculate win percentages for each group and find best group."""
+        best_pct = -1
+        best_group = None
+        
+        player1 = results['player1']
+        player2 = results['player2']
+        
+        for group_key, group_data in results['groups'].items():
+            if group_data['total'] > 0:
+                group_data['player1_pct'] = round(100 * group_data['player1_wins'] / group_data['total'], 1)
+                group_data['player2_pct'] = round(100 * group_data['player2_wins'] / group_data['total'], 1)
+                
+                # Track best group for the player filter
+                if player_filter:
+                    if player1 and player_filter.lower() in player1.lower():
+                        if group_data['player1_pct'] > best_pct:
+                            best_pct = group_data['player1_pct']
+                            best_group = group_key
+                    elif player2 and player_filter.lower() in player2.lower():
+                        if group_data['player2_pct'] > best_pct:
+                            best_pct = group_data['player2_pct']
+                            best_group = group_key
+            else:
+                group_data['player1_pct'] = 0
+                group_data['player2_pct'] = 0
+        
+        if best_group:
+            results['best_group_for_player'] = {
+                'group': best_group,
+                'label': results['groups'][best_group]['label'],
+                'win_pct': best_pct,
+                'player': player_filter
+            }
+    
+    def _format_taxonomy_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format taxonomy-based analysis results - handles both grouped and non-grouped."""
+        if 'error' in analysis:
+            return f"Unable to perform analysis: {analysis['error']}"
+        
+        classification = analysis['classification']
+        filters = classification['filters']
+        metrics = classification.get('metrics', [])
+        group_by = analysis.get('group_by')
+        
+        player = filters.get('player') or 'Both Players'
+        situation = (filters.get('situation') or 'all points').replace('_', ' ').title()
+        
+        # === GROUPED ANALYSIS FORMAT ===
+        if group_by and 'groups' in analysis:
+            return self._format_grouped_analysis(analysis)
+        
+        # === NON-GROUPED ANALYSIS FORMAT ===
+        response = f"**Point Outcome Analysis**\n\n"
+        response += f"**Player:** {player}\n"
+        response += f"**Situation:** {situation}\n"
+        response += f"**Total Points Analyzed:** {analysis['total_points']}\n\n"
+        
+        # Show metrics comparison
+        if len(metrics) > 1:
+            response += f"**Comparison:**\n"
+            response += f"| Metric | Count |\n"
+            response += f"|--------|-------|\n"
+            for metric in metrics:
+                data = analysis.get('metrics_data', {}).get(metric, {'count': 0})
+                metric_label = metric.replace('_', ' ').title()
+                response += f"| {metric_label} | **{data['count']}** |\n"
+            
+            # Determine winner of comparison
+            if len(metrics) == 2:
+                m1, m2 = metrics[0], metrics[1]
+                c1 = analysis.get('metrics_data', {}).get(m1, {'count': 0})['count']
+                c2 = analysis.get('metrics_data', {}).get(m2, {'count': 0})['count']
+                m1_label = m1.replace('_', ' ').title()
+                m2_label = m2.replace('_', ' ').title()
+                
+                if c1 > c2:
+                    response += f"\n**Answer:** {player} had more **{m1_label}** ({c1}) than **{m2_label}** ({c2})\n"
+                elif c2 > c1:
+                    response += f"\n**Answer:** {player} had more **{m2_label}** ({c2}) than **{m1_label}** ({c1})\n"
+                else:
+                    response += f"\n**Answer:** {player} had equal **{m1_label}** and **{m2_label}** ({c1} each)\n"
+        elif len(metrics) == 1:
+            metric = metrics[0]
+            data = analysis['metrics_data'].get(metric, {'count': 0})
+            metric_label = metric.replace('_', ' ').title()
+            response += f"**{metric_label}:** {data['count']}\n"
+        
+        # Show examples for each metric
+        for metric in metrics:
+            data = analysis.get('metrics_data', {}).get(metric, {'count': 0, 'points': []})
+            if data.get('points'):
+                metric_label = metric.replace('_', ' ').title()
+                response += f"\n**{metric_label} Examples:**\n"
+                for ex in data['points'][:3]:
+                    response += f"- Point {ex.get('point', '?')} ({ex.get('score', '?')}): {ex.get('excerpt', '')}...\n"
+        
+        return response
+    
+    def _format_grouped_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format grouped analysis results (rally categories, court sides, etc.)."""
+        classification = analysis['classification']
+        filters = classification['filters']
+        group_by = analysis['group_by']
+        groups = analysis['groups']
+        
+        player1 = analysis.get('player1', 'Player 1')
+        player2 = analysis.get('player2', 'Player 2')
+        player_filter = filters.get('player')
+        
+        # Determine title based on group type
+        titles = {
+            'rally_length_category': 'Rally Length Category Analysis',
+            'court_side': 'Court Side Comparison',
+            'serve_number': 'Serve Number Comparison',
+            'set_groups': 'Set Group Comparison'
+        }
+        title = titles.get(group_by, 'Grouped Analysis')
+        
+        response = f"**{title}**\n\n"
+        response += f"**Players:** {player1} vs {player2}\n"
+        response += f"**Total Points Analyzed:** {analysis['total_points']}\n\n"
+        
+        # Build table
+        response += f"**Win Percentage by {group_by.replace('_', ' ').title()}:**\n\n"
+        response += f"| Category | Total | {player1} Wins | {player1} % | {player2} Wins | {player2} % |\n"
+        response += f"|----------|-------|---------------|-------------|---------------|-------------|\n"
+        
+        for group_key, group_data in groups.items():
+            label = group_data.get('label', group_key)
+            total = group_data.get('total', 0)
+            p1_wins = group_data.get('player1_wins', 0)
+            p2_wins = group_data.get('player2_wins', 0)
+            p1_pct = group_data.get('player1_pct', 0)
+            p2_pct = group_data.get('player2_pct', 0)
+            
+            response += f"| **{label}** | {total} | {p1_wins} | **{p1_pct}%** | {p2_wins} | **{p2_pct}%** |\n"
+        
+        # Show best group for mentioned player
+        if analysis.get('best_group_for_player'):
+            best = analysis['best_group_for_player']
+            response += f"\n**Answer:** {best['player']}'s highest win percentage was in "
+            response += f"**{best['label']}** with **{best['win_pct']}%**\n"
+        
+        return response
+    
+    def _handle_narrative_query(self, question: str, classification: Dict, top_k: int = None) -> str:
+        """
+        Handle narrative queries using NL retrieval + LLM synthesis.
+        
+        For questions like:
+        - "What happened in Set 3?"
+        - "Provide a strategic summary"
+        - "Tell the parallel journey of both players"
+        """
+        print("[NARRATIVE] Retrieving relevant context from NL file...")
+        
+        # Determine appropriate chunk count for narrative
+        if top_k is None:
+            top_k = self._determine_optimal_chunk_count(question)
+            top_k = max(top_k, 8)  # Narratives need more context
+        
+        # Retrieve relevant chunks
+        relevant_chunks = self._retrieve_relevant_chunks(question, top_k)
+        
+        if not relevant_chunks:
+            return "I couldn't find relevant information to answer your question."
+        
+        print(f"[NARRATIVE] Retrieved {len(relevant_chunks)} chunks, generating synthesis...")
+        
+        # Use LLM to synthesize narrative answer
+        answer = self.answer_query_with_llm(question, relevant_chunks)
+        
+        return answer
+    
+    def _handle_comparative_query(self, question: str, classification: Dict, top_k: int = None) -> str:
+        """
+        Handle comparative queries: extract data from multiple conditions, then synthesize.
+        
+        For questions like:
+        - "How did Federer's first serves change when facing break points?"
+        - "How did tactics change in Set 1 vs Set 3?"
+        - "Serve effectiveness across sets"
+        """
+        print("[COMPARATIVE] Extracting data for comparison...")
+        
+        query_lower = question.lower()
+        player = classification['filters'].get('player')
+        
+        # Determine what's being compared
+        comparison_data = {}
+        
+        # Set comparison (Set 1 vs Set 3, etc.)
+        if 'set 1' in query_lower and ('set 3' in query_lower or 'set 5' in query_lower):
+            sets_to_compare = []
+            for i in [1, 2, 3, 4, 5]:
+                if f'set {i}' in query_lower or f'{i}st set' in query_lower or f'{i}nd set' in query_lower or f'{i}rd set' in query_lower or f'{i}th set' in query_lower:
+                    sets_to_compare.append(i)
+            
+            if len(sets_to_compare) >= 2:
+                for set_num in sets_to_compare:
+                    # Create classification for each set
+                    set_classification = classification.copy()
+                    set_classification['filters'] = classification['filters'].copy()
+                    set_classification['filters']['set'] = set_num
+                    set_classification['group_by'] = None
+                    
+                    analysis = self._analyze_by_taxonomy(set_classification)
+                    if 'error' not in analysis:
+                        comparison_data[f'Set {set_num}'] = {
+                            'total_points': analysis.get('total_points', 0),
+                            'player1_wins': analysis.get('player1_wins', 0),
+                            'player2_wins': analysis.get('player2_wins', 0),
+                            'player1_pct': analysis.get('player1_pct', 0),
+                            'player2_pct': analysis.get('player2_pct', 0)
+                        }
+        
+        # Situation comparison (break points vs non-break points)
+        if 'break point' in query_lower or 'facing' in query_lower:
+            # Get break point stats
+            bp_classification = classification.copy()
+            bp_classification['filters'] = classification['filters'].copy()
+            bp_classification['filters']['situation'] = 'break_point'
+            bp_classification['group_by'] = None
+            
+            bp_analysis = self._analyze_by_taxonomy(bp_classification)
+            if 'error' not in bp_analysis:
+                comparison_data['Break Points'] = {
+                    'total_points': bp_analysis.get('total_points', 0),
+                    'player1_wins': bp_analysis.get('player1_wins', 0),
+                    'player2_wins': bp_analysis.get('player2_wins', 0)
+                }
+            
+            # Get non-break point stats (all points minus break points)
+            all_classification = classification.copy()
+            all_classification['filters'] = classification['filters'].copy()
+            all_classification['filters']['situation'] = None
+            all_classification['group_by'] = None
+            
+            all_analysis = self._analyze_by_taxonomy(all_classification)
+            if 'error' not in all_analysis:
+                comparison_data['All Points'] = {
+                    'total_points': all_analysis.get('total_points', 0),
+                    'player1_wins': all_analysis.get('player1_wins', 0),
+                    'player2_wins': all_analysis.get('player2_wins', 0)
+                }
+        
+        # Format comparison results
+        if comparison_data:
+            response = self._format_comparative_analysis(question, comparison_data, classification)
+            
+            # If we have structured data, also get LLM interpretation
+            if len(comparison_data) >= 2:
+                # Add LLM synthesis for deeper insight
+                context_text = f"Comparison data:\n"
+                for condition, data in comparison_data.items():
+                    context_text += f"- {condition}: {data}\n"
+                
+                synthesis_prompt = f"Based on this data, briefly interpret the comparison for: {question}\n\n{context_text}"
+                
+                # Get LLM interpretation
+                try:
+                    llm_insight = self.answer_query_with_llm(synthesis_prompt, [])
+                    if llm_insight and len(llm_insight) > 50:
+                        response += f"\n**Interpretation:**\n{llm_insight}"
+                except:
+                    pass  # Skip LLM synthesis if it fails
+            
+            return response
+        
+        # Fallback to narrative handling if no structured comparison possible
+        print("[COMPARATIVE] No structured comparison found, falling back to narrative")
+        return self._handle_narrative_query(question, classification, top_k)
+    
+    def _format_comparative_analysis(self, question: str, comparison_data: Dict, classification: Dict) -> str:
+        """Format comparative analysis results."""
+        player1 = self.player1 or 'Player 1'
+        player2 = self.player2 or 'Player 2'
+        
+        response = f"**Comparative Analysis**\n\n"
+        response += f"**Query:** {question}\n\n"
+        
+        response += f"| Condition | Total | {player1} | {player2} |\n"
+        response += f"|-----------|-------|-----------|----------|\n"
+        
+        for condition, data in comparison_data.items():
+            total = data.get('total_points', 0)
+            p1 = data.get('player1_wins', 0)
+            p2 = data.get('player2_wins', 0)
+            p1_pct = round(100 * p1 / total, 1) if total > 0 else 0
+            p2_pct = round(100 * p2 / total, 1) if total > 0 else 0
+            response += f"| **{condition}** | {total} | {p1} ({p1_pct}%) | {p2} ({p2_pct}%) |\n"
+        
+        return response
+    
+    def _is_return_depth_situational_query(self, query: str) -> bool:
+        """
+        Detect if query asks about return depth in specific situations or win percentage.
+        
+        Example queries that return True:
+        - "How deep were Alcaraz's returns on break points?"
+        - "Return depth on game points"
+        - "Did Djokovic hit deep returns when facing break point?"
+        - "Win percentage on very deep returns"
+        - "Points won when return was deep"
+        """
+        query_lower = query.lower()
+        
+        # Must have return + depth keywords
+        return_keywords = ['return', 'returns', 'returning']
+        depth_keywords = ['deep', 'shallow', 'short', 'depth', 'very deep']
+        
+        # Situation keywords (optional for win percentage queries)
+        situation_keywords = ['break point', 'game point', 'set point', 'match point', 
+                             'deuce', 'crucial', 'important', 'pressure', 'key point']
+        
+        # Win percentage keywords
+        win_keywords = ['win percentage', 'won percentage', 'win rate', 'won rate',
+                       'points won', 'won points', 'win when', 'won when', 'percentage on']
+        
+        has_return = any(kw in query_lower for kw in return_keywords)
+        has_depth = any(kw in query_lower for kw in depth_keywords)
+        has_situation = any(kw in query_lower for kw in situation_keywords)
+        has_win_query = any(kw in query_lower for kw in win_keywords)
+        
+        # Return + depth + (situation OR win query)
+        return has_return and has_depth and (has_situation or has_win_query or True)
+    
+    def _analyze_return_depth_in_situations(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze return depth in specific game situations.
+        
+        Parses point-by-point data to find situational points and
+        categorizes returns by depth (deep/shallow) from descriptions.
+        Also tracks win/loss outcomes for each depth category.
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect if query asks for specific depth filter
+        depth_filter = None
+        if 'very deep' in query_lower:
+            depth_filter = 'very_deep'
+        elif 'shallow' in query_lower or 'short' in query_lower:
+            depth_filter = 'shallow'
+        elif 'deep' in query_lower:
+            depth_filter = 'deep'  # Will match both "deep" and "very deep" unless very_deep already set
+        
+        # Detect which player is being asked about
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # Detect situation type
+        situation_type = None
+        if 'break point' in query_lower:
+            situation_type = 'break_point'
+        elif 'game point' in query_lower:
+            situation_type = 'game_point'
+        elif 'set point' in query_lower:
+            situation_type = 'set_point'
+        elif 'match point' in query_lower:
+            situation_type = 'match_point'
+        elif 'deuce' in query_lower:
+            situation_type = 'deuce'
+        else:
+            situation_type = 'all'
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available for return depth analysis'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        results = {
+            'player': player_mentioned or 'both players',
+            'situation': situation_type,
+            'depth_filter': depth_filter,
+            'total_situation_points': 0,
+            'returns_analyzed': 0,
+            'deep_returns': 0,
+            'shallow_returns': 0,
+            'very_deep_returns': 0,
+            'neutral_returns': 0,
+            # Outcome tracking per depth
+            'depth_outcomes': {
+                'very_deep': {'won': 0, 'lost': 0, 'examples': []},
+                'deep': {'won': 0, 'lost': 0, 'examples': []},
+                'shallow': {'won': 0, 'lost': 0, 'examples': []},
+                'neutral': {'won': 0, 'lost': 0, 'examples': []}
+            },
+            'return_examples': {
+                'deep': [],
+                'shallow': [],
+                'very_deep': []
+            }
+        }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # Check if this is the situation we're looking for
+            is_target_situation = False
+            if situation_type == 'break_point':
+                is_target_situation = self._is_break_point_score(score)
+            elif situation_type == 'game_point':
+                is_target_situation = self._is_game_point_score(score)
+            elif situation_type == 'deuce':
+                is_target_situation = self._is_deuce_score(score)
+            elif situation_type == 'all':
+                is_target_situation = True
+            
+            if not is_target_situation:
+                continue
+            
+            # Check player filter - returner must be the player
+            if player_mentioned:
+                if player_mentioned.lower() not in returner.lower():
+                    continue
+            
+            results['total_situation_points'] += 1
+            
+            # Parse rally to find the return shot (2nd shot in sequence)
+            rally_shots = self._parse_rally_sequence(point_text, server, returner)
+            
+            if len(rally_shots) >= 2:
+                # The return is the 2nd shot (index 1)
+                return_shot = rally_shots[1]
+                return_desc = return_shot.get('description', '').lower()
+                
+                results['returns_analyzed'] += 1
+                
+                # Categorize by depth
+                depth_category = 'neutral'
+                if 'very deep' in return_desc or 'baseline' in return_desc:
+                    depth_category = 'very_deep'
+                    results['very_deep_returns'] += 1
+                elif 'deep' in return_desc:
+                    depth_category = 'deep'
+                    results['deep_returns'] += 1
+                elif 'shallow' in return_desc or 'short' in return_desc:
+                    depth_category = 'shallow'
+                    results['shallow_returns'] += 1
+                else:
+                    results['neutral_returns'] += 1
+                
+                # Determine who won the point (returner wins or loses)
+                returner_won = self._did_returner_win_point(rally_shots, returner)
+                
+                # Track outcome for this depth category
+                if returner_won:
+                    results['depth_outcomes'][depth_category]['won'] += 1
+                else:
+                    results['depth_outcomes'][depth_category]['lost'] += 1
+                
+                # Store examples (limit to 5 per category)
+                example_data = {
+                    'point': point_num,
+                    'server': server,
+                    'returner': returner,
+                    'score': score,
+                    'return_description': return_shot.get('description', ''),
+                    'outcome': 'WON' if returner_won else 'LOST',
+                    'full_point': point_text[:300] + ('...' if len(point_text) > 300 else '')
+                }
+                
+                if depth_category != 'neutral' and len(results['return_examples'][depth_category]) < 5:
+                    results['return_examples'][depth_category].append(example_data)
+                
+                if len(results['depth_outcomes'][depth_category]['examples']) < 5:
+                    results['depth_outcomes'][depth_category]['examples'].append(example_data)
+        
+        # Calculate percentages
+        if results['returns_analyzed'] > 0:
+            results['deep_percentage'] = round(100 * (results['deep_returns'] + results['very_deep_returns']) / results['returns_analyzed'], 1)
+            results['shallow_percentage'] = round(100 * results['shallow_returns'] / results['returns_analyzed'], 1)
+        else:
+            results['deep_percentage'] = 0
+            results['shallow_percentage'] = 0
+        
+        return results
+    
+    def _format_return_depth_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format return depth situational analysis into readable response."""
+        if 'error' in analysis:
+            return f"Unable to perform return depth analysis: {analysis['error']}"
+        
+        situation_name = analysis['situation'].replace('_', ' ').title() if analysis['situation'] != 'all' else 'All Points'
+        
+        response = f"**Return Depth Analysis: {situation_name}**\n\n"
+        response += f"**Player:** {analysis['player']}\n\n"
+        
+        response += f"**Results:**\n"
+        response += f"- Total {situation_name.lower()} situations: **{analysis['total_situation_points']}**\n"
+        response += f"- Returns analyzed: **{analysis['returns_analyzed']}**\n\n"
+        
+        if analysis['returns_analyzed'] > 0:
+            response += f"**Depth Breakdown:**\n"
+            response += f"| Depth | Count | Percentage |\n"
+            response += f"|-------|-------|------------|\n"
+            response += f"| Very Deep | {analysis['very_deep_returns']} | {round(100 * analysis['very_deep_returns'] / analysis['returns_analyzed'], 1)}% |\n"
+            response += f"| Deep | {analysis['deep_returns']} | {round(100 * analysis['deep_returns'] / analysis['returns_analyzed'], 1)}% |\n"
+            response += f"| Shallow/Short | {analysis['shallow_returns']} | {analysis['shallow_percentage']}% |\n"
+            response += f"| Neutral/Unmarked | {analysis['neutral_returns']} | {round(100 * analysis['neutral_returns'] / analysis['returns_analyzed'], 1)}% |\n"
+            
+            response += f"\n**Summary:** On {situation_name.lower()}, **{analysis['deep_percentage']}%** of {analysis['player']}'s returns were deep or very deep.\n"
+            
+            # Show win percentages by depth
+            depth_outcomes = analysis.get('depth_outcomes', {})
+            if depth_outcomes:
+                response += f"\n**Win Percentage by Return Depth:**\n"
+                response += f"| Depth | Points Won | Points Lost | Win % |\n"
+                response += f"|-------|------------|-------------|-------|\n"
+                
+                for depth_type in ['very_deep', 'deep', 'shallow', 'neutral']:
+                    outcomes = depth_outcomes.get(depth_type, {'won': 0, 'lost': 0})
+                    total = outcomes['won'] + outcomes['lost']
+                    if total > 0:
+                        win_pct = round(100 * outcomes['won'] / total, 1)
+                        depth_label = depth_type.replace('_', ' ').title()
+                        response += f"| {depth_label} | {outcomes['won']} | {outcomes['lost']} | **{win_pct}%** |\n"
+                
+                # If there's a depth filter, highlight that specific answer
+                depth_filter = analysis.get('depth_filter')
+                if depth_filter and depth_filter in depth_outcomes:
+                    outcomes = depth_outcomes[depth_filter]
+                    total = outcomes['won'] + outcomes['lost']
+                    if total > 0:
+                        win_pct = round(100 * outcomes['won'] / total, 1)
+                        depth_label = depth_filter.replace('_', ' ')
+                        response += f"\n**Answer:** {analysis['player']}'s win percentage on points where the return was **{depth_label}** was **{win_pct}%** ({outcomes['won']} won, {outcomes['lost']} lost out of {total} points).\n"
+            
+            # Show examples with outcomes
+            for depth_type in ['very_deep', 'deep', 'shallow']:
+                examples = analysis['return_examples'].get(depth_type, [])
+                if examples:
+                    response += f"\n**{depth_type.replace('_', ' ').title()} Return Examples:**\n"
+                    for ex in examples[:3]:
+                        outcome_str = f"[{ex.get('outcome', 'N/A')}]" if 'outcome' in ex else ""
+                        response += f"- Point {ex['point']} {outcome_str} (Score: {ex['score']}): {ex['return_description']}\n"
+        else:
+            response += f"\n*Note: No return depth data could be extracted from point-by-point descriptions.*\n"
+            response += f"\nThis may be because the point-by-point data doesn't include explicit depth markers "
+            response += f"like 'deep', 'shallow', or 'short' in return descriptions.\n"
+        
+        return response
+    
+    def _is_game_outcome_after_event_query(self, query: str) -> bool:
+        """
+        Detect if query asks about game outcomes after specific events.
+        
+        Example queries that return True:
+        - "How many times did a player double fault and then lose that game?"
+        - "After hitting an ace, did the server go on to hold?"
+        - "Double fault and then got broken"
+        """
+        query_lower = query.lower()
+        
+        # Event keywords
+        event_keywords = ['double fault', 'ace', 'break point', 'deuce']
+        
+        # Outcome tracking keywords
+        outcome_keywords = [
+            'lose that', 'lost that', 'lose the game', 'lost the game',
+            'win that', 'won that', 'hold', 'held', 'break', 'broken',
+            'go on to', 'went on to', 'then lose', 'then win', 'then hold'
+        ]
+        
+        has_event = any(kw in query_lower for kw in event_keywords)
+        has_outcome = any(kw in query_lower for kw in outcome_keywords)
+        
+        return has_event and has_outcome
+    
+    def _analyze_game_outcome_after_event(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze game outcomes after specific events occur.
+        
+        Handles queries like:
+        - "Double fault and then lost that service game"
+        - "Ace and then held serve"
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect which player is being asked about
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # Detect the event type
+        event_type = None
+        if 'double fault' in query_lower:
+            event_type = 'double_fault'
+        elif 'ace' in query_lower:
+            event_type = 'ace'
+        elif 'break point' in query_lower:
+            event_type = 'break_point'
+        
+        # Detect the desired outcome
+        outcome_filter = None
+        if any(kw in query_lower for kw in ['lose', 'lost', 'broken', 'break']):
+            outcome_filter = 'lost_game'
+        elif any(kw in query_lower for kw in ['win', 'won', 'hold', 'held']):
+            outcome_filter = 'won_game'
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available for game outcome analysis'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        # Track events by game (set-game combination)
+        events_by_game = {}  # key: "set_score-game_score-server", value: list of events
+        game_outcomes = {}   # key: same, value: 'held' or 'broken'
+        
+        results = {
+            'player': player_mentioned or 'all players',
+            'event_type': event_type,
+            'outcome_filter': outcome_filter,
+            'total_events': 0,
+            'events_followed_by_loss': 0,
+            'events_followed_by_win': 0,
+            'matching_instances': []
+        }
+        
+        # First pass: collect all events and track game boundaries
+        current_game_key = None
+        current_game_server = None
+        current_game_events = []
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # Parse score to get set-game-point scores
+            # Handle formats like "Djokovic 0-0 1-2" or "0-0 1-2 15-30"
+            score_components = self._parse_score_components(score)
+            if not score_components:
+                continue
+            set_score = score_components['set']
+            game_score = score_components['game']
+            point_score = score_components.get('point', '0-0')
+            
+            # Create game key
+            game_key = f"{set_score}-{game_score}-{server}"
+            
+            # Check if we've moved to a new game
+            if game_key != current_game_key:
+                # Save previous game's events if any
+                if current_game_key and current_game_events:
+                    events_by_game[current_game_key] = current_game_events
+                
+                current_game_key = game_key
+                current_game_server = server
+                current_game_events = []
+            
+            # Check for the event in this point
+            point_lower = point_text.lower()
+            event_found = False
+            
+            if event_type == 'double_fault':
+                if 'double fault' in point_lower:
+                    event_found = True
+            elif event_type == 'ace':
+                if 'ace' in point_lower:
+                    event_found = True
+            
+            if event_found:
+                # Check player filter
+                if player_mentioned:
+                    # For double faults/aces, the server hits them
+                    if player_mentioned.lower() not in server.lower():
+                        continue
+                
+                results['total_events'] += 1
+                current_game_events.append({
+                    'point': point_num,
+                    'server': server,
+                    'returner': returner,
+                    'score': score,
+                    'point_text': point_text[:200]
+                })
+            
+            # Check if this point ended the game (detect game-ending scores)
+            # Game ends when someone reaches game point and wins
+            if self._is_game_ending_point(point_score, point_text):
+                # Determine who won the game
+                game_won_by_server = self._did_server_win_point(point_text)
+                
+                if current_game_key:
+                    game_outcomes[current_game_key] = 'held' if game_won_by_server else 'broken'
+        
+        # Don't forget the last game
+        if current_game_key and current_game_events:
+            events_by_game[current_game_key] = current_game_events
+        
+        # Second pass: match events with game outcomes
+        for game_key, events in events_by_game.items():
+            outcome = game_outcomes.get(game_key)
+            
+            if not outcome:
+                continue
+            
+            for event in events:
+                if outcome == 'broken':
+                    results['events_followed_by_loss'] += 1
+                    if outcome_filter == 'lost_game' or outcome_filter is None:
+                        results['matching_instances'].append({
+                            **event,
+                            'game_outcome': 'Server LOST (broken)',
+                            'game_key': game_key
+                        })
+                else:
+                    results['events_followed_by_win'] += 1
+                    if outcome_filter == 'won_game' or outcome_filter is None:
+                        results['matching_instances'].append({
+                            **event,
+                            'game_outcome': 'Server HELD',
+                            'game_key': game_key
+                        })
+        
+        return results
+    
+    def _is_game_ending_point(self, point_score: str, point_text: str) -> bool:
+        """Check if a point score represents game point that was converted."""
+        # Game-ending scores for server: 40-0, 40-15, 40-30, Ad-40
+        # Game-ending scores for returner: 0-40, 15-40, 30-40, 40-Ad
+        point_lower = point_text.lower()
+        
+        # Check for explicit game/set indicators
+        if 'game' in point_lower or 'break' in point_lower:
+            return True
+        
+        # Check for winning shots that would end the game
+        if any(outcome in point_lower for outcome in ['winner', 'ace', 'double fault', 'error']):
+            # Check if score was at game point
+            game_point_scores = ['40-0', '40-15', '40-30', '0-40', '15-40', '30-40', 'ad-40', '40-ad']
+            return any(gp in point_score.lower() for gp in game_point_scores)
+        
+        return False
+    
+    def _did_server_win_point(self, point_text: str) -> bool:
+        """Determine if the server won the point based on rally outcome."""
+        point_lower = point_text.lower()
+        
+        # Server wins: ace, service winner, returner error
+        if 'ace' in point_lower or 'service winner' in point_lower:
+            return True
+        
+        # Check the last shot outcome
+        rally_parts = point_text.split(';')
+        if rally_parts:
+            last_shot = rally_parts[-1].lower()
+            shot_index = len(rally_parts)
+            is_server_shot = (shot_index % 2 == 1)  # Odd shots are server's
+            
+            if 'winner' in last_shot:
+                return is_server_shot
+            elif 'error' in last_shot or 'double fault' in last_shot:
+                return not is_server_shot
+        
+        return False
+    
+    def _did_returner_win_point(self, rally_shots: list, returner: str) -> bool:
+        """Determine if the returner won the point based on parsed rally data."""
+        if not rally_shots:
+            return False
+        
+        last_shot = rally_shots[-1]
+        outcome = last_shot.get('outcome', '')
+        last_shot_player = last_shot.get('player', '')
+        
+        # Double fault = returner wins
+        if outcome == 'DOUBLE_FAULT':
+            return True
+        
+        # Ace/service winner = server wins
+        if outcome in ['ACE', 'SERVICE_WINNER']:
+            return False
+        
+        # Winner by returner = returner wins
+        if outcome == 'WINNER' and returner.lower() in last_shot_player.lower():
+            return True
+        
+        # Winner by server = server wins
+        if outcome == 'WINNER' and returner.lower() not in last_shot_player.lower():
+            return False
+        
+        # Error by returner = server wins (returner loses)
+        if outcome in ['UNFORCED ERROR', 'FORCED ERROR'] and returner.lower() in last_shot_player.lower():
+            return False
+        
+        # Error by server = returner wins
+        if outcome in ['UNFORCED ERROR', 'FORCED ERROR'] and returner.lower() not in last_shot_player.lower():
+            return True
+        
+        # Fallback: check description
+        desc = last_shot.get('description', '').lower()
+        if 'winner' in desc:
+            return returner.lower() in last_shot_player.lower()
+        elif 'error' in desc:
+            return returner.lower() not in last_shot_player.lower()
+        
+        return False
+    
+    def _format_game_outcome_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format game outcome after event analysis into readable response."""
+        if 'error' in analysis:
+            return f"Unable to perform game outcome analysis: {analysis['error']}"
+        
+        event_name = (analysis['event_type'] or 'event').replace('_', ' ').title()
+        
+        response = f"**Game Outcome Analysis: After {event_name}**\n\n"
+        response += f"**Player Filter:** {analysis['player']}\n\n"
+        
+        response += f"**Results:**\n"
+        response += f"- Total {event_name}s found: **{analysis['total_events']}**\n"
+        response += f"- Server went on to LOSE the game: **{analysis['events_followed_by_loss']}**\n"
+        response += f"- Server went on to HOLD: **{analysis['events_followed_by_win']}**\n\n"
+        
+        if analysis['total_events'] > 0:
+            loss_rate = round(100 * analysis['events_followed_by_loss'] / analysis['total_events'], 1)
+            response += f"**Answer:** After a {event_name.lower()}, the server lost the game **{analysis['events_followed_by_loss']}** times "
+            response += f"({loss_rate}% of {event_name.lower()}s led to a break).\n"
+        
+        # Show matching instances
+        if analysis['matching_instances']:
+            shown = min(10, len(analysis['matching_instances']))
+            response += f"\n**{shown} Example Instances:**\n"
+            response += "-" * 50 + "\n"
+            
+            for i, inst in enumerate(analysis['matching_instances'][:10], 1):
+                response += f"\n**{i}. Point {inst['point']}** - {inst['game_outcome']}\n"
+                response += f"   Score: {inst['score']}\n"
+                response += f"   Server: {inst['server']}\n"
+                response += f"   Point: {inst['point_text']}...\n"
+                response += "-" * 50 + "\n"
+            
+            if len(analysis['matching_instances']) > 10:
+                response += f"\n*...and {len(analysis['matching_instances']) - 10} more instances*\n"
+        
+        if analysis['total_events'] == 0:
+            response += f"\n*Note: No {event_name.lower()}s were found in this match.*"
+        
+        return response
+    
+    def _is_rally_length_query(self, query: str) -> bool:
+        """
+        Detect if query asks about points based on rally length.
+        
+        Example queries that return True:
+        - "Who won more points that lasted longer than 15 shots?"
+        - "How many rallies went over 10 shots?"
+        - "Win percentage on long rallies (7+ shots)"
+        """
+        rally_keywords = [
+            'rally', 'rallies', 'shots long', 'shot rally',
+            'longer than', 'more than', 'over.*shots', 'shots or more',
+            '+ shots', 'long rally', 'long rallies', 'short rally', 'short rallies',
+            'lasted.*shots', 'went.*shots'
+        ]
+        import re
+        query_lower = query.lower()
+        return any(re.search(kw, query_lower) for kw in rally_keywords)
+    
+    def _analyze_rally_length(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze points based on rally length.
+        
+        Handles queries like:
+        - "Who won more points longer than 15 shots?"
+        - "Win percentage on 10+ shot rallies"
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Extract rally length threshold
+        length_threshold = None
+        # Look for patterns like "15 shots", "longer than 10", "10+ shots", "over 7 shots"
+        patterns = [
+            r'longer than (\d+)',
+            r'more than (\d+)',
+            r'over (\d+)',
+            r'(\d+)\+',
+            r'(\d+) shots or more',
+            r'(\d+)-shot',
+            r'(\d+) shot',
+            r'at least (\d+)'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, query_lower)
+            if match:
+                length_threshold = int(match.group(1))
+                break
+        
+        if length_threshold is None:
+            # Default thresholds for "long" vs "short"
+            if 'long' in query_lower:
+                length_threshold = 9  # 9+ shots = long rally
+            elif 'short' in query_lower:
+                length_threshold = 4  # 4 or fewer = short
+            else:
+                length_threshold = 10  # default
+        
+        is_greater_than = 'short' not in query_lower
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available for rally length analysis'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        # Get player names
+        player1 = self.player1
+        player2 = self.player2
+        
+        results = {
+            'length_threshold': length_threshold,
+            'is_greater_than': is_greater_than,
+            'total_qualifying_points': 0,
+            'player1': player1,
+            'player2': player2,
+            'player1_wins': 0,
+            'player2_wins': 0,
+            'matching_points': []
+        }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # Use existing _parse_rally_sequence for consistent shot counting
+            # This properly handles serve faults, double faults, lets, etc.
+            rally_shots = self._parse_rally_sequence(point_text, server, returner)
+            
+            # Count only actual rally shots (exclude faults that don't start rallies)
+            # Filter out FAULT outcomes as they don't count toward rally length
+            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
+            rally_length = len(actual_shots)
+            
+            # Check if rally matches our criteria
+            if is_greater_than:
+                if rally_length <= length_threshold:
+                    continue
+            else:
+                if rally_length > length_threshold:
+                    continue
+            
+            results['total_qualifying_points'] += 1
+            
+            # Determine who won the point using parsed rally data
+            point_winner = None
+            if actual_shots:
+                last_shot = actual_shots[-1]
+                last_shot_player = last_shot.get('player', '')
+                outcome = last_shot.get('outcome', '')
+                
+                if outcome in ['ACE', 'SERVICE_WINNER', 'WINNER']:
+                    # Winner on own shot
+                    point_winner = last_shot_player
+                elif outcome == 'DOUBLE_FAULT':
+                    # Double fault - returner wins
+                    point_winner = returner
+                elif outcome in ['UNFORCED ERROR', 'FORCED ERROR']:
+                    # Error means opponent wins
+                    point_winner = server if last_shot_player == returner else returner
+                else:
+                    # Try to infer from shot description
+                    shot_desc = last_shot.get('description', '').lower()
+                    if 'winner' in shot_desc:
+                        point_winner = last_shot_player
+                    elif 'error' in shot_desc:
+                        point_winner = server if last_shot_player == returner else returner
+            
+            if point_winner:
+                # Match winner to player1 or player2
+                if player1 and player1.lower() in point_winner.lower():
+                    results['player1_wins'] += 1
+                elif player2 and player2.lower() in point_winner.lower():
+                    results['player2_wins'] += 1
+                
+                results['matching_points'].append({
+                    'point': point_num,
+                    'server': server,
+                    'returner': returner,
+                    'score': score,
+                    'rally_length': rally_length,
+                    'winner': point_winner,
+                    'full_rally': point_text.strip()[:400] + ('...' if len(point_text) > 400 else '')
+                })
+        
+        # Calculate percentages
+        if results['total_qualifying_points'] > 0:
+            results['player1_percentage'] = round(100 * results['player1_wins'] / results['total_qualifying_points'], 1)
+            results['player2_percentage'] = round(100 * results['player2_wins'] / results['total_qualifying_points'], 1)
+        else:
+            results['player1_percentage'] = 0
+            results['player2_percentage'] = 0
+        
+        return results
+    
+    def _is_rally_category_breakdown_query(self, query: str) -> bool:
+        """Detect if query asks for breakdown by rally length categories."""
+        query_lower = query.lower()
+        
+        # Keywords indicating category breakdown needed
+        breakdown_indicators = [
+            'category', 'categories',
+            'breakdown', 'break down',
+            'by rally length', 'by length',
+            '1-3', '4-6', '7-9', '10+',
+            'short rallies', 'medium rallies', 'long rallies',
+            'highest win percentage',
+            'best rally length',
+            'which rally length',
+            'find the exact'
+        ]
+        
+        return any(kw in query_lower for kw in breakdown_indicators)
+    
+    def _analyze_rally_length_by_category(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze win percentages by rally length categories.
+        
+        Categories: 1-3 (short), 4-6 (medium), 7-9 (extended), 10+ (long)
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect if looking for a specific player's best category
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # Define categories
+        categories = {
+            '1-3': {'min': 1, 'max': 3, 'label': 'Short (1-3 shots)'},
+            '4-6': {'min': 4, 'max': 6, 'label': 'Medium (4-6 shots)'},
+            '7-9': {'min': 7, 'max': 9, 'label': 'Extended (7-9 shots)'},
+            '10+': {'min': 10, 'max': 999, 'label': 'Long (10+ shots)'}
+        }
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        # Get player names
+        player1 = self.player1
+        player2 = self.player2
+        
+        results = {
+            'player1': player1,
+            'player2': player2,
+            'player_mentioned': player_mentioned,
+            'categories': {},
+            'total_points': 0,
+            'best_category_for_player': None
+        }
+        
+        # Initialize category stats
+        for cat_key, cat_info in categories.items():
+            results['categories'][cat_key] = {
+                'label': cat_info['label'],
+                'total': 0,
+                'player1_wins': 0,
+                'player2_wins': 0,
+                'examples': []
+            }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # Parse rally
+            rally_shots = self._parse_rally_sequence(point_text, server, returner)
+            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
+            rally_length = len(actual_shots)
+            
+            if rally_length == 0:
+                continue
+            
+            results['total_points'] += 1
+            
+            # Determine category
+            cat_key = None
+            for key, info in categories.items():
+                if info['min'] <= rally_length <= info['max']:
+                    cat_key = key
+                    break
+            
+            if not cat_key:
+                continue
+            
+            results['categories'][cat_key]['total'] += 1
+            
+            # Determine winner
+            point_winner = None
+            if actual_shots:
+                last_shot = actual_shots[-1]
+                last_shot_player = last_shot.get('player', '')
+                outcome = last_shot.get('outcome', '')
+                
+                if outcome in ['ACE', 'SERVICE_WINNER', 'WINNER']:
+                    point_winner = last_shot_player
+                elif outcome == 'DOUBLE_FAULT':
+                    point_winner = returner
+                elif outcome in ['UNFORCED ERROR', 'FORCED ERROR']:
+                    point_winner = server if last_shot_player == returner else returner
+                else:
+                    shot_desc = last_shot.get('description', '').lower()
+                    if 'winner' in shot_desc:
+                        point_winner = last_shot_player
+                    elif 'error' in shot_desc:
+                        point_winner = server if last_shot_player == returner else returner
+            
+            if point_winner:
+                if player1 and player1.lower() in point_winner.lower():
+                    results['categories'][cat_key]['player1_wins'] += 1
+                elif player2 and player2.lower() in point_winner.lower():
+                    results['categories'][cat_key]['player2_wins'] += 1
+                
+                # Store example
+                if len(results['categories'][cat_key]['examples']) < 3:
+                    results['categories'][cat_key]['examples'].append({
+                        'point': point_num,
+                        'length': rally_length,
+                        'winner': point_winner,
+                        'score': score
+                    })
+        
+        # Calculate percentages and find best category
+        best_cat = None
+        best_pct = -1
+        
+        for cat_key, cat_data in results['categories'].items():
+            if cat_data['total'] > 0:
+                cat_data['player1_pct'] = round(100 * cat_data['player1_wins'] / cat_data['total'], 1)
+                cat_data['player2_pct'] = round(100 * cat_data['player2_wins'] / cat_data['total'], 1)
+                
+                # Check if this is the best category for the mentioned player
+                if player_mentioned:
+                    if player1 and player_mentioned.lower() in player1.lower():
+                        if cat_data['player1_pct'] > best_pct:
+                            best_pct = cat_data['player1_pct']
+                            best_cat = cat_key
+                    elif player2 and player_mentioned.lower() in player2.lower():
+                        if cat_data['player2_pct'] > best_pct:
+                            best_pct = cat_data['player2_pct']
+                            best_cat = cat_key
+            else:
+                cat_data['player1_pct'] = 0
+                cat_data['player2_pct'] = 0
+        
+        if best_cat:
+            results['best_category_for_player'] = {
+                'category': best_cat,
+                'label': categories[best_cat]['label'],
+                'win_percentage': best_pct,
+                'player': player_mentioned
+            }
+        
+        return results
+    
+    def _format_rally_category_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format rally length category analysis."""
+        if 'error' in analysis:
+            return f"Unable to perform rally category analysis: {analysis['error']}"
+        
+        player1 = analysis['player1']
+        player2 = analysis['player2']
+        
+        response = f"**Rally Length Category Analysis**\n\n"
+        response += f"**Players:** {player1} vs {player2}\n"
+        response += f"**Total Points Analyzed:** {analysis['total_points']}\n\n"
+        
+        response += f"**Win Percentage by Rally Length Category:**\n\n"
+        response += f"| Category | Total | {player1} Wins | {player1} % | {player2} Wins | {player2} % |\n"
+        response += f"|----------|-------|--------------|------------|--------------|------------|\n"
+        
+        for cat_key in ['1-3', '4-6', '7-9', '10+']:
+            cat_data = analysis['categories'][cat_key]
+            response += f"| **{cat_data['label']}** | {cat_data['total']} | "
+            response += f"{cat_data['player1_wins']} | **{cat_data['player1_pct']}%** | "
+            response += f"{cat_data['player2_wins']} | **{cat_data['player2_pct']}%** |\n"
+        
+        # Highlight best category for mentioned player
+        if analysis['best_category_for_player']:
+            best = analysis['best_category_for_player']
+            response += f"\n**Answer:** {best['player']}'s highest win percentage was in **{best['label']}** "
+            response += f"with **{best['win_percentage']}%**\n"
+        
+        return response
+    
+    def _format_rally_length_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format rally length analysis results into a readable response."""
+        if 'error' in analysis:
+            return f"Unable to perform rally length analysis: {analysis['error']}"
+        
+        threshold = analysis['length_threshold']
+        comparison = "longer than" if analysis['is_greater_than'] else "shorter than or equal to"
+        
+        response = f"**Rally Length Analysis**\n\n"
+        response += f"**Criteria:** Points {comparison} **{threshold} shots**\n\n"
+        
+        response += f"**Results:**\n"
+        response += f"- Total qualifying points: **{analysis['total_qualifying_points']}**\n\n"
+        
+        if analysis['total_qualifying_points'] > 0:
+            p1 = analysis['player1'] or 'Player 1'
+            p2 = analysis['player2'] or 'Player 2'
+            
+            response += f"**Winner Breakdown:**\n"
+            response += f"| Player | Points Won | Percentage |\n"
+            response += f"|--------|-----------|------------|\n"
+            response += f"| **{p1}** | {analysis['player1_wins']} | {analysis['player1_percentage']}% |\n"
+            response += f"| **{p2}** | {analysis['player2_wins']} | {analysis['player2_percentage']}% |\n"
+            
+            # Determine who won more
+            if analysis['player1_wins'] > analysis['player2_wins']:
+                diff = analysis['player1_wins'] - analysis['player2_wins']
+                response += f"\n**Answer:** **{p1}** won more points on rallies {comparison} {threshold} shots "
+                response += f"({analysis['player1_wins']} vs {analysis['player2_wins']}, +{diff})\n"
+            elif analysis['player2_wins'] > analysis['player1_wins']:
+                diff = analysis['player2_wins'] - analysis['player1_wins']
+                response += f"\n**Answer:** **{p2}** won more points on rallies {comparison} {threshold} shots "
+                response += f"({analysis['player2_wins']} vs {analysis['player1_wins']}, +{diff})\n"
+            else:
+                response += f"\n**Answer:** Both players won equal points on rallies {comparison} {threshold} shots "
+                response += f"({analysis['player1_wins']} each)\n"
+        
+        # Show sample of matching points (limit to 10)
+        if analysis['matching_points']:
+            shown = min(10, len(analysis['matching_points']))
+            response += f"\n**Sample of {shown} Matching Points (of {len(analysis['matching_points'])} total):**\n"
+            response += "-" * 50 + "\n"
+            
+            for i, p in enumerate(analysis['matching_points'][:10], 1):
+                response += f"\n**{i}. Point {p['point']}** ({p['rally_length']} shots) - Won by **{p['winner']}**\n"
+                response += f"   Score: {p['score']}\n"
+                response += f"   Rally: {p['full_rally']}\n"
+                response += "-" * 50 + "\n"
+            
+            if len(analysis['matching_points']) > 10:
+                response += f"\n*...and {len(analysis['matching_points']) - 10} more points*\n"
+        
+        if analysis['total_qualifying_points'] == 0:
+            response += f"\n*Note: No rallies {comparison} {threshold} shots were found in this match.*"
+        
+        return response
+    
+    def _is_shot_outcome_query(self, query: str) -> bool:
+        """
+        Detect if query asks about shots that resulted in specific outcomes.
+        
+        Example queries that return True:
+        - "How many backhand slices did Alcaraz hit that resulted in an error from Djokovic?"
+        - "What shots induced forced errors?"
+        - "How many forehand winners did Nadal hit?"
+        - "Which shots caused unforced errors?"
+        """
+        outcome_keywords = [
+            'resulted in', 'caused', 'induced', 'led to', 'forcing',
+            'forced error', 'unforced error', 'winner', 'error from',
+            'made.*error', 'hit.*winner', 'produced'
+        ]
+        shot_keywords = [
+            'backhand', 'forehand', 'slice', 'drop shot', 'volley',
+            'approach', 'lob', 'shot', 'groundstroke'
+        ]
+        query_lower = query.lower()
+        
+        import re
+        has_outcome = any(re.search(kw, query_lower) for kw in outcome_keywords)
+        has_shot = any(kw in query_lower for kw in shot_keywords)
+        return has_outcome and has_shot
+    
+    def _analyze_shot_outcomes(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze shots that resulted in specific outcomes (forced errors, winners, etc.).
+        
+        FIXES APPLIED:
+        1. Set filter - Only include points from specified set
+        2. Shot number filter - "second shot" or "return" = only shot_idx == 1
+        3. Correct outcome detection - "Unforced Error" checked BEFORE "forced error"
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect which player hit the shot
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # Use shared shot detection helper
+        shot_info = self._detect_shot_from_query(query)
+        shot_base = shot_info['shot_base']
+        shot_modifier = shot_info['shot_modifier']
+        shot_type = shot_info['shot_type']
+        
+        # FIX #1: Detect set filter
+        set_filter = None
+        set_patterns = [
+            (r'in set 1|set 1\b|first set|1st set', 1),
+            (r'in set 2|set 2\b|second set|2nd set', 2),
+            (r'in set 3|set 3\b|third set|3rd set', 3),
+            (r'in set 4|set 4\b|fourth set|4th set', 4),
+            (r'in set 5|set 5\b|fifth set|5th set', 5),
+        ]
+        for pattern, set_num in set_patterns:
+            if re.search(pattern, query_lower):
+                set_filter = set_num
+                break
+        
+        # FIX #2: Detect shot number filter
+        shot_number_filter = None
+        if 'second shot' in query_lower or 'as his return' in query_lower or 'as her return' in query_lower:
+            shot_number_filter = 2  # Return = shot #2 (index 1)
+        elif 'the return' in query_lower and ('as' in query_lower or 'on' in query_lower):
+            shot_number_filter = 2
+        elif 'first shot' in query_lower or 'as his serve' in query_lower:
+            shot_number_filter = 1  # Serve = shot #1 (index 0)
+        elif 'third shot' in query_lower or 'third ball' in query_lower or 'serve+1' in query_lower:
+            shot_number_filter = 3  # Serve+1 = shot #3 (index 2)
+        elif 'fourth shot' in query_lower:
+            shot_number_filter = 4
+        
+        # FIX #3: Detect desired outcome - Check UNFORCED before FORCED
+        outcome_type = None
+        if 'unforced error' in query_lower:
+            outcome_type = 'unforced_error'
+        elif 'forced error' in query_lower:
+            outcome_type = 'forced_error'
+        elif 'directly led to' in query_lower or 'led to' in query_lower:
+            # "led to an error" - check what kind
+            if 'unforced' in query_lower:
+                outcome_type = 'unforced_error'
+            else:
+                outcome_type = 'induced_error'  # Shot was so good opponent erred
+        elif 'error from' in query_lower:
+            outcome_type = 'induced_error'  # Player A's shot caused Player B's error
+        elif 'winner' in query_lower:
+            outcome_type = 'winner'
+        elif 'error' in query_lower:
+            outcome_type = 'any_error'
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available for shot outcome analysis'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        results = {
+            'player': player_mentioned or 'both players',
+            'shot_type': shot_type,
+            'shot_number_filter': shot_number_filter,
+            'set_filter': set_filter,
+            'outcome_type': outcome_type,
+            'total_shots_found': 0,
+            'shots_with_outcome': 0,
+            'matching_points': []
+        }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # FIX #1: Apply set filter
+            # Score format can be: "Djokovic 0-0 1-2" (name + sets + games)
+            # or "0-0 1-2 15-30" (sets + games + points)
+            if set_filter:
+                current_set = self._extract_current_set(score)
+                if current_set and current_set != set_filter:
+                    continue
+            
+            # Split point into shots
+            shots = [s.strip() for s in point_text.split(';') if s.strip()]
+            
+            if len(shots) < 2:
+                continue
+            
+            # Determine which shots belong to which player
+            # Shot 1 = serve (server), Shot 2 = return (returner), Shot 3 = server, etc.
+            for shot_idx, shot in enumerate(shots):
+                shot_lower = shot.lower()
+                
+                # FIX #2: Apply shot number filter
+                human_shot_number = shot_idx + 1  # Convert to 1-indexed
+                if shot_number_filter and human_shot_number != shot_number_filter:
+                    continue
+                
+                # Determine who hit this shot
+                if shot_idx % 2 == 0:  # Even index = server's shot (0=serve, 2=3rd ball, etc.)
+                    shot_player = server
+                else:  # Odd index = returner's shot
+                    shot_player = returner
+                
+                # Check if this matches the player we're looking for
+                if player_mentioned:
+                    if player_mentioned.lower() not in shot_player.lower():
+                        continue
+                
+                # Check if shot matches the type we're looking for
+                shot_matches = False
+                if shot_type:
+                    # Build patterns to match
+                    if shot_base and shot_modifier:
+                        if shot_base in shot_lower and shot_modifier in shot_lower:
+                            shot_matches = True
+                        elif shot_base in shot_lower and 'chip' in shot_lower and shot_modifier == 'slice':
+                            shot_matches = True
+                    elif shot_base and shot_base in shot_lower:
+                        shot_matches = True
+                    elif shot_modifier and (shot_modifier in shot_lower or ('chip' in shot_lower and shot_modifier == 'slice')):
+                        shot_matches = True
+                else:
+                    shot_matches = True  # No filter, match all
+                
+                if not shot_matches:
+                    continue
+                
+                results['total_shots_found'] += 1
+                
+                # Now check if this shot resulted in the desired outcome
+                # The outcome appears on the NEXT shot (opponent's response)
+                next_shot_idx = shot_idx + 1
+                
+                outcome_matches = False
+                outcome_description = ""
+                
+                if next_shot_idx < len(shots):
+                    next_shot = shots[next_shot_idx].lower()
+                    
+                    # FIX #3: Check unforced FIRST to avoid false match with "forced error"
+                    if outcome_type == 'unforced_error':
+                        if 'unforced error' in next_shot:
+                            outcome_matches = True
+                            outcome_description = "led to unforced error by opponent"
+                    elif outcome_type == 'forced_error':
+                        # Must match "forced error" but NOT "unforced error"
+                        if 'forced error' in next_shot and 'unforced' not in next_shot:
+                            outcome_matches = True
+                            outcome_description = "forced error by opponent"
+                    elif outcome_type == 'induced_error':
+                        # Any error by opponent (forced or unforced)
+                        if 'error' in next_shot:
+                            error_type = "unforced error" if 'unforced' in next_shot else "forced error"
+                            outcome_matches = True
+                            outcome_description = f"led to {error_type} by opponent"
+                    elif outcome_type == 'any_error':
+                        if 'error' in next_shot:
+                            outcome_matches = True
+                            outcome_description = "error by opponent"
+                    elif outcome_type == 'winner':
+                        # Winner is on the player's OWN shot, not next shot
+                        if 'winner' in shot_lower:
+                            outcome_matches = True
+                            outcome_description = "winner"
+                elif outcome_type == 'winner':
+                    # Check if current shot is a winner (last shot)
+                    if 'winner' in shot_lower:
+                        outcome_matches = True
+                        outcome_description = "winner"
+                
+                if outcome_matches:
+                    results['shots_with_outcome'] += 1
+                    results['matching_points'].append({
+                        'point': point_num,
+                        'server': server,
+                        'returner': returner,
+                        'score': score,
+                        'shot_player': shot_player,
+                        'shot': shot,
+                        'shot_index': shot_idx + 1,
+                        'outcome': outcome_description,
+                        'full_rally': point_text.strip()
+                    })
+        
+        return results
+    
+    def _format_shot_outcome_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format shot outcome analysis results into a readable response."""
+        if 'error' in analysis:
+            return f"Unable to perform shot outcome analysis: {analysis['error']}"
+        
+        shot_desc = analysis['shot_type'] or 'any shot'
+        outcome_desc = (analysis['outcome_type'] or 'any outcome').replace('_', ' ')
+        
+        # Build filters description
+        filters = []
+        if analysis.get('set_filter'):
+            filters.append(f"Set {analysis['set_filter']}")
+        if analysis.get('shot_number_filter'):
+            shot_names = {1: 'Serve', 2: 'Return', 3: 'Serve+1', 4: '4th Shot'}
+            filters.append(f"{shot_names.get(analysis['shot_number_filter'], f'Shot #{analysis['shot_number_filter']}')} only")
+        filter_desc = " | ".join(filters) if filters else "All Points"
+        
+        response = f"**Shot Outcome Analysis**\n\n"
+        response += f"**Player:** {analysis['player']}\n"
+        response += f"**Shot Type:** {shot_desc}\n"
+        response += f"**Filters:** {filter_desc}\n"
+        response += f"**Looking For:** {outcome_desc}\n\n"
+        
+        response += f"**Results:**\n"
+        response += f"- Total {shot_desc} shots found: **{analysis['total_shots_found']}**\n"
+        response += f"- Shots resulting in {outcome_desc}: **{analysis['shots_with_outcome']}**\n"
+        
+        if analysis['total_shots_found'] > 0:
+            percentage = round(100 * analysis['shots_with_outcome'] / analysis['total_shots_found'], 1)
+            response += f"- Percentage: **{percentage}%**\n"
+        
+        # Show all matching points
+        if analysis['matching_points']:
+            response += f"\n**All {len(analysis['matching_points'])} Matching Instances:**\n"
+            response += "-" * 50 + "\n"
+            
+            for i, p in enumerate(analysis['matching_points'], 1):
+                response += f"\n**{i}. Point {p['point']}**\n"
+                response += f"   **Score:** {p['score']}\n"
+                response += f"   **{p['shot_player']}'s Shot (#{p['shot_index']}):** {p['shot']}\n"
+                response += f"   **Outcome:** {p['outcome']}\n"
+                response += f"   **Full Rally:**\n   {p['full_rally']}\n"
+                response += "-" * 50 + "\n"
+        
+        if analysis['shots_with_outcome'] == 0:
+            response += f"\n*Note: No {shot_desc} shots by {analysis['player']} resulted in {outcome_desc}.*"
+        
+        return response
+    
+    def _analyze_serve_patterns(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze serve patterns with specific filters (set, tiebreak, court side).
+        
+        FIXES APPLIED:
+        1. 1st serve filter - Only counts 1st serve direction, excludes 2nd serve after fault
+        2. Court side comparison - Analyzes both Deuce AND Ad when comparison requested
+        3. Win percentage - Tracks points won/lost, not just serve counts
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect which player is being asked about
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # FIX #1: Detect 1st serve vs 2nd serve filter
+        serve_number_filter = None
+        if '1st serve' in query_lower or 'first serve' in query_lower:
+            serve_number_filter = 1
+        elif '2nd serve' in query_lower or 'second serve' in query_lower:
+            serve_number_filter = 2
+        
+        # Detect set filter
+        set_filter = None
+        set_patterns = [
+            (r'fifth set|5th set|set 5|set five', 5),
+            (r'fourth set|4th set|set 4|set four', 4),
+            (r'third set|3rd set|set 3|set three', 3),
+            (r'second set|2nd set|set 2|set two', 2),
+            (r'first set|1st set|set 1|set one', 1),
+        ]
+        for pattern, set_num in set_patterns:
+            if re.search(pattern, query_lower):
+                set_filter = set_num
+                break
+        
+        # Detect tiebreak filter
+        is_tiebreak_filter = 'tiebreak' in query_lower or 'tie-break' in query_lower or 'tie break' in query_lower
+        
+        # FIX #2: Detect if comparison between court sides is requested
+        is_court_comparison = 'compared to' in query_lower or ' vs ' in query_lower or 'versus' in query_lower
+        
+        # Detect court side filter OR comparison
+        court_side_filter = None
+        compare_deuce_ad = False
+        if is_court_comparison and ('deuce' in query_lower or 'ad' in query_lower):
+            compare_deuce_ad = True  # Will analyze both
+        elif 'deuce' in query_lower:
+            court_side_filter = 'deuce'
+        elif 'ad side' in query_lower or 'ad court' in query_lower or 'advantage' in query_lower:
+            court_side_filter = 'ad'
+        
+        # Detect specific direction filter (e.g., "to the T")
+        direction_filter = None
+        if "to the t" in query_lower or "down the t" in query_lower or "'t'" in query_lower:
+            direction_filter = 't'
+        elif 'wide' in query_lower:
+            direction_filter = 'wide'
+        elif 'body' in query_lower:
+            direction_filter = 'body'
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available for serve pattern analysis'}
+        
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        # Initialize results structure with win tracking
+        results = {
+            'player': player_mentioned or 'both players',
+            'analysis_type': 'serve_patterns',
+            'set_filter': set_filter,
+            'serve_number_filter': serve_number_filter,
+            'tiebreak_filter': is_tiebreak_filter,
+            'court_side_filter': court_side_filter,
+            'compare_deuce_ad': compare_deuce_ad,
+            'direction_filter': direction_filter,
+            'total_serves': 0,
+            # FIX #3: Track wins/losses by direction and court side
+            'by_direction': {
+                't': {'count': 0, 'won': 0, 'lost': 0, 'points': []},
+                'wide': {'count': 0, 'won': 0, 'lost': 0, 'points': []},
+                'body': {'count': 0, 'won': 0, 'lost': 0, 'points': []},
+                'other': {'count': 0, 'won': 0, 'lost': 0, 'points': []}
+            },
+            # For court comparison
+            'deuce_side': {
+                't': {'count': 0, 'won': 0, 'lost': 0},
+                'wide': {'count': 0, 'won': 0, 'lost': 0},
+                'body': {'count': 0, 'won': 0, 'lost': 0}
+            },
+            'ad_side': {
+                't': {'count': 0, 'won': 0, 'lost': 0},
+                'wide': {'count': 0, 'won': 0, 'lost': 0},
+                'body': {'count': 0, 'won': 0, 'lost': 0}
+            },
+            # Legacy fields for compatibility
+            'serves_to_t': 0, 'serves_wide': 0, 'serves_body': 0, 'serves_other': 0,
+            't_points': [], 'wide_points': [], 'body_points': [], 'matching_points': []
+        }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            point_lower = point_text.lower()
+            
+            # Check if the player of interest was serving
+            if player_mentioned:
+                if player_mentioned.lower() not in server.lower():
+                    continue
+            
+            # Parse score
+            score_parts = score.strip().split()
+            
+            # Check set filter - use robust extraction
+            if set_filter:
+                current_set = self._extract_current_set(score)
+                if current_set and current_set != set_filter:
+                    continue
+            
+            # Check tiebreak filter - look for 6-6, 7-6, or 6-7 in games score
+            if is_tiebreak_filter:
+                # Find games score (X-X pattern where X is typically 0-7)
+                games_patterns = re.findall(r'\b(\d+)-(\d+)\b', score)
+                is_tiebreak = False
+                for g1, g2 in games_patterns:
+                    g1_int, g2_int = int(g1), int(g2)
+                    # Games scores in tiebreak are 6-6, 7-6, or 6-7
+                    if (g1_int == 6 and g2_int == 6) or \
+                       (g1_int == 7 and g2_int == 6) or \
+                       (g1_int == 6 and g2_int == 7):
+                        is_tiebreak = True
+                        break
+                if not is_tiebreak:
+                    continue
+            
+            # Determine court side
+            point_score = score_parts[-1] if score_parts else ""
+            is_deuce_side = self._is_deuce_side_serve(point_score, is_tiebreak_filter, score_parts)
+            
+            # Apply court side filter (if not comparing)
+            if court_side_filter and not compare_deuce_ad:
+                if court_side_filter == 'deuce' and not is_deuce_side:
+                    continue
+                elif court_side_filter == 'ad' and is_deuce_side:
+                    continue
+            
+            # FIX #1: Extract serve direction from ONLY the specified serve (1st or 2nd)
+            serve_direction = self._extract_serve_direction_filtered(point_lower, serve_number_filter)
+            
+            if serve_direction is None:
+                # If filtering for 1st serve and point was won on 2nd serve, skip
+                continue
+            
+            # Apply direction filter if specified
+            if direction_filter and serve_direction != direction_filter:
+                continue
+            
+            results['total_serves'] += 1
+            
+            # FIX #3: Determine if server won the point
+            server_won = self._did_server_win_point(point_text)
+            
+            # Track by direction
+            results['by_direction'][serve_direction]['count'] += 1
+            if server_won:
+                results['by_direction'][serve_direction]['won'] += 1
+            else:
+                results['by_direction'][serve_direction]['lost'] += 1
+            
+            # Track by court side (for comparison)
+            court_key = 'deuce_side' if is_deuce_side else 'ad_side'
+            if serve_direction in results[court_key]:
+                results[court_key][serve_direction]['count'] += 1
+                if server_won:
+                    results[court_key][serve_direction]['won'] += 1
+                else:
+                    results[court_key][serve_direction]['lost'] += 1
+            
+            # Store point data
+            point_data = {
+                'point': point_num,
+                'server': server,
+                'returner': returner,
+                'score': score,
+                'serve_direction': serve_direction,
+                'is_deuce_side': is_deuce_side,
+                'court_side': 'Deuce' if is_deuce_side else 'Ad',
+                'server_won': server_won,
+                'full_text': point_text.strip()[:200]
+            }
+            
+            if len(results['by_direction'][serve_direction]['points']) < 5:
+                results['by_direction'][serve_direction]['points'].append(point_data)
+            
+            # Legacy compatibility
+            if serve_direction == 't':
+                results['serves_to_t'] += 1
+                results['t_points'].append(point_data)
+            elif serve_direction == 'wide':
+                results['serves_wide'] += 1
+                results['wide_points'].append(point_data)
+            elif serve_direction == 'body':
+                results['serves_body'] += 1
+                results['body_points'].append(point_data)
+            else:
+                results['serves_other'] += 1
+            
+            results['matching_points'].append(point_data)
+        
+        # Calculate win percentages
+        for direction in ['t', 'wide', 'body']:
+            data = results['by_direction'][direction]
+            if data['count'] > 0:
+                data['win_pct'] = round(100 * data['won'] / data['count'], 1)
+            else:
+                data['win_pct'] = 0
+            
+            # Same for court sides
+            for court in ['deuce_side', 'ad_side']:
+                court_data = results[court][direction]
+                if court_data['count'] > 0:
+                    court_data['win_pct'] = round(100 * court_data['won'] / court_data['count'], 1)
+                else:
+                    court_data['win_pct'] = 0
+        
+        # Legacy percentages
+        if results['total_serves'] > 0:
+            results['t_percentage'] = round(100 * results['serves_to_t'] / results['total_serves'], 1)
+            results['wide_percentage'] = round(100 * results['serves_wide'] / results['total_serves'], 1)
+            results['body_percentage'] = round(100 * results['serves_body'] / results['total_serves'], 1)
+        else:
+            results['t_percentage'] = results['wide_percentage'] = results['body_percentage'] = 0
+        
+        return results
+    
+    def _extract_current_set(self, score: str) -> int:
+        """
+        Extract current set number from score string.
+        
+        Handles multiple formats:
+        - "Djokovic 0-0 1-2" (name + sets + games) → Set 1
+        - "Djokovic 1-0 0-0" (name + sets + games) → Set 2
+        - "0-0 1-2 15-30" (sets + games + points) → Set 1
+        - "2-1 3-2 40-30" (sets + games + points) → Set 4
+        """
+        import re
+        
+        # Find all X-X patterns
+        patterns = re.findall(r'(\d+)-(\d+)', score)
+        
+        if not patterns:
+            return None
+        
+        # First X-X pattern that could be a set score (typically 0-0 to 3-2 range)
+        for p1, p2 in patterns:
+            p1_int, p2_int = int(p1), int(p2)
+            # Set scores are typically 0-3 range, games can be 0-7+
+            # If both are ≤ 3, it's likely the set score
+            if p1_int <= 3 and p2_int <= 3:
+                return p1_int + p2_int + 1
+        
+        # Fallback: use first pattern (may be inaccurate for some formats)
+        p1, p2 = patterns[0]
+        return int(p1) + int(p2) + 1
+    
+    def _parse_score_components(self, score: str) -> dict:
+        """
+        Parse score string into components: set, game, point.
+        
+        Handles:
+        - "Djokovic 0-0 1-2" → {'set': '0-0', 'game': '1-2'}
+        - "Djokovic 0-0 1-2 15-30" → {'set': '0-0', 'game': '1-2', 'point': '15-30'}
+        - "0-0 1-2 15-30" → {'set': '0-0', 'game': '1-2', 'point': '15-30'}
+        """
+        import re
+        
+        # Find all X-X digit patterns for set and game
+        digit_patterns = re.findall(r'(\d+)-(\d+)', score)
+        
+        if len(digit_patterns) < 2:
+            return None
+        
+        set_score = None
+        game_score = None
+        point_score = None
+        
+        for i, (p1, p2) in enumerate(digit_patterns):
+            p1_int, p2_int = int(p1), int(p2)
+            
+            if set_score is None and p1_int <= 3 and p2_int <= 3:
+                set_score = f"{p1}-{p2}"
+            elif set_score is not None and game_score is None:
+                game_score = f"{p1}-{p2}"
+            elif set_score is not None and game_score is not None and point_score is None:
+                # This could be point score in tiebreak (e.g., "3-2")
+                point_score = f"{p1}-{p2}"
+        
+        # Also check for point patterns like "15-30", "40-AD", "AD-40"
+        point_pattern = re.search(r'(0|15|30|40|AD)-(0|15|30|40|AD)', score, re.IGNORECASE)
+        if point_pattern and not point_score:
+            point_score = point_pattern.group(0)
+        
+        if set_score and game_score:
+            return {
+                'set': set_score,
+                'game': game_score,
+                'point': point_score or '0-0'
+            }
+        
+        return None
+    
+    def _is_deuce_side_serve(self, point_score: str, is_tiebreak: bool, score_parts: list) -> bool:
+        """Determine if serve is from deuce side based on score."""
+        import re
+        # Tiebreak: even total points = deuce side
+        if is_tiebreak and len(score_parts) >= 3:
+            tb_score = score_parts[2]
+            tb_match = re.match(r'(\d+)-(\d+)', tb_score)
+            if tb_match:
+                total_points = int(tb_match.group(1)) + int(tb_match.group(2))
+                return (total_points % 2 == 0)
+        
+        # Regular game: count points to determine side
+        # 0-0, 15-15, 30-30 = deuce (0, 2, 4 points)
+        # 15-0, 0-15, 30-15, 15-30, etc. = ad (odd points)
+        point_values = {'0': 0, '15': 1, '30': 2, '40': 3, 'AD': 4}
+        parts = point_score.split('-')
+        if len(parts) == 2:
+            try:
+                p1 = point_values.get(parts[0], 0)
+                p2 = point_values.get(parts[1], 0)
+                total = p1 + p2
+                return (total % 2 == 0)
+            except:
+                pass
+        return True  # Default to deuce
+    
+    def _extract_serve_direction_filtered(self, point_lower: str, serve_number_filter: int) -> str:
+        """
+        Extract serve direction for ONLY the specified serve number.
+        
+        FIX: If 1st serve filter is set but point was won on 2nd serve after fault,
+        we should either: (a) skip the point, or (b) categorize by 1st serve direction.
+        
+        For simplicity, if 1st serve was a fault, we skip the point.
+        """
+        import re
+        
+        # Check for fault pattern: "1st serve [direction], fault"
+        first_serve_fault = bool(re.search(r'1st serve.*?fault', point_lower))
+        
+        if serve_number_filter == 1:
+            if first_serve_fault:
+                # 1st serve was a fault - skip this point for 1st serve analysis
+                return None
+            else:
+                # 1st serve went in - extract its direction
+                # Look for "1st serve [direction]" at the start
+                match = re.match(r'1st serve\s*(wide|down the t|to body|to the t|body)', point_lower)
+                if match:
+                    dir_text = match.group(1)
+                    if 'wide' in dir_text:
+                        return 'wide'
+                    elif 't' in dir_text:
+                        return 't'
+                    elif 'body' in dir_text:
+                        return 'body'
+                # Try broader patterns
+                if point_lower.startswith('1st serve wide') or 'wide;' in point_lower[:30]:
+                    return 'wide'
+                elif 'down the t' in point_lower[:40] or point_lower.startswith('1st serve down the t'):
+                    return 't'
+                elif point_lower.startswith('1st serve to body') or 'body;' in point_lower[:30]:
+                    return 'body'
+                return 'other'
+        
+        elif serve_number_filter == 2:
+            if not first_serve_fault:
+                # 1st serve went in, there was no 2nd serve - skip
+                return None
+            # Extract 2nd serve direction
+            match = re.search(r'2nd serve\s*(wide|down the t|to body|to the t|body)', point_lower)
+            if match:
+                dir_text = match.group(1)
+                if 'wide' in dir_text:
+                    return 'wide'
+                elif 't' in dir_text:
+                    return 't'
+                elif 'body' in dir_text:
+                    return 'body'
+            # Broader search after "2nd serve"
+            second_serve_idx = point_lower.find('2nd serve')
+            if second_serve_idx >= 0:
+                after_second = point_lower[second_serve_idx:second_serve_idx+40]
+                if 'wide' in after_second:
+                    return 'wide'
+                elif 'down the t' in after_second or 'to the t' in after_second:
+                    return 't'
+                elif 'body' in after_second:
+                    return 'body'
+            return 'other'
+        
+        else:
+            # No filter - use any serve direction (the one that was played)
+            if point_lower.startswith('1st serve') and 'fault' not in point_lower[:50]:
+                # 1st serve went in
+                if 'wide' in point_lower[:30]:
+                    return 'wide'
+                elif 'down the t' in point_lower[:40]:
+                    return 't'
+                elif 'body' in point_lower[:30]:
+                    return 'body'
+            else:
+                # Check 2nd serve
+                second_serve_idx = point_lower.find('2nd serve')
+                if second_serve_idx >= 0:
+                    after_second = point_lower[second_serve_idx:second_serve_idx+40]
+                    if 'wide' in after_second:
+                        return 'wide'
+                    elif 'down the t' in after_second or 'to the t' in after_second:
+                        return 't'
+                    elif 'body' in after_second:
+                        return 'body'
+            return 'other'
+    
+    def _format_serve_pattern_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format serve pattern analysis results with WIN PERCENTAGES and COURT COMPARISON."""
+        if 'error' in analysis:
+            return f"Unable to perform serve pattern analysis: {analysis['error']}"
+        
+        # Build filter description
+        filters = []
+        if analysis.get('serve_number_filter') == 1:
+            filters.append("1st Serve Only")
+        elif analysis.get('serve_number_filter') == 2:
+            filters.append("2nd Serve Only")
+        if analysis.get('set_filter'):
+            filters.append(f"Set {analysis['set_filter']}")
+        if analysis.get('tiebreak_filter'):
+            filters.append("Tiebreak")
+        if analysis.get('direction_filter'):
+            filters.append(f"To {analysis['direction_filter'].upper()}")
+        filter_desc = " | ".join(filters) if filters else "All Points"
+        
+        response = f"**Serve Pattern Analysis**\n\n"
+        response += f"**Player:** {analysis['player']}\n"
+        response += f"**Filters:** {filter_desc}\n"
+        response += f"**Total Serves Analyzed:** {analysis['total_serves']}\n\n"
+        
+        if analysis['total_serves'] == 0:
+            response += f"\n*Note: No serves matching the specified filters were found.*"
+            return response
+        
+        # Check if this is a court comparison query
+        if analysis.get('compare_deuce_ad') or (analysis.get('direction_filter') and not analysis.get('court_side_filter')):
+            # FIX #2: Show comparison between Deuce and Ad courts
+            direction = analysis.get('direction_filter') or 't'
+            direction_label = {'t': 'T (Down the Middle)', 'wide': 'Wide', 'body': 'Body'}.get(direction, direction.upper())
+            
+            deuce_data = analysis['deuce_side'].get(direction, {'count': 0, 'won': 0, 'lost': 0, 'win_pct': 0})
+            ad_data = analysis['ad_side'].get(direction, {'count': 0, 'won': 0, 'lost': 0, 'win_pct': 0})
+            
+            response += f"**Comparison: Serves to {direction_label}**\n\n"
+            response += f"| Court Side | Serves | Won | Lost | Win % |\n"
+            response += f"|------------|--------|-----|------|-------|\n"
+            response += f"| **Deuce Court** | {deuce_data['count']} | {deuce_data['won']} | {deuce_data['lost']} | **{deuce_data.get('win_pct', 0)}%** |\n"
+            response += f"| **Ad Court** | {ad_data['count']} | {ad_data['won']} | {ad_data['lost']} | **{ad_data.get('win_pct', 0)}%** |\n"
+            
+            # Answer the comparison
+            if deuce_data['count'] > 0 and ad_data['count'] > 0:
+                deuce_pct = deuce_data.get('win_pct', 0)
+                ad_pct = ad_data.get('win_pct', 0)
+                
+                response += f"\n**Answer:** {analysis['player']}'s win percentage when serving to the **{direction_label}**:\n"
+                response += f"- **Deuce Court:** {deuce_pct}% ({deuce_data['won']}/{deuce_data['count']})\n"
+                response += f"- **Ad Court:** {ad_pct}% ({ad_data['won']}/{ad_data['count']})\n"
+                
+                if deuce_pct > ad_pct:
+                    response += f"\n→ **{deuce_pct - ad_pct:.1f} percentage points better on Deuce Court**\n"
+                elif ad_pct > deuce_pct:
+                    response += f"\n→ **{ad_pct - deuce_pct:.1f} percentage points better on Ad Court**\n"
+                else:
+                    response += f"\n→ **Equal win percentage on both courts**\n"
+        else:
+            # Standard breakdown with win percentages
+            response += f"**Serve Direction Breakdown (with Win %):**\n"
+            response += f"| Direction | Count | Won | Lost | Win % |\n"
+            response += f"|-----------|-------|-----|------|-------|\n"
+            
+            for direction in ['t', 'wide', 'body']:
+                data = analysis['by_direction'][direction]
+                if data['count'] > 0:
+                    label = {'t': 'T (Down the Middle)', 'wide': 'Wide', 'body': 'Body'}[direction]
+                    response += f"| **{label}** | {data['count']} | {data['won']} | {data['lost']} | **{data['win_pct']}%** |\n"
+            
+            # Best direction
+            best_dir = max(['t', 'wide', 'body'], key=lambda d: analysis['by_direction'][d].get('win_pct', 0))
+            best_data = analysis['by_direction'][best_dir]
+            if best_data['count'] > 0:
+                best_label = {'t': 'T', 'wide': 'Wide', 'body': 'Body'}[best_dir]
+                response += f"\n**Best Direction:** Serves to **{best_label}** ({best_data['win_pct']}% win rate)\n"
+        
+        # Show sample points
+        direction_filter = analysis.get('direction_filter')
+        if direction_filter:
+            points = analysis['by_direction'][direction_filter]['points']
+            if points:
+                response += f"\n**Sample Points ({len(points)}):**\n"
+                response += "-" * 40 + "\n"
+                for p in points[:5]:
+                    won_str = "[WON]" if p.get('server_won') else "[LOST]"
+                    response += f"Point {p['point']} {won_str} ({p['court_side']} side, Score: {p['score']})\n"
+                    response += f"  {p['full_text']}\n"
+        
+        return response
+    
+    def _analyze_rally_sequences(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze rally sequences - e.g., "first shot after serve was a forehand".
+        
+        This handles queries like:
+        - "Win percentage when first shot after serve was a forehand"
+        - "What happens when server's 3rd ball is a backhand?"
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect which player is being asked about
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # Use shared shot detection helper
+        shot_info = self._detect_shot_from_query(query)
+        shot_type = shot_info['shot_type']
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available for rally sequence analysis'}
+        
+        # Parse all points
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        
+        # Match point format
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        results = {
+            'player': player_mentioned or 'both players',
+            'analysis_type': 'first_shot_after_serve',
+            'shot_type': shot_type,
+            'total_serve_points': 0,
+            'points_with_matching_shot': 0,
+            'points_won': 0,
+            'points_lost': 0,
+            'win_percentage': 0,
+            'matching_points': []
+        }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # Check if the player of interest was serving
+            if player_mentioned:
+                player_is_server = player_mentioned.lower() in server.lower()
+                if not player_is_server:
+                    continue
+            
+            results['total_serve_points'] += 1
+            
+            # Parse the rally to find the server's first shot after the serve
+            # Rally format: "1st serve ...; [return]; [server's 3rd ball]; [returner's shot]; ..."
+            # Split by semicolons to get individual shots
+            shots = [s.strip() for s in point_text.split(';') if s.strip()]
+            
+            if len(shots) < 3:
+                # Not enough shots (ace, unreturned serve, or return error)
+                continue
+            
+            # shots[0] = serve (1st or 2nd)
+            # shots[1] = return
+            # shots[2] = server's first shot after serve (3rd ball)
+            third_ball = shots[2].lower() if len(shots) > 2 else ""
+            
+            # Check if the third ball matches the shot type
+            if shot_type:
+                if shot_type.lower() not in third_ball:
+                    continue
+            
+            results['points_with_matching_shot'] += 1
+            
+            # Determine if server won the point
+            # Look for outcome indicators at the end
+            point_won = False
+            point_text_lower = point_text.lower()
+            
+            # Server wins if: ace, winner by server, forced error by returner, unforced error by returner
+            # Need to check the LAST shot to determine winner
+            last_shot = shots[-1].lower() if shots else ""
+            
+            # Check for server winning patterns
+            if 'ace' in point_text_lower:
+                point_won = True
+            elif 'winner' in last_shot:
+                # Check if it's an odd-numbered shot (server's shot: 1, 3, 5, etc.)
+                shot_index = len(shots)
+                if shot_index % 2 == 1:  # Odd = server's shot (1=serve, 3=3rd ball, etc.)
+                    point_won = True
+            elif 'forced error' in last_shot or 'unforced error' in last_shot:
+                # Check if it's an even-numbered shot (returner's shot: 2, 4, 6, etc.)
+                shot_index = len(shots)
+                if shot_index % 2 == 0:  # Even = returner's shot
+                    point_won = True
+            elif ',winner' in point_text_lower:
+                # Alternative winner format - check position
+                winner_pos = point_text_lower.rfind(',winner')
+                text_before_winner = point_text_lower[:winner_pos]
+                shots_before = text_before_winner.count(';')
+                if shots_before % 2 == 0:  # Server's shot (0=serve, 2=3rd ball, etc. before semicolons)
+                    point_won = True
+            
+            if point_won:
+                results['points_won'] += 1
+            else:
+                results['points_lost'] += 1
+            
+            results['matching_points'].append({
+                'point': point_num,
+                'server': server,
+                'returner': returner,
+                'score': score,
+                'third_ball': shots[2] if len(shots) > 2 else "N/A",
+                'full_text': point_text.strip(),
+                'won': point_won
+            })
+        
+        # Calculate win percentage
+        if results['points_with_matching_shot'] > 0:
+            results['win_percentage'] = round(100 * results['points_won'] / results['points_with_matching_shot'], 1)
+        
+        return results
+    
+    def _format_rally_sequence_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format rally sequence analysis results into a readable response."""
+        if 'error' in analysis:
+            return f"Unable to perform rally sequence analysis: {analysis['error']}"
+        
+        shot_desc = analysis['shot_type'] or 'any shot'
+        
+        response = f"**Rally Sequence Analysis: First Shot After Serve**\n\n"
+        response += f"**Player:** {analysis['player']}\n"
+        response += f"**Shot Type Analyzed:** {shot_desc}\n\n"
+        
+        response += f"**Results:**\n"
+        response += f"- Total service points analyzed: **{analysis['total_serve_points']}**\n"
+        response += f"- Points where first shot after serve was {shot_desc}: **{analysis['points_with_matching_shot']}**\n"
+        response += f"- Points won: **{analysis['points_won']}**\n"
+        response += f"- Points lost: **{analysis['points_lost']}**\n"
+        response += f"- **Win Percentage: {analysis['win_percentage']}%**\n"
+        
+        # Show all matching points
+        if analysis['matching_points']:
+            response += f"\n**All {len(analysis['matching_points'])} Matching Points:**\n"
+            response += "-" * 50 + "\n"
+            
+            for i, p in enumerate(analysis['matching_points'], 1):
+                outcome = "WON" if p['won'] else "LOST"
+                response += f"\n**{i}. Point {p['point']}** [{outcome}]\n"
+                response += f"   **Score:** {p['score']}\n"
+                response += f"   **Server:** {p['server']} | **Returner:** {p['returner']}\n"
+                response += f"   **3rd Ball (First Shot After Serve):** {p['third_ball']}\n"
+                response += f"   **Full Rally:**\n   {p['full_text']}\n"
+                response += "-" * 50 + "\n"
+        
+        if analysis['points_with_matching_shot'] == 0:
+            if analysis['shot_type']:
+                response += f"\n*Note: No points found where {analysis['player']}'s first shot after serve was a {shot_desc}.*"
+            else:
+                response += f"\n*Note: No qualifying serve points found for {analysis['player']}.*"
+        
+        return response
+    
+    def _is_break_point_score(self, score_str: str) -> bool:
+        """
+        Determine if a score represents a break point for the returner.
+        Break point = returner has chance to win the game (win the break).
+        
+        Score format in point-by-point: "X-Y A-B C-D" where:
+        - X-Y = Sets (from server's perspective)
+        - A-B = Games (from server's perspective)  
+        - C-D = Points in current game (server points - returner points)
+        
+        Break point scenarios (from SERVER's perspective, meaning RETURNER has BP):
+        - 0-40 (three break points)
+        - 15-40 (two break points)
+        - 30-40 (one break point)
+        - 40-AD (advantage returner = break point)
+        """
+        import re
+        # Extract just the points portion (last part of score)
+        parts = score_str.strip().split()
+        if not parts:
+            return False
+        
+        # Get the points score (should be last element like "30-40" or "40-AD")
+        points_part = parts[-1] if parts else ""
+        
+        # Handle various formats
+        points_match = re.match(r'(\d+|AD)-(\d+|AD)', points_part, re.IGNORECASE)
+        if not points_match:
+            return False
+        
+        server_points = points_match.group(1).upper()
+        returner_points = points_match.group(2).upper()
+        
+        # Break point for returner (server facing break point):
+        # - 0-40, 15-40, 30-40 (server trailing by potential game loss)
+        # - 40-AD (advantage to returner)
+        break_point_scores = [
+            ('0', '40'), ('15', '40'), ('30', '40'),
+            ('40', 'AD')
+        ]
+        
+        return (server_points, returner_points) in break_point_scores
+    
+    def _is_game_point_score(self, score_str: str) -> bool:
+        """
+        Determine if server has game point (about to win their service game).
+        """
+        import re
+        parts = score_str.strip().split()
+        if not parts:
+            return False
+        
+        points_part = parts[-1] if parts else ""
+        points_match = re.match(r'(\d+|AD)-(\d+|AD)', points_part, re.IGNORECASE)
+        if not points_match:
+            return False
+        
+        server_points = points_match.group(1).upper()
+        returner_points = points_match.group(2).upper()
+        
+        # Game point for server:
+        # - 40-0, 40-15, 40-30 (server at 40, returner not)
+        # - AD-40 (advantage to server)
+        game_point_scores = [
+            ('40', '0'), ('40', '15'), ('40', '30'),
+            ('AD', '40')
+        ]
+        
+        return (server_points, returner_points) in game_point_scores
+    
+    def _is_deuce_score(self, score_str: str) -> bool:
+        """Determine if score is at deuce (40-40)."""
+        import re
+        parts = score_str.strip().split()
+        if not parts:
+            return False
+        
+        points_part = parts[-1] if parts else ""
+        return points_part.upper() in ['40-40', 'DEUCE']
+    
+    def _analyze_shots_in_situations(self, query: str) -> Dict[str, Any]:
+        """
+        Parse point-by-point data to analyze shots in specific situations.
+        Returns analysis data for queries like 'backhand DTL on break point'.
+        
+        Args:
+            query: User's question about situational shot selection
+            
+        Returns:
+            Dictionary with analysis results including counts and examples
+        """
+        import re
+        
+        query_lower = query.lower()
+        
+        # Detect which player is being asked about
+        player_mentioned = self._detect_player_mentioned(query)
+        
+        # Use shared shot detection helper
+        shot_info = self._detect_shot_from_query(query)
+        shot_base = shot_info['shot_base']
+        shot_modifier = shot_info['shot_modifier']
+        shot_type = shot_info['shot_type']
+        shot_direction = shot_info['shot_direction']
+        
+        # Detect situation type
+        situation_type = None
+        if 'break point' in query_lower:
+            situation_type = 'break_point'
+        elif 'game point' in query_lower:
+            situation_type = 'game_point'
+        elif 'deuce' in query_lower:
+            situation_type = 'deuce'
+        elif 'set point' in query_lower:
+            situation_type = 'set_point'
+        elif 'match point' in query_lower:
+            situation_type = 'match_point'
+        
+        # Find point-by-point chunks
+        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
+        
+        if not pbp_chunks:
+            return {'error': 'No point-by-point data available for situational analysis'}
+        
+        # Parse all points
+        all_text = '\n'.join([c['text'] for c in pbp_chunks])
+        
+        # Match point format: "Point X [Server: NAME | Returner: NAME | Score: X-X X-X X-X]: description"
+        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
+        
+        results = {
+            'player': player_mentioned or 'both players',
+            'total_situations': 0,
+            'total_shots_by_player': 0,
+            'shots_matching_criteria': 0,
+            'points_with_shot': [],
+            'shot_type': shot_type,
+            'shot_direction': shot_direction,
+            'situation': situation_type or 'all',
+            'all_situation_points': []
+        }
+        
+        for match in re.finditer(point_pattern, all_text, re.DOTALL):
+            point_num = match.group(1)
+            server = match.group(2).strip()
+            returner = match.group(3).strip()
+            score = match.group(4).strip()
+            point_text = match.group(5).strip()
+            
+            # Check if this point matches the situation
+            situation_matches = False
+            if situation_type == 'break_point':
+                situation_matches = self._is_break_point_score(score)
+            elif situation_type == 'game_point':
+                situation_matches = self._is_game_point_score(score)
+            elif situation_type == 'deuce':
+                situation_matches = self._is_deuce_score(score)
+            elif situation_type is None:
+                situation_matches = True  # No specific situation filter
+            
+            if not situation_matches:
+                continue
+            
+            results['total_situations'] += 1
+            results['all_situation_points'].append({
+                'point': point_num,
+                'server': server,
+                'returner': returner,
+                'score': score
+            })
+            
+            # Determine if the player of interest was involved and had the shot
+            # Player could be server or returner
+            player_is_server = player_mentioned and player_mentioned.lower() in server.lower()
+            player_is_returner = player_mentioned and player_mentioned.lower() in returner.lower()
+            player_involved = player_is_server or player_is_returner or not player_mentioned
+            
+            if not player_involved:
+                continue
+            
+            # Build shot pattern to search for
+            # Point-by-point format: "[shot_base] [modifier] [direction]"
+            # e.g., "backhand slice crosscourt", "forehand drop shot down the line"
+            shot_patterns = []
+            
+            if shot_base and shot_modifier and shot_direction:
+                # Most specific: e.g., "backhand slice crosscourt"
+                shot_patterns.append(f'{shot_base}.*{shot_modifier}.*{shot_direction}')
+                shot_patterns.append(f'{shot_base} {shot_modifier}.*{shot_direction}')
+            elif shot_base and shot_modifier:
+                # e.g., "backhand slice" (any direction)
+                shot_patterns.append(f'{shot_base}.*{shot_modifier}')
+                shot_patterns.append(f'{shot_base} {shot_modifier}')
+                # Also try "chip/slice" format in data
+                if shot_modifier == 'slice':
+                    shot_patterns.append(f'{shot_base}.*chip')
+                    shot_patterns.append(f'{shot_base}.*slice')
+            elif shot_base and shot_direction:
+                # e.g., "backhand crosscourt" (any modifier)
+                shot_patterns.append(f'{shot_base}.*{shot_direction}')
+            elif shot_modifier and shot_direction:
+                # e.g., "slice crosscourt" (any base)
+                shot_patterns.append(f'{shot_modifier}.*{shot_direction}')
+            elif shot_type:
+                # Just the shot type
+                shot_patterns.append(shot_type)
+                # Handle slice/chip variations
+                if 'slice' in (shot_type or '').lower():
+                    shot_patterns.append('chip')
+            elif shot_direction:
+                shot_patterns.append(shot_direction)
+            
+            # Count shots by player in this point
+            if shot_patterns:
+                for pattern in shot_patterns:
+                    if re.search(pattern, point_text, re.IGNORECASE):
+                        results['shots_matching_criteria'] += 1
+                        results['points_with_shot'].append({
+                            'point': point_num,
+                            'server': server,
+                            'returner': returner,
+                            'score': score,
+                            'full_text': point_text.strip(),  # Store full point description
+                            'excerpt': point_text[:300] + ('...' if len(point_text) > 300 else '')
+                        })
+                        break  # Count each point only once
+        
+        # Calculate percentage
+        if results['total_situations'] > 0:
+            results['percentage'] = round(100 * results['shots_matching_criteria'] / results['total_situations'], 1)
+        else:
+            results['percentage'] = 0
+        
+        return results
+    
+    def _format_situational_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format the situational analysis results into a readable response."""
+        if 'error' in analysis:
+            return f"Unable to perform situational analysis: {analysis['error']}"
+        
+        situation_name = analysis['situation'].replace('_', ' ').title() if analysis['situation'] != 'all' else 'All Points'
+        shot_desc = f"{analysis['shot_type'] or ''} {analysis['shot_direction'] or ''}".strip() or 'any shot'
+        
+        response = f"**Situational Shot Analysis**\n\n"
+        response += f"**Player:** {analysis['player']}\n"
+        response += f"**Situation:** {situation_name}\n"
+        response += f"**Shot Analyzed:** {shot_desc}\n\n"
+        
+        response += f"**Results:**\n"
+        response += f"- Total {situation_name.lower()}s in match: **{analysis['total_situations']}**\n"
+        response += f"- Points containing {shot_desc}: **{analysis['shots_matching_criteria']}**\n"
+        
+        if analysis['total_situations'] > 0:
+            response += f"- Percentage: **{analysis['percentage']}%**\n"
+        
+        # Show ALL matching points with full descriptions
+        if analysis['points_with_shot']:
+            response += f"\n**All {len(analysis['points_with_shot'])} Matching Points:**\n"
+            response += "-" * 50 + "\n"
+            for i, p in enumerate(analysis['points_with_shot'], 1):
+                response += f"\n**{i}. Point {p['point']}**\n"
+                response += f"   **Score:** {p['score']}\n"
+                response += f"   **Server:** {p['server']} | **Returner:** {p['returner']}\n"
+                response += f"   **Full Rally:**\n   {p.get('full_text', p['excerpt'])}\n"
+                response += "-" * 50 + "\n"
+        
+        if analysis['total_situations'] == 0:
+            response += f"\n*Note: No {situation_name.lower()}s were found in this match.*"
+        elif analysis['shots_matching_criteria'] == 0:
+            response += f"\n*Note: No {shot_desc} shots were found during {situation_name.lower()}s in this match.*"
+        
+        return response
+    
     def ask_question(self, question: str, top_k: int = None) -> str:
         """
         Main method to ask a question and get an answer.
-        Uses intelligent complexity detection if top_k is not specified.
+        
+        UNIFIED ROUTING BY QUERY CATEGORY:
+        1. Classify query → {domain, filters, metrics, group_by, query_category}
+        2. Route by category:
+           - 'analytical' → Taxonomy/PBP parsing
+           - 'comparative' → Taxonomy + LLM synthesis
+           - 'narrative' → NL retrieval + LLM
         """
         print(f"Processing question: {question}")
         
-        # Retrieve relevant chunks (top_k=None triggers complexity detection)
+        # TAXONOMY-BASED CLASSIFICATION
+        classification = self._classify_query(question)
+        group_by = classification.get('group_by')
+        query_category = classification.get('query_category', 'analytical')
+        
+        print(f"[TAXONOMY] Category: {query_category}, Domain: {classification['domain']}, Group: {group_by}")
+        
+        # === NARRATIVE QUERIES → NL Retrieval + LLM ===
+        if query_category == 'narrative':
+            print("[NARRATIVE] Routing to NL retrieval + LLM for narrative synthesis")
+            return self._handle_narrative_query(question, classification, top_k)
+        
+        # === COMPARATIVE QUERIES → Taxonomy + LLM Synthesis ===
+        if query_category == 'comparative':
+            print("[COMPARATIVE] Routing to comparative analysis")
+            return self._handle_comparative_query(question, classification, top_k)
+        
+        # === ANALYTICAL QUERIES → Taxonomy/PBP ===
+        # Use unified analyzer for grouped or multi-metric queries
+        if group_by or (classification['analysis_type'] == 'comparison' and len(classification['metrics']) >= 2):
+            print(f"[ANALYTICAL] Using unified analyzer (group_by={group_by})")
+            analysis = self._analyze_by_taxonomy(classification)
+            
+            if 'error' not in analysis and analysis.get('total_points', 0) > 0:
+                formatted_response = self._format_taxonomy_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[ANALYTICAL] Analysis error: {analysis['error']}, falling back")
+            else:
+                print(f"[ANALYTICAL] No points found, falling back")
+        
+        # Check if this is a game outcome after event query (e.g., "double fault then lost game")
+        if self._is_game_outcome_after_event_query(question):
+            print("[GAME-OUTCOME] Detected game outcome after event query - analyzing game results")
+            analysis = self._analyze_game_outcome_after_event(question)
+            
+            if 'error' not in analysis and analysis['total_events'] > 0:
+                formatted_response = self._format_game_outcome_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[GAME-OUTCOME] Analysis error: {analysis['error']}")
+                # Fall through to regular retrieval
+            else:
+                print(f"[GAME-OUTCOME] No events found, falling back to regular retrieval")
+        
+        # Check if this is a shot outcome query (e.g., "shots that resulted in errors")
+        if self._is_shot_outcome_query(question):
+            print("[SHOT-OUTCOME] Detected shot outcome query - analyzing shot results")
+            analysis = self._analyze_shot_outcomes(question)
+            
+            if 'error' not in analysis and analysis['total_shots_found'] > 0:
+                formatted_response = self._format_shot_outcome_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[SHOT-OUTCOME] Analysis error: {analysis['error']}")
+                # Fall through to regular retrieval
+            else:
+                print(f"[SHOT-OUTCOME] No matching shots found, falling back to regular retrieval")
+        
+        # Check if this is a serve pattern query (e.g., "serve more to T or Wide")
+        if self._is_serve_pattern_query(question):
+            print("[SERVE-PATTERN] Detected serve pattern query - analyzing serve directions")
+            analysis = self._analyze_serve_patterns(question)
+            
+            if 'error' not in analysis and analysis['total_serves'] > 0:
+                formatted_response = self._format_serve_pattern_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[SERVE-PATTERN] Analysis error: {analysis['error']}")
+                # Fall through to regular retrieval
+            else:
+                print(f"[SERVE-PATTERN] No serves found, falling back to regular retrieval")
+        
+        # Check if this is a rally length CATEGORY breakdown query (e.g., "which category had highest win %")
+        if self._is_rally_category_breakdown_query(question):
+            print("[RALLY-CATEGORY] Detected rally category breakdown query - analyzing by categories")
+            analysis = self._analyze_rally_length_by_category(question)
+            
+            if 'error' not in analysis and analysis['total_points'] > 0:
+                formatted_response = self._format_rally_category_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[RALLY-CATEGORY] Analysis error: {analysis['error']}")
+            else:
+                print(f"[RALLY-CATEGORY] No points found, falling back")
+        
+        # Check if this is a rally length query (e.g., "points longer than 15 shots")
+        if self._is_rally_length_query(question):
+            print("[RALLY-LENGTH] Detected rally length query - analyzing by rally length")
+            analysis = self._analyze_rally_length(question)
+            
+            if 'error' not in analysis and analysis['total_qualifying_points'] > 0:
+                formatted_response = self._format_rally_length_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[RALLY-LENGTH] Analysis error: {analysis['error']}")
+                # Fall through to regular retrieval
+            else:
+                print(f"[RALLY-LENGTH] No qualifying points found, falling back to regular retrieval")
+        
+        # Check if this is a return depth situational query (e.g., "return depth on break points")
+        if self._is_return_depth_situational_query(question):
+            print("[RETURN-DEPTH] Detected return depth situational query - analyzing return depth")
+            analysis = self._analyze_return_depth_in_situations(question)
+            
+            if 'error' not in analysis and analysis['total_situation_points'] > 0:
+                formatted_response = self._format_return_depth_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[RETURN-DEPTH] Analysis error: {analysis['error']}")
+                # Fall through to regular retrieval
+            else:
+                print(f"[RETURN-DEPTH] No situational points found, falling back to regular retrieval")
+        
+        # Check if this is a rally sequence query (e.g., "first shot after serve")
+        if self._is_rally_sequence_query(question):
+            print("[RALLY-SEQUENCE] Detected rally sequence query - performing 3rd ball analysis")
+            analysis = self._analyze_rally_sequences(question)
+            
+            if 'error' not in analysis and analysis['total_serve_points'] > 0:
+                formatted_response = self._format_rally_sequence_analysis(analysis)
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[RALLY-SEQUENCE] Analysis error: {analysis['error']}")
+                # Fall through to regular retrieval
+            else:
+                print(f"[RALLY-SEQUENCE] No serve points found, falling back to regular retrieval")
+        
+        # Check if this is a situational shot query requiring point-by-point analysis
+        if self._is_situational_shot_query(question):
+            print("[SITUATIONAL] Detected situational shot query - performing point-by-point analysis")
+            analysis = self._analyze_shots_in_situations(question)
+            
+            if 'error' not in analysis and analysis['total_situations'] > 0:
+                # Return the formatted situational analysis
+                formatted_response = self._format_situational_analysis(analysis)
+                
+                # Optionally, also get LLM context for richer response
+                relevant_chunks = self.retrieve_relevant_chunks(question, top_k)
+                if relevant_chunks:
+                    # Add a brief LLM-enhanced interpretation
+                    context = f"Based on point-by-point analysis: {analysis['player']} hit {analysis['shot_type'] or 'the'} {analysis['shot_direction'] or 'shot'} in {analysis['shots_matching_criteria']} of {analysis['total_situations']} {analysis['situation'].replace('_', ' ')}s ({analysis['percentage']}%)."
+                    
+                    # Could optionally add LLM interpretation here
+                    return formatted_response
+                
+                return formatted_response
+            elif 'error' in analysis:
+                print(f"[SITUATIONAL] Analysis error: {analysis['error']}")
+                # Fall through to regular retrieval
+            else:
+                print(f"[SITUATIONAL] No situations found, falling back to regular retrieval")
+        
+        # Regular retrieval-based answering
         relevant_chunks = self.retrieve_relevant_chunks(question, top_k)
         
         if not relevant_chunks:
