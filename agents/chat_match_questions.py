@@ -90,11 +90,15 @@ class TennisChatAgentEmbeddingQALocal:
             "rally": ["unforced_errors", "avg_rally_length"],
         },
         "pressure": {
-            "description": "Performance under elevated leverage.",
-            "default": ["win_percentage", "unforced_errors"],  # Applied to break_point filter
+            "description": "Performance under elevated leverage. 'Under pressure' includes all critical situations: break_point (0-40, 15-40, 30-40, AD-OUT), game_point (40-0, 40-15, 40-30, AD-IN), set_point, match_point, and deuce (40-40).",
+            "default": ["win_percentage", "unforced_errors"],  # Applied to pressure situations
             "break_point": ["break_point_conversion", "break_point_saves", "win_percentage"],
-            "serve": ["break_point_saves", "win_percentage"],
-            "return": ["break_point_conversion", "win_percentage"],
+            "game_point": ["win_percentage", "game_point_conversion"],
+            "set_point": ["win_percentage", "set_point_conversion"],
+            "match_point": ["win_percentage", "match_point_conversion"],
+            "deuce": ["win_percentage", "deuce_points_won"],
+            "serve": ["break_point_saves", "game_point_saves", "win_percentage"],
+            "return": ["break_point_conversion", "game_point_conversion", "win_percentage"],
         },
         "risk": {
             "description": "Volatility vs payoff.",
@@ -234,6 +238,32 @@ class TennisChatAgentEmbeddingQALocal:
             'score_patterns': [],
             'role_context': 'neutral',
         },
+    }
+    
+    # ══════════════════════════════════════════════════════════════════════════════
+    # POINT SCORE CONFIGURATION - Valid point scores and normalization
+    # ══════════════════════════════════════════════════════════════════════════════
+    POINT_SCORE_CONFIG = {
+        'valid_values': ['0', '15', '30', '40', 'AD'],  # Valid tennis point scores
+        'aliases': {
+            # Common alternative representations
+            'DEUCE': '40-40',
+            'ALL': None,  # Special marker: "30-all" → use first value repeated
+            'ADVANTAGE': 'AD',
+            'ADV': 'AD',
+            'A': 'AD',
+        },
+        'patterns': {
+            # Regex patterns for detecting point scores in queries
+            'standard': r'(?:at\s+|when\s+)?(\d{1,2})[\-–](\d{1,2}|AD|all)',
+            'with_context': r'(?:at\s+|when\s+)?(\d{1,2})[\-–](\d{1,2}|AD|all)(?:\s+(?:points?|score))?',
+        },
+        'normalization_rules': {
+            # How to normalize point scores for comparison
+            'uppercase': True,
+            'deuce_to_40_40': True,
+            'handle_en_dash': True,  # Convert en dash (–) to hyphen (-)
+        }
     }
     
     # ══════════════════════════════════════════════════════════════════════════════
@@ -843,6 +873,48 @@ class TennisChatAgentEmbeddingQALocal:
     def _get_situation_config(self, situation: str) -> Dict:
         """Get config for a situation - NEVER hardcode situation checks!"""
         return self.SITUATION_CONFIG.get(situation.lower() if situation else '', {})
+    
+    def _normalize_point_score(self, point_score: str) -> str:
+        """
+        Normalize a point score using POINT_SCORE_CONFIG rules.
+        
+        Examples:
+            "30-30" -> "30-30"
+            "DEUCE" -> "40-40"
+            "30–30" (en dash) -> "30-30"
+            "40-AD" -> "40-AD"
+        """
+        if not point_score:
+            return ''
+        
+        # Apply normalization rules from config
+        normalized = str(point_score)
+        
+        # Handle en dash -> hyphen
+        if self.POINT_SCORE_CONFIG['normalization_rules']['handle_en_dash']:
+            normalized = normalized.replace('–', '-')
+        
+        # Uppercase
+        if self.POINT_SCORE_CONFIG['normalization_rules']['uppercase']:
+            normalized = normalized.upper()
+        
+        # Apply aliases (e.g., DEUCE -> 40-40)
+        if self.POINT_SCORE_CONFIG['normalization_rules']['deuce_to_40_40']:
+            for alias, replacement in self.POINT_SCORE_CONFIG['aliases'].items():
+                if replacement and alias in normalized:
+                    normalized = normalized.replace(alias, replacement)
+        
+        return normalized
+    
+    def _is_valid_point_score(self, point_score: str) -> bool:
+        """Check if a string looks like a valid point score using POINT_SCORE_CONFIG."""
+        import re
+        if not point_score:
+            return False
+        
+        # Check against standard pattern
+        pattern = self.POINT_SCORE_CONFIG['patterns']['standard']
+        return bool(re.match(pattern, point_score, re.IGNORECASE))
     
     def _check_situation(self, situation: str, score: str, game_score: str = None) -> bool:
         """Check if a score matches a situation - GENERIC lookup."""
@@ -1537,6 +1609,29 @@ class TennisChatAgentEmbeddingQALocal:
             if m not in existing_metrics:
                 existing_metrics.append(m)
         classification['metrics'] = existing_metrics
+        
+        # CRITICAL: Preserve/create metric_filters for vague-resolved metrics
+        # If LLM provided top-level filters (shot_type, direction, etc.) but metrics_parsed was empty (vague),
+        # we need to apply those filters to the vague-resolved metrics
+        if 'metric_filters' not in classification:
+            classification['metric_filters'] = {}
+        
+        # Check if LLM provided top-level shot filters
+        top_level_shot_filters = {}
+        for filter_key in ['shot_type', 'direction', 'shot_modifier', 'player', 'role', 'situation', 'set']:
+            filter_value = filters.get(filter_key)
+            if filter_value:
+                top_level_shot_filters[filter_key] = filter_value
+        
+        # Apply these filters to all vague-resolved metrics
+        if top_level_shot_filters:
+            for m in metric_bundle:
+                if m not in classification['metric_filters']:
+                    classification['metric_filters'][m] = {
+                        'metric': m,
+                        'filters': top_level_shot_filters.copy(),
+                        'context': context
+                    }
         
         # Force group_by if term has special grouping (e.g., momentum → by sets)
         if 'group_by' in term_config and not classification.get('group_by'):
@@ -2737,6 +2832,153 @@ class TennisChatAgentEmbeddingQALocal:
         # 2. Service game percentage queries (must use game-level tracking)
         # 3. Break queries (game-level, not point-level)
         return (has_game_keyword and not has_point_keyword) or is_service_game_percentage or is_break_query
+    
+    def _is_shot_level_query(self, question: str, classification: Dict) -> bool:
+        """
+        Detect if query is about SHOT-LEVEL analysis (individual shots during rallies)
+        vs POINT-LEVEL analysis (point outcomes).
+        
+        SHOT-LEVEL queries should use EMBEDDINGS (narrative) because NL file has
+        pre-computed shot statistics. POINT-LEVEL queries use the TREE for outcome analysis.
+        
+        Examples of SHOT-LEVEL queries:
+        - "How many forehands did Sinner hit?"
+        - "What percentage of Medvedev's shots were winners?"
+        - "How many crosscourt winners?" (counting shots with direction + outcome)
+        - "How many inside-out forehands?" (specific shot type + direction)
+        
+        Examples of POINT-LEVEL queries (NOT shot-level):
+        - "How many points did Sinner win?" (point outcome)
+        - "What's the break point conversion rate?" (point outcome in situation)
+        - "Win percentage on second serve?" (point outcome filtered by serve)
+        
+        Returns:
+            bool: True if query is about shot-level analysis, False otherwise
+        """
+        question_lower = question.lower()
+        
+        # === INDICATOR 1: Explicit "shot" or "shots" in question ===
+        # But exclude "shot" as verb (e.g., "what shot did")
+        has_shots_keyword = ' shot ' in question_lower or ' shots ' in question_lower or \
+                          question_lower.startswith('shot ') or question_lower.endswith(' shot') or \
+                          question_lower.startswith('shots ') or question_lower.endswith(' shots')
+        
+        # === INDICATOR 2: metrics_parsed contains shot_type or direction filters ===
+        # These filters on metrics indicate we're filtering individual shots, not just points
+        metric_filters = classification.get('metric_filters', {})
+        has_shot_filters_in_metrics = False
+        if metric_filters:
+            for metric_key, metric_data in metric_filters.items():
+                filters = metric_data.get('filters', {})
+                if filters.get('shot_type') or filters.get('direction') or filters.get('shot_modifier'):
+                    has_shot_filters_in_metrics = True
+                    break
+        
+        # === INDICATOR 3: Question asks about shot types from config ===
+        # Use GROUP_CONFIG to dynamically get all known shot types
+        shot_type_terms = []
+        shot_type_config = self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+        if shot_type_config:
+            for st in shot_type_config:
+                # Add both underscore and space/hyphen versions
+                shot_type_terms.append(st.lower())
+                shot_type_terms.append(st.lower().replace('_', ' '))
+                shot_type_terms.append(st.lower().replace('_', '-'))
+        
+        # Also check shot modifiers (inside-out, inside-in, etc.)
+        shot_modifier_config = self.match_filter_inventory.get('shot_modifiers', [])
+        shot_modifier_terms = [sm.lower().replace('_', ' ') for sm in shot_modifier_config]
+        shot_modifier_terms += [sm.lower().replace('_', '-') for sm in shot_modifier_config]
+        
+        # Also check directions (crosscourt, down-the-line, etc.)
+        direction_config = self.GROUP_CONFIG.get('direction', {}).get('default_branches', [])
+        direction_terms = []
+        for d in direction_config:
+            direction_terms.append(d.lower())
+            direction_terms.append(d.lower().replace('_', ' '))
+            direction_terms.append(d.lower().replace('_', '-'))
+        
+        # Check if question mentions specific shot types, modifiers, or directions
+        has_shot_type_term = any(term in question_lower for term in shot_type_terms)
+        has_shot_modifier_term = any(term in question_lower for term in shot_modifier_terms)
+        has_direction_term = any(term in question_lower for term in direction_terms)
+        
+        # === INDICATOR 4: shot_count metric present ===
+        metrics = classification.get('metrics', [])
+        has_shot_count_metric = 'shot_count' in metrics
+        
+        # === INDICATOR 4b: Direction/shot_type + outcome queries (shot-level) ===
+        # "crosscourt winners", "forehand unforced errors" = count shots with filters+outcome
+        # These have shot filters (direction/shot_type/modifier) on point-ending outcome metrics
+        has_direction_on_outcome_metric = False
+        if metric_filters:
+            for metric_key, metric_data in metric_filters.items():
+                filters = metric_data.get('filters', {})
+                metric_name = metric_data.get('metric', metric_key)
+                # Check if it's a point-ending outcome metric with shot-level filters
+                # Use config to check if metric is a point-ending outcome
+                if metric_name in self.SELF_EVIDENT_OUTCOME_METRICS:
+                    # Check if it has any shot-level filters (direction, shot_type, shot_modifier)
+                    if filters.get('direction') or filters.get('shot_type') or filters.get('shot_modifier'):
+                        has_direction_on_outcome_metric = True
+                        break
+        
+        # === INDICATOR 5: Percentage questions about shots ===
+        # "What percentage of X's shots were Y?" or "X's shot percentage"
+        is_shot_percentage = ('percentage' in question_lower or 'percent' in question_lower or '%' in question_lower) and \
+                            has_shots_keyword
+        
+        # === INDICATOR 6: Net points, approaches, net statistics ===
+        # Questions about "net points", "approach", "approaching net" are shot-level stats from embeddings
+        # Volley routing rule:
+        # - If "volley" is used as a filter (e.g., "all volleys", "volleys hit") → shot-level
+        # - If "volley" is used as a label for the winning shot only (e.g., "volley winners") → point-level
+        #   BUT only if the tree explicitly tracks whether the point-ending shot was a volley
+        # Safer rule: Unless the tree explicitly tracks point-ending volleys, treat all volley queries as shot-level
+        net_keywords = [
+            'net points', 'net point', 'points at net', 'point at net',
+            'approach the net', 'approaching the net', 'approaching net', 'approaching',
+            'net approach', 'net approaches', 'approached the net', 'approached net',
+            'times at net', 'time at net', 'at the net', 'at net',
+            'net play', 'net statistics', 'net stats', 'net performance',
+            'came to net', 'come to net', 'coming to net',
+            'net points won', 'net points lost', 'net point won', 'net point lost',
+            'approached', 'approaches', 'net approaches'
+        ]
+        has_net_stat_keyword = any(kw in question_lower for kw in net_keywords)
+        
+        # Also check for net_points_won metric
+        has_net_points_metric = 'net_points_won' in metrics or 'net_approach' in metrics
+        
+        # === EXCLUSIONS: Point-level keywords that override shot-level ===
+        # If explicitly asking about points won/lost, it's point-level even with shot filters
+        # EXCEPTION: "net points" is shot-level even though it contains "points"
+        point_outcome_keywords = [
+            'points won', 'points did', 'win percentage', 'win rate',
+            'break point', 'break points', 'conversion', 'converted',
+            'first serve in', 'second serve', 'serve percentage'
+        ]
+        has_point_outcome = any(kw in question_lower for kw in point_outcome_keywords) and not has_net_stat_keyword
+        
+        # === DECISION LOGIC ===
+        # Shot-level if:
+        # 1. Has "shots" keyword AND (shot filters OR shot types OR percentage about shots)
+        # 2. Has shot_count metric
+        # 3. Has shot-type/direction/modifier terms with metrics (counting specific shots)
+        # 4. Has net statistics keywords (net points, approaches)
+        # 5. Has direction filter on outcome metrics (crosscourt winners, DTL errors)
+        # But NOT if it has point outcome keywords (those are point-level)
+        
+        is_shot_level = (
+            (has_shots_keyword and (has_shot_filters_in_metrics or has_shot_type_term or is_shot_percentage)) or
+            has_shot_count_metric or
+            (has_shot_filters_in_metrics and (has_shot_type_term or has_direction_term or has_shot_modifier_term)) or
+            has_net_stat_keyword or
+            has_net_points_metric or
+            has_direction_on_outcome_metric
+        ) and not has_point_outcome
+        
+        return is_shot_level
     
     def _handle_game_query(self, question: str, classification: Dict) -> str:
         """
@@ -7342,6 +7584,28 @@ Answer:"""
         - 'comparative': Trends, changes, evolution → PBP + LLM synthesis
         - 'narrative': Summary, story, what happened → NL retrieval + LLM
         """
+        # CRITICAL: Net points routing logic
+        # - General net points questions → narrative
+        # - Serve and volley questions → narrative (net points)
+        # - Questions about specific net shots (volleys, half volleys, overheads, swinging volleys) → analytical
+        net_points_keywords = ['net points', 'net approaches', 'serve and volley', 'serve-and-volley', 's-and-v', 'at the net', 'net play', 
+        'at net', 'net point', 'net points won', 'net points lost', 'net percentage', 'net points won percentage', 'net points percentage', 'net']
+        net_shot_keywords = ['volley', 'volleys', 'half volley', 'half volleys', 'half-volley', 'half-volleys', 
+                            'overhead', 'overheads', 'smash', 'smashes', 'swinging volley', 'swinging volleys']
+        
+        has_net_points = any(kw in query_lower for kw in net_points_keywords)
+        has_net_shots = any(kw in query_lower for kw in net_shot_keywords)
+        
+        # If question mentions net points or serve-and-volley → narrative (except if asking about specific net shots)
+        if has_net_points or 'serve and volley' in query_lower or 'serve-and-volley' in query_lower:
+            # BUT: If asking about specific net shots (volleys, half volleys, overheads), route to analytical
+            if has_net_shots and not has_net_points:
+                # Only about net shots, not general net points → analytical
+                pass  # Continue to default analytical
+            else:
+                # General net points or serve-and-volley → narrative
+                return 'narrative'
+        
         # CRITICAL: Questions about "returnable" serves must go to narrative
         if 'returnable' in query_lower:
             return 'narrative'
@@ -7448,9 +7712,11 @@ Answer:"""
             # Use inventory if available
             mentioned_types = sum(1 for st in known_shot_types if st and st.lower() in query_lower)
         else:
-            # Fallback: direct detection of common shot types
-            common_shot_types = ['forehand', 'backhand', 'volley', 'serve', 'overhead', 'slice']
-            mentioned_types = sum(1 for st in common_shot_types if st in query_lower)
+            # Fallback: use config-based shot types (NOT hardcoded)
+            config_shot_types = self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+            config_modifiers = self.GROUP_CONFIG.get('shot_modifier', {}).get('default_branches', [])
+            all_shot_types = config_shot_types + config_modifiers
+            mentioned_types = sum(1 for st in all_shot_types if st and st.lower() in query_lower)
         
         # Check for error terms in priority order
         has_error_context = False
@@ -7574,6 +7840,7 @@ Answer:"""
             'direction': None,
             'depth': None,
             'rally_length': None,
+            'point_score': None,   # e.g., "30-30", "15-40" - specific point score filter
             # MCP-specific filters
             'serve_target': None,  # wide/body/t (MCP codes 4/5/6)
             'shot_number': None,   # 1=serve, 2=return, 3=serve+1
@@ -7612,6 +7879,32 @@ Answer:"""
             print(f"[DETECT-FILTERS] *** FOUND deuce ***")
         else:
             print(f"[DETECT-FILTERS] No direct situation match")
+        
+        # === POINT SCORE FILTER (e.g., "at 30-30", "at 15-40") ===
+        # Detect specific point scores like "30-30", "15-40", "40-AD"
+        # Use POINT_SCORE_CONFIG for validation and normalization
+        point_score_pattern = self.POINT_SCORE_CONFIG['patterns']['with_context']
+        point_score_match = re.search(point_score_pattern, query, re.IGNORECASE)  # Use original query for en dash support
+        if point_score_match:
+            p1, p2 = point_score_match.groups()
+            # Validate using config
+            valid_scores = set(self.POINT_SCORE_CONFIG['valid_values'] + ['all'])
+            valid_scores_lower = {v.lower() for v in valid_scores}
+            
+            if p1 in valid_scores_lower and p2.lower() in valid_scores_lower:
+                # Handle "30-all" -> "30-30" using config
+                if p2.lower() == 'all':
+                    p2 = p1
+                
+                # Normalize using config rules
+                filters['point_score'] = f"{p1}-{p2}".upper()
+                
+                # Apply aliases from config (e.g., DEUCE -> 40-40)
+                for alias, replacement in self.POINT_SCORE_CONFIG['aliases'].items():
+                    if replacement and alias in filters['point_score']:
+                        filters['point_score'] = filters['point_score'].replace(alias, replacement)
+                
+                print(f"[DETECT-FILTERS] *** FOUND point_score: {filters['point_score']} ***")
         
         # === GENERIC ROLE DETECTION (for ANY situation) ===
         # Detect role from keywords - works for break points, game points, set points, etc.
@@ -7903,9 +8196,27 @@ Answer:"""
         is_shot_percentage = ('percentage' in query_lower or 'percent' in query_lower or '%' in query_lower) and \
                            ('shots' in query_lower or 'shot' in query_lower)
         
+        # "success rate" for shots = points won / total shots where that direction/type was used
+        # Patterns: "crosscourt success rate", "down-the-line shot success rate", "forehand success rate"
+        # Use config for direction and shot type terms
+        direction_config = self.GROUP_CONFIG.get('direction', {}).get('default_branches', [])
+        shot_type_config = self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+        # Build search terms (include both underscore and space/hyphen versions)
+        direction_terms = []
+        for d in direction_config:
+            direction_terms.append(d.lower())
+            direction_terms.append(d.lower().replace('_', ' '))
+            direction_terms.append(d.lower().replace('_', '-'))
+        shot_type_terms = [s.lower() for s in shot_type_config] if shot_type_config else []
+        is_shot_success_rate = 'success rate' in query_lower and any(term in query_lower for term in direction_terms + shot_type_terms + ['shot'])
+        
         if is_shot_query or is_shot_percentage:
             metrics.append('shot_count')
             # The specific outcome metric (winners, errors, etc.) will be detected by other logic below
+        
+        # For shot success rate: will be routed to narrative in post-processing
+        if is_shot_success_rate:
+            print(f"[DETECT-METRICS] Detected shot success rate (will route to narrative)")
         
         # "forehand to backhand ratio" / "shot ratio" - needs shot_count with grouping by shot_type
         if ('forehand' in query_lower and 'backhand' in query_lower) and ('ratio' in query_lower or 'shot' in query_lower):
@@ -8061,12 +8372,12 @@ Answer:"""
         
         chain = None
         
-        # Get known values from inventory
+        # Inventory (actual match data) -> GROUP_CONFIG (all possible values)
         inventory = getattr(self, 'match_filter_inventory', {})
-        known_shot_types = inventory.get('shot_types', ['forehand', 'backhand'])
-        known_modifiers = inventory.get('shot_modifiers', ['slice', 'volley', 'drop_shot', 'approach'])
-        known_serve_targets = inventory.get('serve_targets', ['wide', 'body', 't'])
-        known_outcomes = inventory.get('outcomes', ['winner', 'error', 'forced_error', 'ace', 'double_fault'])
+        known_shot_types = inventory.get('shot_types') or self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+        known_modifiers = inventory.get('shot_modifiers') or self.GROUP_CONFIG.get('shot_modifier', {}).get('default_branches', [])
+        known_serve_targets = inventory.get('serve_targets') or self.GROUP_CONFIG.get('serve_target', {}).get('default_branches', [])
+        known_outcomes = inventory.get('outcomes') or self.GROUP_CONFIG.get('outcome', {}).get('default_branches', [])
         
         # Build dynamic patterns from inventory
         shot_pattern = '|'.join([s.lower().replace('_', ' ') for s in known_shot_types + known_modifiers])
@@ -8355,6 +8666,7 @@ Answer:"""
             ('situation', filters.get('situation')),
             ('set', filters.get('set')),
             # Skip set_group_a/b - handled as grouping below
+            ('point_score', filters.get('point_score')),  # Specific point score (e.g., "30-30", "15-40")
             ('serve_number', filters.get('serve_number')),
             ('serve_target', filters.get('serve_target')),
             ('court_side', filters.get('court_side')),
@@ -8740,20 +9052,27 @@ Answer:"""
                         passes_filter = 'tiebreak' in score.lower() or self._is_tiebreak_point(score)
             
             elif dimension == 'set' or dimension == 'sets':
-                current_set = self._extract_current_set(score)
+                # Prefer metadata set_number if available, otherwise parse from score
+                current_set = meta.get('set_number')
+                if current_set is None:
+                    current_set = self._extract_current_set(score)
                 # Handle both string and int comparisons
                 if isinstance(value, str) and value.isdigit():
                     value = int(value)
                 passes_filter = (current_set == value)
             
             elif dimension == 'set_group_a' or dimension == 'set_group_b':
-                current_set = self._extract_current_set(score)
+                current_set = meta.get('set_number')
+                if current_set is None:
+                    current_set = self._extract_current_set(score)
                 set_list = value if isinstance(value, list) else [value]
                 passes_filter = (current_set in set_list)
             
             elif dimension == 'set_groups':
                 # Handle grouping by set comparison (branch value is 'a' or 'b')
-                current_set = self._extract_current_set(score)
+                current_set = meta.get('set_number')
+                if current_set is None:
+                    current_set = self._extract_current_set(score)
                 if value == 'a':
                     set_list = filters.get('set_group_a', [])
                 elif value == 'b':
@@ -8862,6 +9181,24 @@ Answer:"""
                 
                 # Check if ANY of the winning shot's modifiers match (using hierarchy)
                 passes_filter = any(self._values_match(value, mod) for mod in winning_modifiers) if value else True
+            
+            elif dimension == 'point_score':
+                # Filter by specific point score (e.g., "30-30", "15-40", "40-AD")
+                # This enables queries like "Who won more points at 30-30?"
+                # Note: point_score is stored at top level of metadata, not in game_info
+                actual_point_score = meta.get('point_score', '')
+                
+                # Use config-based normalization for consistent comparison
+                value_normalized = self._normalize_point_score(value)
+                actual_normalized = self._normalize_point_score(actual_point_score)
+                
+                # Direct match
+                passes_filter = (value_normalized == actual_normalized)
+                
+                # Also check if the score string contains the point score pattern
+                if not passes_filter and score:
+                    # Look for the point score in the full score string
+                    passes_filter = value_normalized in score.upper()
             
             elif dimension == 'role':
                 player_filter = (filters.get('player') or '').lower()
@@ -9935,14 +10272,12 @@ Answer:"""
                         results['shot_counts_by_type'] = {}
                     
                     shot_count = 0
+                    p1_shots = 0
+                    p2_shots = 0
                     for shot in actual_shots:
                         shot_player = shot.get('player', '')
                         shot_type_val = (shot.get('shot_type') or '').lower()
                         shot_direction = shot.get('direction', '')
-                        
-                        # Apply player filter (use metric-specific if available)
-                        if metric_player_filter and not self._names_match_robust(metric_player_filter, shot_player):
-                            continue
                         
                         # Apply shot type filter dynamically from classification
                         if shot_type_filter and shot_type_val != shot_type_filter.lower():
@@ -9950,6 +10285,18 @@ Answer:"""
                         
                         # Apply direction filter if present
                         if direction_filter and shot_direction != direction_filter:
+                            continue
+                        
+                        # Track per-player BEFORE applying player filter (for per_player_metrics)
+                        is_p1_shot = player1 and self._names_match_robust(player1, shot_player)
+                        is_p2_shot = player2 and self._names_match_robust(player2, shot_player)
+                        if is_p1_shot:
+                            p1_shots += 1
+                        elif is_p2_shot:
+                            p2_shots += 1
+                        
+                        # Apply player filter (use metric-specific if available)
+                        if metric_player_filter and not self._names_match_robust(metric_player_filter, shot_player):
                             continue
                         
                         shot_count += 1
@@ -9961,6 +10308,11 @@ Answer:"""
                             results['shot_counts_by_type'][shot_type_val] += 1
                     
                     results['metrics'][metric]['count'] += shot_count
+                    # CRITICAL: Also track per_player_metrics so player filter doesn't clobber with 0
+                    results['per_player_metrics'][metric]['player1']['count'] += p1_shots
+                    results['per_player_metrics'][metric]['player1']['total'] += p1_shots  # For shots, count=total
+                    results['per_player_metrics'][metric]['player2']['count'] += p2_shots
+                    results['per_player_metrics'][metric]['player2']['total'] += p2_shots
                     continue
                 
                 # === UNIFIED PATH: ALWAYS track both players ===
@@ -10026,6 +10378,26 @@ Answer:"""
                 results['metrics'][metric]['pct'] = player_data['pct']
                 # _serve_total is same as total (unified structure)
                 results['metrics'][metric]['_serve_total'] = player_data['total']
+        else:
+            # NO player filter: Aggregate BOTH players' data into results['metrics']
+            # This ensures percentages display correctly for "both player" queries
+            for metric in results.get('per_player_metrics', {}):
+                p1_data = results['per_player_metrics'][metric]['player1']
+                p2_data = results['per_player_metrics'][metric]['player2']
+                
+                # Sum totals and counts from both players
+                total_count = p1_data.get('count', 0) + p2_data.get('count', 0)
+                total_total = p1_data.get('total', 0) + p2_data.get('total', 0)
+                
+                results['metrics'][metric]['count'] = total_count
+                results['metrics'][metric]['total'] = total_total
+                results['metrics'][metric]['_serve_total'] = total_total
+                
+                # Calculate combined percentage
+                if total_total > 0:
+                    results['metrics'][metric]['pct'] = round(100 * total_count / total_total, 1)
+                else:
+                    results['metrics'][metric]['pct'] = 0
         
         # DEBUG: Show shot counts if we have them
         if 'shot_counts_by_type' in results and results['shot_counts_by_type']:
@@ -10088,18 +10460,11 @@ Answer:"""
             if should_debug:
                 print(f"{debug_prefix} | ✓ serve_number={serve_number} matches filter={serve_number_filter}")
         
-        # situation filter
-        situation_filter = filters.get('situation')
-        if situation_filter:
-            point_situation = point_data_for_metric.get('situation', {})
-            situation_key = f"is_{situation_filter}"
-            situation_match = point_situation.get(situation_key, False) or point_data_for_metric.get(situation_key, False)
-            if not situation_match:
-                if should_debug:
-                    print(f"{debug_prefix} | FILTERED: situation={situation_filter} not found (key={situation_key})")
-                return
-            if should_debug:
-                print(f"{debug_prefix} | ✓ situation={situation_filter} matches")
+        # REMOVED: situation filter check
+        # Situation filtering is done by the TREE during traversal, not here.
+        # The tree uses _check_situation(score) which works correctly.
+        # Re-checking here using metadata.is_break_point causes false negatives
+        # because metadata isn't always populated.
         
         # Generic shot-based filter check (for shot_type, direction, court_zone, depth)
         # These filters check if any shot in the rally matches the filter value
@@ -10257,131 +10622,6 @@ Answer:"""
                 if passes_count_filter(player):
                     results['per_player_metrics'][metric][player_key]['count'] += 1
     
-    def _pre_filter_points_for_metric(self, points: list, metric: str, classification: Dict) -> list:
-        """
-        DEPRECATED: No longer used. Tree traversal handles all filtering.
-        Pre-filtering was breaking percentage calculations.
-        """
-        filters = classification.get('filters', {})
-        player_filter = filters.get('player')
-        shot_type_filter = filters.get('shot_type') or filters.get('shot_base')
-        direction_filter = filters.get('direction')
-        shot_modifier_filter = filters.get('shot_modifier')
-        
-        # Metric configuration: (outcome_type, player_role, excluded_modifiers, excluded_directions)
-        METRIC_CONFIG = {
-            'winners': ('WINNER', 'winner', [], []),  # ALL winners (volleys, groundstrokes, smashes, etc.)
-            'groundstroke_winners': ('WINNER', 'winner', ['volley', 'half_volley', 'swinging_volley'], ['inside_out', 'inside_in']),  # Only groundstrokes
-            'baseline_winners': ('WINNER', 'winner', ['volley', 'half_volley', 'swinging_volley'], ['inside_out', 'inside_in']),  # Only baseline shots
-            'aces': ('ACE', 'server', [], []),
-            'unforced_errors': ('UNFORCED ERROR', 'error', [], []),  # ALL unforced errors
-            'forced_errors': ('FORCED ERROR', 'error', [], []),  # ALL forced errors
-            'errors': ('ERROR', 'error', [], []),  # ALL errors (unforced + forced)
-            'double_faults': ('DOUBLE_FAULT', 'server', [], []),
-            'service_winners': ('SERVICE_WINNER', 'server', [], []),
-            'rally_winners': ('WINNER', 'winner', ['volley', 'half_volley', 'swinging_volley'], ['inside_out', 'inside_in']),  # Non-serve groundstroke winners
-        }
-        
-        config = METRIC_CONFIG.get(metric)
-        if not config:
-            return points  # No filtering for this metric
-        
-        required_outcome, player_role, excluded_modifiers, excluded_directions = config
-        
-        # Get shot_number filter if specified (for generic shot-specific queries like "winners on shot 3")
-        shot_number_filter = filters.get('shot_number')
-        
-        filtered = []
-        
-        for point_data in points:
-            point_text = point_data.get('point_text', point_data.get('description', ''))
-            server = point_data.get('server', '')
-            returner = point_data.get('returner', '')
-            
-            # Parse rally and extract metadata from last shot
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
-            
-            if not actual_shots:
-                continue
-            
-            # Apply shot_number filter if specified (e.g., shot_number=2 for returns, shot_number=3 for serve+1)
-            if shot_number_filter:
-                if len(actual_shots) != shot_number_filter:
-                    continue
-            
-            last_shot = actual_shots[-1]
-            shot_meta = self._extract_shot_metadata(last_shot.get('description', ''))
-            
-            # Check outcome using parsed metadata - handle None safely
-            shot_meta_outcome = None
-            if shot_meta and isinstance(shot_meta, dict):
-                shot_meta_outcome = shot_meta.get('outcome')
-            # Ensure we have a string before calling upper()
-            outcome = last_shot.get('outcome', '') or (shot_meta_outcome if shot_meta_outcome else '').upper()
-            
-            # Special handling for generic "errors" metric (matches both unforced and forced)
-            if required_outcome == 'ERROR':
-                if 'ERROR' not in outcome and 'error' not in last_shot.get('description', '').lower():
-                    continue
-            elif required_outcome not in outcome and required_outcome.lower() not in last_shot.get('description', '').lower():
-                continue
-            
-            # Check excluded modifiers (e.g., no volleys for groundstroke winners)
-            if shot_meta.get('shot_modifier') in excluded_modifiers:
-                continue
-            
-            # Check excluded directions (e.g., no inside-out for regular winners)
-            if shot_meta.get('direction') in excluded_directions:
-                continue
-            
-            # CRITICAL: Get group_by before applying filters
-            # Skip filters for dimensions that are being grouped
-            group_by = classification.get('group_by', '')
-            secondary_group_by = classification.get('secondary_group_by', '')
-            
-            # Apply shot type filter using parsed metadata
-            # SKIP if shot_type is being grouped (e.g., "forehand vs backhand unforced errors")
-            if shot_type_filter and group_by != 'shot_type' and secondary_group_by != 'shot_type':
-                if shot_meta.get('shot_type') != shot_type_filter.lower():
-                    continue
-            
-            # Apply direction filter using parsed metadata
-            # SKIP if direction is being grouped (e.g., "crosscourt vs down the line winners")
-            if direction_filter and group_by != 'direction' and secondary_group_by != 'direction':
-                if shot_meta.get('direction') != direction_filter.lower():
-                    continue
-            
-            # Apply shot modifier filter using parsed metadata
-            # SKIP if shot_modifier is being grouped
-            if shot_modifier_filter and group_by != 'shot_modifier' and secondary_group_by != 'shot_modifier':
-                if shot_meta.get('shot_modifier') != shot_modifier_filter.lower():
-                    continue
-            
-            # Apply player filter based on role - GENERIC using ROLE_CONFIG
-            # CRITICAL: Skip player filter if player='both' or if we're grouping by player
-            # The grouping/tree traversal will handle player separation
-            if player_filter and player_filter.lower() != 'both' and group_by != 'player':
-                role_config = self.ROLE_CONFIG.get(player_role, {})
-                player_field = role_config.get('player_field', '')
-                if player_field:
-                    field_to_player = {
-                        'server': server,
-                        'returner': returner,
-                        'point_winner': last_shot.get('player', ''),  # For winner/error, use last shot player
-                        'error_player': last_shot.get('player', '')
-                    }
-                    target_player = field_to_player.get(player_field, '')
-                    if target_player and not self._names_match_robust(player_filter, target_player):
-                        continue
-            
-            # Additional check for rally_winners: must have rally length > 1
-            if metric == 'rally_winners' and len(actual_shots) <= 1:
-                continue
-            
-            filtered.append(point_data)
-        
-        return filtered
     
     def _analyze_n_dimensional(self, classification: Dict) -> Dict:
         """
@@ -10436,6 +10676,16 @@ Answer:"""
             actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
             if actual_shots:
                 last = actual_shots[-1]
+                # Determine shot category from contact_type and intent
+                contact_type = last.get('contact_type', 'groundstroke')
+                intent = last.get('intent', '')
+                # Categorize: groundstroke vs net shot (volley/half_volley/swinging_volley/overhead) vs drop_shot/lob
+                if intent in ['drop_shot', 'lob']:
+                    shot_category = intent
+                elif contact_type in ['volley', 'half_volley', 'swinging_volley', 'overhead']:
+                    shot_category = contact_type
+                else:
+                    shot_category = 'groundstroke'
                 return {
                     'winner': last.get('player', '?'),
                     'shot_type': last.get('shot_type', '?'),
@@ -10443,9 +10693,12 @@ Answer:"""
                     'direction': last.get('direction', '?'),
                     'at_net': last.get('at_net', False),
                     'outcome': last.get('outcome', '?'),
-                    'rally_length': len(actual_shots)
+                    'rally_length': len(actual_shots),
+                    'contact_type': contact_type,
+                    'intent': intent,
+                    'shot_category': shot_category
                 }
-            return {'winner': '?', 'shot_type': '?', 'shot_modifier': '-', 'direction': '?', 'at_net': False, 'outcome': '?', 'rally_length': 0}
+            return {'winner': '?', 'shot_type': '?', 'shot_modifier': '-', 'direction': '?', 'at_net': False, 'outcome': '?', 'rally_length': 0, 'contact_type': '?', 'intent': '', 'shot_category': '?'}
         
         def _extract_situation_info(pt):
             """Extract situation information from point metadata."""
@@ -10508,7 +10761,9 @@ Answer:"""
                     serve_number = 2
                 
                 # GENERIC: Check player role using ROLE_CONFIG
-                if player_role != 'both' and player_name:
+                # CRITICAL: 'both' or 'all' means no player filter - don't apply role filtering
+                effective_player_role = player_name if player_name and player_name.lower() not in ('both', 'all') else None
+                if player_role != 'both' and effective_player_role:
                     role_config = self.ROLE_CONFIG.get(player_role, {})
                     player_field = role_config.get('player_field', '')
                     
@@ -10521,7 +10776,7 @@ Answer:"""
                     target_player = field_to_player.get(player_field, '')
                     
                     # If role doesn't match player, skip this point
-                    if not target_player or not self._names_match_robust(player_name, target_player):
+                    if not target_player or not self._names_match_robust(effective_player_role, target_player):
                         continue
                 
                 # GENERIC: Check total filter (denominator condition)
@@ -10549,8 +10804,10 @@ Answer:"""
                     matches_metric = any(kw in point_lower for kw in keywords) if keywords else False
                 elif count_filter == 'won':
                     # Point won by the player
-                    if player_name and point_winner:
-                        matches_metric = self._names_match_robust(player_name, point_winner)
+                    # CRITICAL: 'both' or 'all' means no player filter - count all won points
+                    effective_player = player_name if player_name and player_name.lower() not in ('both', 'all') else None
+                    if effective_player and point_winner:
+                        matches_metric = self._names_match_robust(effective_player, point_winner)
                     else:
                         matches_metric = True  # If no player filter, show all won points
                 elif count_filter == 'first_serve_in':
@@ -10620,83 +10877,118 @@ Answer:"""
         filtered_points = _get_deepest_points(results, 0)
         print(f"[DEBUG] Extracted {len(filtered_points)} filtered points from tree")
         
-        # === GENERIC N-METRIC: Collect debug points separately for each metric ===
+        # === UNIFIED: Collect debug points for each metric (no legacy path) ===
         metrics = classification.get('metrics', [])
         metric_filters_map = classification.get('metric_filters', {})
-        matching_points_by_metric = None  # Initialize for scope
+        matching_points_by_metric = {}
         
-        # If we have metric-specific filters, collect points per metric
-        if metric_filters_map:
-            matching_points_by_metric = {}
-            for metric_key in metrics:
-                metric_specific = metric_filters_map.get(metric_key, {})
-                actual_metric = metric_specific.get('metric', metric_key)
+        # Get player filter from classification to pass to metric filtering
+        player_filter = classification.get('filters', {}).get('player')
+        
+        # Helper function to filter points with metric-specific filters
+        def _filter_points_with_metric_filters(points_list, metric_name, metric_filters_dict, player_name=None):
+            """Filter points using metric-specific filters + metric config."""
+            if not metric_filters_dict or not points_list:
+                return _filter_points_by_metric(points_list, metric_name, player_name)
+            
+            filtered = []
+            for pt in points_list:
+                # Apply metric-specific filters first
+                serve_number = pt.get('serve_info', {}).get('serve_number', 1) if pt.get('serve_info') else 1
+                if '2nd serve' in (pt.get('point_text', pt.get('description', '')) or '').lower():
+                    serve_number = 2
                 
-                # Create a helper function to filter points with metric-specific filters
-                def _filter_points_with_metric_filters(points_list, metric_name, metric_filters_dict):
-                    """Filter points using metric-specific filters + metric config."""
-                    if not metric_filters_dict or not points_list:
-                        return _filter_points_by_metric(points_list, metric_name)
+                # Check serve_number filter
+                if metric_filters_dict.get('serve_number') is not None:
+                    if serve_number != metric_filters_dict['serve_number']:
+                        continue
+                
+                # REMOVED: situation filter check
+                # Situation filtering is done by the TREE, not here.
+                # Re-checking causes false negatives because tree uses _check_situation(score)
+                # but this code would use metadata.is_break_point which may not be set.
+                
+                # REMOVED: point_score filter check
+                # Point score filtering is done by the TREE, not here.
+                
+                # Check shot-level filters (direction, shot_type) - CRITICAL for inside-out, DTL, etc.
+                shot_type_filter = metric_filters_dict.get('shot_type')
+                direction_filter = metric_filters_dict.get('direction')
+                
+                if shot_type_filter or direction_filter:
+                    # Parse rally to check if this point has the required shot characteristics
+                    point_text = pt.get('point_text', pt.get('description', ''))
+                    server = pt.get('server', '')
+                    returner = pt.get('returner', '')
+                    rally_shots = self._parse_rally_sequence(point_text, server, returner)
+                    actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
                     
-                    filtered = []
-                    for pt in points_list:
-                        # Apply metric-specific filters first
-                        pt_filters = pt.get('filters', {})
-                        serve_number = pt.get('serve_info', {}).get('serve_number', 1) if pt.get('serve_info') else 1
-                        if '2nd serve' in (pt.get('point_text', pt.get('description', '')) or '').lower():
-                            serve_number = 2
+                    # Check if ANY shot by the filtered player matches the criteria
+                    has_matching_shot = False
+                    for shot in actual_shots:
+                        shot_player = shot.get('player', '')
+                        # Only check shots by the filtered player
+                        if player_name and not self._names_match_robust(player_name, shot_player):
+                            continue
                         
-                        # Check serve_number filter
-                        if metric_filters_dict.get('serve_number') is not None:
-                            if serve_number != metric_filters_dict['serve_number']:
-                                continue
+                        shot_type_val = (shot.get('shot_type') or '').lower()
+                        shot_direction = shot.get('direction', '')
                         
-                        # Check other filters from metric_filters_dict
-                        # (situation, shot_type, direction, etc. are checked via _filter_points_by_metric)
+                        # Check if this shot matches the filters
+                        matches = True
+                        if shot_type_filter and shot_type_val != shot_type_filter.lower():
+                            matches = False
+                        if direction_filter and shot_direction != direction_filter:
+                            matches = False
                         
-                        # Then apply metric config filter
-                        metric_filtered = _filter_points_by_metric([pt], metric_name)
-                        if metric_filtered:
-                            filtered.append(pt)
+                        if matches:
+                            has_matching_shot = True
+                            break
                     
-                    return filtered
+                    if not has_matching_shot:
+                        continue
                 
-                # Collect points for this metric
-                metric_points = []
-                
-                if results.get('type') == 'group' and 'branches' in results:
-                    for branch_key, branch_data in results['branches'].items():
-                        branch_points = branch_data.get('points', [])
-                        if not branch_points and 'results' in branch_data:
-                            branch_points = _get_deepest_points(branch_data['results'], 0)
-                        
-                        branch_label = branch_data.get('label', branch_key)
-                        # Filter with metric-specific filters + metric config
+                # Then apply metric config filter WITH player filter
+                metric_filtered = _filter_points_by_metric([pt], metric_name, player_name)
+                if metric_filtered:
+                    filtered.append(pt)
+            
+            return filtered
+        
+        # Process EVERY metric through the same path
+        for metric_key in (metrics if metrics else [None]):
+            # Get metric-specific config if available, otherwise use defaults
+            metric_specific = metric_filters_map.get(metric_key, {}) if metric_key else {}
+            actual_metric = metric_specific.get('metric', metric_key) if metric_specific else metric_key
+            
+            # Get player filter for this metric (metric-specific overrides global)
+            metric_player_filter = metric_specific.get('filters', {}).get('player', player_filter) if metric_specific else player_filter
+            metric_filters_dict = metric_specific.get('filters', {}) if metric_specific else {}
+            
+            # NOTE: Tree handles all dimensional filtering (situation, set, point_score, etc.)
+            # Metric filters should ONLY contain metric-specific requirements (serve_number for first_serve_pct)
+            # We do NOT re-check tree dimensions here - the points are already filtered
+            
+            # Collect points for this metric
+            metric_points = []
+            
+            if results.get('type') == 'group' and 'branches' in results:
+                for branch_key, branch_data in results['branches'].items():
+                    branch_points = branch_data.get('points', [])
+                    if not branch_points and 'results' in branch_data:
+                        branch_points = _get_deepest_points(branch_data['results'], 0)
+                    
+                    branch_label = branch_data.get('label', branch_key)
+                    
+                    # Filter with metric-specific filters + metric config + player filter
+                    if actual_metric:
                         metric_filtered = _filter_points_with_metric_filters(
-                            branch_points, actual_metric, metric_specific.get('filters', {})
+                            branch_points, actual_metric, metric_filters_dict, metric_player_filter
                         )
                         print(f"[DEBUG] Metric '{metric_key}' Branch '{branch_label}': {len(branch_points)} total -> {len(metric_filtered)} matching")
-                        
-                        for pt in metric_filtered:
-                            meta = _extract_winning_shot_metadata(pt)
-                            situation_info = _extract_situation_info(pt)
-                            metric_points.append({
-                                'point_number': pt.get('point_number', 0),
-                                'server': pt.get('server', ''),
-                                'returner': pt.get('returner', ''),
-                                'score': pt.get('score', ''),
-                                'description': pt.get('description', ''),
-                                'group': branch_label,
-                                'situation': situation_info,
-                                'metric': metric_key,  # Tag which metric this point belongs to
-                                **meta
-                            })
-                else:
-                    # Filter-only results
-                    metric_filtered = _filter_points_with_metric_filters(
-                        filtered_points, actual_metric, metric_specific.get('filters', {})
-                    )
-                    print(f"[DEBUG] Metric '{metric_key}': {len(filtered_points)} total -> {len(metric_filtered)} matching")
+                    else:
+                        metric_filtered = branch_points
+                        print(f"[DEBUG] Branch '{branch_label}': {len(branch_points)} points")
                     
                     for pt in metric_filtered:
                         meta = _extract_winning_shot_metadata(pt)
@@ -10707,72 +10999,43 @@ Answer:"""
                             'returner': pt.get('returner', ''),
                             'score': pt.get('score', ''),
                             'description': pt.get('description', ''),
-                            'situation': situation_info,
-                            'metric': metric_key,  # Tag which metric this point belongs to
-                            **meta
-                        })
-                
-                matching_points_by_metric[metric_key] = metric_points
-            
-            # Store per-metric points
-            matching_points = []  # Flattened for backward compatibility
-            for metric_key, points in matching_points_by_metric.items():
-                matching_points.extend(points)
-        else:
-            # LEGACY: Single metric - use primary metric
-            primary_metric = metrics[0] if metrics else None
-            
-            if results.get('type') == 'group' and 'branches' in results:
-                # Collect points from each group branch with group labels
-                print(f"[DEBUG] Grouped results: {len(results.get('branches', {}))} branches")
-                for branch_key, branch_data in results['branches'].items():
-                    branch_points = branch_data.get('points', [])
-                    if not branch_points and 'results' in branch_data:
-                        branch_points = _get_deepest_points(branch_data['results'], 0)
-                    
-                    # CRITICAL: Filter points by metric for debug display
-                    branch_label = branch_data.get('label', branch_key)
-                    if primary_metric:
-                        metric_filtered_points = _filter_points_by_metric(branch_points, primary_metric, branch_label)
-                        print(f"[DEBUG] Branch '{branch_label}': {len(branch_points)} total -> {len(metric_filtered_points)} matching {primary_metric}")
-                        branch_points = metric_filtered_points
-                    else:
-                        print(f"[DEBUG] Branch '{branch_label}': {len(branch_points)} points")
-                    
-                    for pt in branch_points:
-                        meta = _extract_winning_shot_metadata(pt)
-                        situation_info = _extract_situation_info(pt)
-                        
-                        matching_points.append({
-                            'point_number': pt.get('point_number', 0),
-                            'server': pt.get('server', ''),
-                            'returner': pt.get('returner', ''),
-                            'score': pt.get('score', ''),
-                            'description': pt.get('description', ''),
                             'group': branch_label,
                             'situation': situation_info,
+                            'metric': metric_key,
                             **meta
                         })
             else:
-                # For filter-only results, use the tree's filtered points
-                if primary_metric:
-                    metric_filtered_points = _filter_points_by_metric(filtered_points, primary_metric)
-                    print(f"[DEBUG] Metric filter: {len(filtered_points)} total -> {len(metric_filtered_points)} matching {primary_metric}")
-                    filtered_points = metric_filtered_points
+                # Filter-only results
+                if actual_metric:
+                    metric_filtered = _filter_points_with_metric_filters(
+                        filtered_points, actual_metric, metric_filters_dict, metric_player_filter
+                    )
+                    print(f"[DEBUG] Metric '{metric_key}': {len(filtered_points)} total -> {len(metric_filtered)} matching")
+                else:
+                    metric_filtered = filtered_points
+                    print(f"[DEBUG] No metric filter: {len(filtered_points)} points")
                 
-                for pt in filtered_points:
+                for pt in metric_filtered:
                     meta = _extract_winning_shot_metadata(pt)
                     situation_info = _extract_situation_info(pt)
-                    
-                    matching_points.append({
+                    metric_points.append({
                         'point_number': pt.get('point_number', 0),
                         'server': pt.get('server', ''),
                         'returner': pt.get('returner', ''),
                         'score': pt.get('score', ''),
                         'description': pt.get('description', ''),
                         'situation': situation_info,
+                        'metric': metric_key,
                         **meta
                     })
+            
+            if metric_key:
+                matching_points_by_metric[metric_key] = metric_points
+        
+        # Flatten for backward compatibility
+        matching_points = []
+        for metric_key, points in matching_points_by_metric.items():
+            matching_points.extend(points)
         
         print(f"[DEBUG] Final matching_points count: {len(matching_points)}")
         
@@ -10786,8 +11049,8 @@ Answer:"""
             'matching_points': matching_points
         }
         
-        # Add per-metric points if we have multi-metric query
-        if metric_filters_map and 'matching_points_by_metric' in locals():
+        # Add per-metric points (always include for shot category breakdown)
+        if matching_points_by_metric:
             return_dict['matching_points_by_metric'] = matching_points_by_metric
         
         return return_dict
@@ -10821,15 +11084,54 @@ Answer:"""
             response += "\n"
         
         # Format results based on structure
-        response += self._format_tree_results(results, groups, metrics, player1, player2, player_filter)
+        response += self._format_tree_results(results, groups, metrics, player1, player2, player_filter, classification=classification)
         
         # Add comparison summary if we have group comparison with 2+ groups
         if groups and len(groups) >= 1:
             response += self._add_group_comparison_summary(results, metrics, player1, player2, classification)
         
+        # === SHOT CATEGORY BREAKDOWN for point-ending shot outcomes ===
+        # When showing counts of winners/errors, break down by shot category (groundstroke vs net shots)
+        # Applies to any metric involving point-ending shots (winners, errors, induced errors, etc.)
+        matching_points = analysis.get('matching_points', [])
+        matching_points_by_metric = analysis.get('matching_points_by_metric', {})
+        
+        # Generic detection: any metric containing 'winner', 'error', or 'induced' 
+        # These are all point-ending shot outcomes that benefit from shot category breakdown
+        def is_shot_outcome_metric(m):
+            m_lower = m.lower()
+            return any(term in m_lower for term in ['winner', 'error', 'induced_fe', 'induced_ue'])
+        
+        active_breakdown_metric = next((m for m in metrics if is_shot_outcome_metric(m)), None)
+        
+        if active_breakdown_metric:
+            # Use metric-specific points if available (properly filtered), otherwise fall back to all matching_points
+            breakdown_points = matching_points_by_metric.get(active_breakdown_metric, matching_points)
+            
+            if breakdown_points:
+                # Count by shot_category
+                category_counts = {}
+                for pt in breakdown_points:
+                    cat = pt.get('shot_category', 'unknown')
+                    if cat and cat != '?':
+                        category_counts[cat] = category_counts.get(cat, 0) + 1
+                
+                if category_counts and len(category_counts) > 1:
+                    # Only show breakdown if there's variety
+                    total = sum(category_counts.values())
+                    metric_label = active_breakdown_metric.replace('_', ' ').title()
+                    response += f"\n**{metric_label} Breakdown by Shot Type:**\n"
+                    response += "| Shot Type | Count | Percentage |\n"
+                    response += "|---|---|---|\n"
+                    
+                    # Sort by count descending
+                    for cat, count in sorted(category_counts.items(), key=lambda x: -x[1]):
+                        pct = round(100 * count / total, 1) if total > 0 else 0
+                        cat_display = cat.replace('_', ' ').title()
+                        response += f"| {cat_display} | {count} | {pct}% |\n"
+        
         # DEBUG: Show matching points if filtering actually happened
         # Skip if all points returned (no filtering = noise, not useful debug info)
-        matching_points = analysis.get('matching_points', [])
         matching_points_by_metric = analysis.get('matching_points_by_metric')
         total_points = len(self.point_by_point) if hasattr(self, 'point_by_point') else 283
         
@@ -10931,387 +11233,7 @@ Answer:"""
         response += f"   {pt.get('description', '')}\n"
         
         return response
-        
-        return response
     
-    def _filter_points_for_display(self, points: list, classification: Dict) -> list:
-        """
-        **DEPRECATED** - This function is no longer needed.
-        
-        **WHY DEPRECATED:**
-        The tree traversal now stores filtered points at each node. Analysis and display
-        now use the SAME points from the tree - there's no need to re-filter.
-        
-        The architectural fix was:
-        1. _traverse_node() now stores 'points' at filter/group/leaf nodes
-        2. _analyze_n_dimensional() extracts these points for 'matching_points'
-        3. Display shows 'matching_points' directly - ONE code path, ONE source of truth
-        
-        This function remains for reference but is not called. It can be safely deleted.
-        
-        ------- ORIGINAL DOCSTRING -------
-        Filter points to show only RELEVANT ones based on query context.
-        
-        **ROBUSTNESS GUARANTEE:**
-        This function uses the EXACT SAME filters from taxonomy classification that were
-        used during analysis. There is ONE SOURCE OF TRUTH (classification['filters'])
-        and both analysis and display traverse the same path.
-        
-        **Why this matters:**
-        - Question: "Baseline points in Set 2 vs Set 4"
-        - Analysis filters: {court_zone: 'baseline', set_group_a: [2], set_group_b: [4]}
-        - Display MUST use these same filters
-        - Result: User sees baseline points from sets 2&4, not all 283 points
-        
-        **Comprehensive Filter Coverage:**
-        ✓ situation (break_point, game_point, set_point, match_point, deuce)
-        ✓ role (server, returner)  
-        ✓ player (with robust name matching)
-        ✓ shot_type, shot_base, shot_modifier
-        ✓ direction (crosscourt, down_the_line, etc.)
-        ✓ court_zone, court_position, at_net
-        ✓ set, set_group_a, set_group_b
-        ✓ serve_target (wide, body, T)
-        ✓ serve_number (1st serve, 2nd serve)
-        ✓ court_side (deuce, ad)
-        ✓ rally_length, rally_length_range
-        ✓ depth (shallow, deep)
-        ✓ error_location (net, wide, long)
-        ✓ shot_number (serve=1, return=2, serve+1=3)
-        ✓ Percentage question detection (shows all points for context)
-        
-        **Validation:**
-        - Warns if unknown filters detected
-        - Logs which filters are applied
-        - Reports filtering statistics
-        - Returns ALL filtered points (no limit)
-        
-        Returns: List of ALL filtered points matching the analysis criteria
-        """
-        if not points:
-            return []
-        
-        filters = classification.get('filters', {})
-        metrics = classification.get('metrics', [])
-        question = classification.get('actual_question', '') or classification.get('question', '')
-        question_lower = question.lower() if question else ''
-        
-        # Detect if this is a percentage/rate question (affects filtering logic)
-        is_percentage_question = any(kw in question_lower for kw in ['percentage', 'win rate', 'win %', 'percent', 'rate', '%'])
-        
-        # === ROBUSTNESS: Validate all filters are handled ===
-        KNOWN_FILTERS = {
-            'player', 'situation', 'set', 'shot_type', 'shot_base', 'shot_modifier', 
-            'direction', 'depth', 'rally_length', 'rally_length_range', 'serve_target', 
-            'shot_number', 'court_zone', 'court_position', 'court_side', 'handedness', 
-            'error_location', 'role', 'serve_number', 'at_net', 
-            'set_group_a', 'set_group_b', 'situation_group_a', 'situation_group_b',
-            'chain_logic', '_current_outcome', '_rally_length', '_server', '_returner',
-            '_pressure_tightness', '_serve_plus_one_shot', '_prev_rally_length', '_metadata'
-        }
-        
-        # Exclude non-point filters (metadata-only or grouping dimensions)
-        NON_POINT_FILTERS = {'handedness'}  # These don't filter points, just metadata
-        active_filters = {k: v for k, v in filters.items() 
-                         if v is not None and not k.startswith('_') and k not in NON_POINT_FILTERS}
-        
-        # Remove shot_number from active filters if role is set (role takes precedence)
-        if filters.get('role') and 'shot_number' in active_filters:
-            del active_filters['shot_number']
-            print(f"[DISPLAY-FILTER] Excluding shot_number from active filters (role='{filters['role']}' takes precedence)")
-        
-        # Remove 'player' from active filters if it's 'both' (doesn't filter, just groups)
-        player_val = active_filters.get('player', '')
-        if player_val and isinstance(player_val, str) and player_val.lower() == 'both':
-            del active_filters['player']
-            print(f"[DISPLAY-FILTER] Excluding player='both' from active filters (grouping, not filtering)")
-        
-        # === GENERAL RULE: Skip filters when grouping by related dimension ===
-        # When grouping BY a dimension, don't also filter BY it (use class constant)
-        group_by = classification.get('group_by', '')
-        secondary_group_by = classification.get('secondary_group_by', '')
-        all_groups = {group_by, secondary_group_by} - {None, ''}
-        
-        for grp in all_groups:
-            if grp in self.GROUP_TO_FILTER_EXCLUSIONS:
-                for filter_key in self.GROUP_TO_FILTER_EXCLUSIONS[grp]:
-                    if filter_key in active_filters:
-                        del active_filters[filter_key]
-                        print(f"[DISPLAY-FILTER] Excluding '{filter_key}' from active filters (grouping by '{grp}' instead)")
-        
-        unknown_filters = set(active_filters.keys()) - KNOWN_FILTERS
-        
-        if unknown_filters:
-            print(f"[DISPLAY-FILTER] WARNING: Unknown filters detected: {unknown_filters}")
-            print(f"[DISPLAY-FILTER] These filters may not be applied correctly to debug output!")
-        
-        # Log which filters are being applied
-        if active_filters:
-            print(f"[DISPLAY-FILTER] Applying filters: {list(active_filters.keys())}")
-        
-        filtered = []
-        
-        # === PROCESS EACH POINT ===
-        # Apply EXACT SAME filter logic used in _analyze_by_taxonomy() and _analyze_n_dimensional()
-        # This ensures debug output shows only the points that were actually analyzed
-        
-        for pt in points:
-            keep = True  # Innocent until proven filtered out
-            
-            # Filter by situation (break point, game point, etc.) - GENERIC using SITUATION_CONFIG
-            situation_filter = filters.get('situation')
-            if situation_filter:
-                pt_score = pt.get('score', '')
-                pt_desc = pt.get('description', '').lower()
-                
-                # Use generic situation check from config
-                if not self._check_situation(situation_filter, pt_score):
-                    # Fallback to description check for situations not yet in config
-                    situation_in_desc = situation_filter.replace('_', ' ').lower() in pt_desc
-                    if not situation_in_desc:
-                        keep = False
-            
-            # Filter by role (server/returner) - use structured filter
-            role_filter = filters.get('role')
-            player_filter = filters.get('player')
-            # NOTE: If player='both', skip player matching - we want ALL server/returner points
-            is_both_players = not player_filter or (player_filter and player_filter.lower() == 'both')
-            
-            if role_filter and player_filter and not is_both_players:
-                pt_server = pt.get('server', '')
-                pt_returner = pt.get('returner', '')
-                
-                # GENERIC role filter using ROLE_CONFIG
-                role_player = self._get_player_for_role(role_filter, pt_server, pt_returner)
-                if not self._names_match_robust(player_filter, role_player):
-                        keep = False
-            # When role is set but player='both', don't filter by player - include all points with that role
-            
-            # Filter by shot type (forehand, backhand, etc.)
-            # EXCEPTION: Don't filter by shot_type='serve' when role='server' is set
-            # (serve effectiveness means ALL service points, not just aces)
-            shot_filter = filters.get('shot_type') or filters.get('shot_base')
-            if shot_filter:
-                is_serve_context = (shot_filter.lower() == 'serve' and filters.get('role') == 'server')
-                if not is_serve_context:
-                    pt_shot = (pt.get('shot_type') or '').lower()
-                    if shot_filter.lower() not in pt_shot and pt_shot not in shot_filter.lower():
-                        keep = False
-            
-            # Filter by court position/zone (at net, baseline) - use structured filter
-            # Check both 'court_position', 'court_zone', and 'at_net' (classifier may use any)
-            court_filter = filters.get('court_position') or filters.get('court_zone')
-            at_net_filter = filters.get('at_net')
-            
-            if court_filter:
-                court_filter_lower = court_filter.lower() if isinstance(court_filter, str) else ''
-                if 'net' in court_filter_lower:
-                    if not pt.get('at_net', False):
-                        keep = False
-                elif 'baseline' in court_filter_lower:
-                    if pt.get('at_net', False):
-                        keep = False
-            
-            # Direct boolean at_net filter (True = must be at net, False = must not be at net)
-            if at_net_filter is not None:
-                if at_net_filter and not pt.get('at_net', False):
-                    keep = False
-                elif not at_net_filter and pt.get('at_net', False):
-                    keep = False
-            
-            # Filter by player (but only if not already filtered by role above)
-            # Role filter already handles player matching for server/returner contexts
-            # Skip if player='both' (that means compare all players, not filter to one)
-            if filters.get('player') and not filters.get('role'):
-                player_filter = filters.get('player')
-                if player_filter.lower() != 'both':
-                    pt_winner = pt.get('winner', '')
-                    # Normalize both for comparison
-                    if not self._names_match_robust(player_filter, pt_winner):
-                        keep = False
-            
-            # Filter by shot modifier (volley, slice, etc.)
-            if filters.get('shot_modifier'):
-                mod_filter = (filters.get('shot_modifier') or '').lower()
-                pt_mod = (pt.get('shot_modifier') or '').lower()
-                if mod_filter not in pt_mod and pt_mod not in mod_filter:
-                    keep = False
-            
-            # Filter by direction
-            if filters.get('direction'):
-                dir_filter = (filters.get('direction') or '').lower()
-                pt_dir = (pt.get('direction') or '').lower()
-                if dir_filter not in pt_dir and pt_dir not in dir_filter:
-                    keep = False
-            
-            # Filter by set - use structured filter
-            set_filter = filters.get('set')
-            if set_filter:
-                pt_set = self._extract_current_set(pt.get('score', ''))
-                if pt_set and pt_set != set_filter:
-                    keep = False
-            
-            # Filter by set groups (for set comparisons like "Set 2 vs Set 4")
-            set_group_a = filters.get('set_group_a', [])
-            set_group_b = filters.get('set_group_b', [])
-            if set_group_a or set_group_b:
-                pt_set = self._extract_current_set(pt.get('score', ''))
-                # Show points from either group
-                valid_sets = set_group_a + set_group_b
-                if pt_set and valid_sets and pt_set not in valid_sets:
-                    keep = False
-            
-            # Filter by serve target (wide, body, T) - use structured filter
-            serve_target_filter = filters.get('serve_target')
-            if serve_target_filter:
-                pt_desc_lower = pt.get('description', '').lower()
-                # Check first 50 chars for serve target (in serve description)
-                first_50 = pt_desc_lower[:50]
-                if serve_target_filter == 'wide' and 'wide' not in first_50:
-                    keep = False
-                elif serve_target_filter == 'body' and 'body' not in first_50:
-                    keep = False
-                elif serve_target_filter == 't' and 'down the t' not in first_50:
-                    keep = False
-            
-            # Filter by serve number (1st serve vs 2nd serve) - use structured filter
-            serve_number_filter = filters.get('serve_number')
-            if serve_number_filter:
-                pt_desc_lower = pt.get('description', '').lower()
-                first_80 = pt_desc_lower[:80]
-                has_fault = 'fault' in first_80
-                has_2nd_serve = '2nd serve' in pt_desc_lower
-                is_2nd_serve_point = has_fault or has_2nd_serve
-                
-                if serve_number_filter == 1 and is_2nd_serve_point:
-                    keep = False
-                elif serve_number_filter == 2 and not is_2nd_serve_point:
-                    keep = False
-            
-            # Filter by court side (deuce/ad) - use structured filter
-            court_side_filter = filters.get('court_side')
-            if court_side_filter:
-                # Determine court side from score's game point score
-                score = pt.get('score', '')
-                # Extract the game score (last part like "30-15")
-                parts = score.strip().split()
-                if parts:
-                    game_score = parts[-1]
-                    # GENERIC court side detection using COURT_SIDE_CONFIG
-                    if court_side_filter in self.COURT_SIDE_CONFIG:
-                        patterns = self.COURT_SIDE_CONFIG[court_side_filter].get('game_score_patterns', [])
-                        if not any(s in game_score for s in patterns):
-                            keep = False
-            
-            # Filter by rally length - supports exact, ">X", ">=X", "<=X" formats
-            # EXCEPTION: Skip rally_length filter if grouping by rally_length_category
-            rally_length_filter = filters.get('rally_length')
-            local_group_by = classification.get('group_by', '')
-            local_groups = {local_group_by, classification.get('secondary_group_by', '')} - {None, ''}
-            if rally_length_filter and 'rally_length_category' not in local_groups:
-                pt_rally_len = pt.get('rally_length', 0)
-                if isinstance(rally_length_filter, int):
-                    # Exact match
-                    if pt_rally_len != rally_length_filter:
-                        keep = False
-                elif isinstance(rally_length_filter, str):
-                    # Parse comparison operators: ">6", ">=7", "<=3"
-                    if rally_length_filter.startswith('>='):
-                        threshold = int(rally_length_filter[2:])
-                        if pt_rally_len < threshold:
-                            keep = False
-                    elif rally_length_filter.startswith('>'):
-                        threshold = int(rally_length_filter[1:])
-                        if pt_rally_len <= threshold:
-                            keep = False
-                    elif rally_length_filter.startswith('<='):
-                        threshold = int(rally_length_filter[2:])
-                        if pt_rally_len > threshold:
-                            keep = False
-                    elif rally_length_filter.startswith('<'):
-                        threshold = int(rally_length_filter[1:])
-                        if pt_rally_len >= threshold:
-                            keep = False
-            
-            # Filter by rally length range - use structured filter
-            rally_range = filters.get('rally_length_range')
-            if rally_range:
-                rally_len = pt.get('rally_length', 0)
-                if isinstance(rally_range, tuple) and len(rally_range) == 2:
-                    min_len, max_len = rally_range
-                    if rally_len < min_len or rally_len > max_len:
-                        keep = False
-            
-            # Filter by depth (shallow, deep) - use structured filter
-            depth_filter = filters.get('depth')
-            if depth_filter:
-                pt_desc_lower = pt.get('description', '').lower()
-                if depth_filter == 'deep' and 'deep' not in pt_desc_lower:
-                    keep = False
-                elif depth_filter == 'shallow' and 'shallow' not in pt_desc_lower:
-                    keep = False
-            
-            # Filter by error location (net, wide, long) - use structured filter
-            error_location_filter = filters.get('error_location')
-            if error_location_filter:
-                pt_desc_lower = pt.get('description', '').lower()
-                outcome = pt.get('outcome', '').upper()
-                # Only apply to error points - GENERIC pattern matching
-                if 'ERROR' in outcome:
-                    # Check if error location pattern is in description
-                    location_pattern = f"({error_location_filter})"
-                    if location_pattern not in pt_desc_lower:
-                        keep = False
-            
-            # Filter by shot number (1=serve, 2=return, 3=serve+1, etc.) - use structured filter
-            # EXCEPTION: Don't filter by shot_number when role is set
-            # (role='server' means ALL service points, not just outcomes of specific shots)
-            shot_number_filter = filters.get('shot_number')
-            role_filter = filters.get('role')
-            if shot_number_filter and not role_filter:
-                # Only apply shot_number filter if NO role filter is active
-                    # This would require parsing the rally and counting shot number
-                    # For now, approximate: if shot_number=3, looking for "serve+1" or 3rd shot
-                    pt_desc_lower = pt.get('description', '').lower()
-                    if shot_number_filter == 1:
-                        # First shot is serve
-                        if not any(kw in pt_desc_lower[:30] for kw in ['serve', '1st serve', '2nd serve']):
-                            keep = False
-                    elif shot_number_filter == 2:
-                        # Second shot is return
-                        if 'return' not in pt_desc_lower[:50]:
-                            keep = False
-                    # For higher shot numbers, would need full rally parsing
-                    # Skip for now as it's complex
-            
-            # Filter by outcome type for specific metrics - GENERIC using config
-            # BUT: Skip outcome filtering if asking about percentages/rates (need all points for context)
-            if metrics and not is_percentage_question:
-                metric = metrics[0]
-                outcome = (pt.get('outcome') or '').upper()
-                
-                # Use generic outcome matching from METRIC_CONFIG
-                if not self._outcome_matches_metric(outcome, metric):
-                    keep = False
-            
-            if keep:
-                filtered.append(pt)
-        
-        # === ROBUSTNESS: Log filtering results ===
-        total_input = len(points)
-        total_output = len(filtered)
-        filter_ratio = (total_output / total_input * 100) if total_input > 0 else 0
-        
-        print(f"[DISPLAY-FILTER] Filtered {total_input} points -> {total_output} points ({filter_ratio:.1f}% matched)")
-        
-        if total_output == 0 and active_filters:
-            print(f"[DISPLAY-FILTER] WARNING: No points matched filters! Check if filters are too restrictive.")
-        
-        if total_output == total_input and active_filters:
-            print(f"[DISPLAY-FILTER] WARNING: All points passed filters! Filters may not be working.")
-        
-        # Return all filtered points (no limit)
-        return filtered
     
     def _is_count_based_query(self, classification: Dict) -> bool:
         """
@@ -11528,7 +11450,7 @@ Answer:"""
         return response
     
     def _format_tree_results(self, results: Dict, groups: list, metrics: list,
-                             player1: str, player2: str, player_filter: str, depth: int = 0) -> str:
+                             player1: str, player2: str, player_filter: str, depth: int = 0, classification: Dict = None) -> str:
         """Recursively format tree results."""
         response = ""
         indent = "  " * depth
@@ -11540,7 +11462,7 @@ Answer:"""
             
             if results.get('children'):
                 response += self._format_tree_results(results['children'], groups, metrics,
-                                                     player1, player2, player_filter, depth)
+                                                     player1, player2, player_filter, depth, classification=classification)
         
         elif results.get('type') == 'group':
             # Show grouping table
@@ -11554,35 +11476,68 @@ Answer:"""
                 primary_metric = metrics[0] if metrics else 'count'
                 metric_label = primary_metric.replace('_', ' ').title()
                 
-                response += f"| Player | Total | Won | Win % |\n"
-                response += "|---|---|---|---|\n"
+                # Percentage metrics that need to show count/total from per_player_metrics (not points won)
+                per_player_pct_metrics = {'first_serve_pct', 'first_serve_win_pct', 'second_serve_pct', 'second_serve_win_pct'}
                 
-                for val, branch_data in branches.items():
-                    label = branch_data['label']  # Player name
-                    count = branch_data['count']  # Points where this player served/returned
-                    sub_results = branch_data.get('results', {})
+                if primary_metric in per_player_pct_metrics:
+                    # For serve percentage metrics, show the metric-specific count/total
+                    response += f"| Player | {metric_label} | Count | Total |\n"
+                    response += "|---|---|---|---|\n"
                     
-                    if sub_results.get('type') == 'group':
-                        response += f"\n**{label}:**\n"
-                        response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
-                                                             metrics, player1, player2, player_filter, depth + 1)
-                    else:
-                        # For player branch, wins = points won by that player
-                        # The player in this branch IS the player who served/returned
-                        p1_wins = sub_results.get('player1_wins', 0)
-                        p2_wins = sub_results.get('player2_wins', 0)
+                    for val, branch_data in branches.items():
+                        label = branch_data['label']  # Player name
+                        sub_results = branch_data.get('results', {})
                         
-                        # Determine wins for this specific player
-                        if label.lower() == player1.lower() if player1 else False:
-                            wins = p1_wins
-                        elif label.lower() == player2.lower() if player2 else False:
-                            wins = p2_wins
+                        if sub_results.get('type') == 'group':
+                            response += f"\n**{label}:**\n"
+                            response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
+                                                                 metrics, player1, player2, player_filter, depth + 1, classification=classification)
                         else:
-                            # Fallback: use whichever is non-zero
-                            wins = p1_wins if p1_wins > 0 else p2_wins
+                            # Get this player's metric data from per_player_metrics
+                            per_player = sub_results.get('per_player_metrics', {}).get(primary_metric, {})
+                            
+                            # Determine which player key this branch represents
+                            if label.lower() == player1.lower() if player1 else False:
+                                player_data = per_player.get('player1', {})
+                            else:
+                                player_data = per_player.get('player2', {})
+                            
+                            m_count = player_data.get('count', 0)
+                            m_total = player_data.get('total', 0)
+                            m_pct = player_data.get('pct', 0)
+                            
+                            response += f"| **{label}** | {m_pct}% | {m_count} | {m_total} |\n"
+                else:
+                    # For other metrics (points_won, etc.), show points won
+                    response += f"| Player | Total | Won | Win % |\n"
+                    response += "|---|---|---|---|\n"
+                    
+                    for val, branch_data in branches.items():
+                        label = branch_data['label']  # Player name
+                        count = branch_data['count']  # Points where this player served/returned
+                        sub_results = branch_data.get('results', {})
                         
-                        win_pct = round(wins / count * 100) if count > 0 else 0
-                        response += f"| **{label}** | {count} | {wins} | {win_pct}% |\n"
+                        if sub_results.get('type') == 'group':
+                            response += f"\n**{label}:**\n"
+                            response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
+                                                                 metrics, player1, player2, player_filter, depth + 1, classification=classification)
+                        else:
+                            # For player branch, wins = points won by that player
+                            # The player in this branch IS the player who served/returned
+                            p1_wins = sub_results.get('player1_wins', 0)
+                            p2_wins = sub_results.get('player2_wins', 0)
+                            
+                            # Determine wins for this specific player
+                            if label.lower() == player1.lower() if player1 else False:
+                                wins = p1_wins
+                            elif label.lower() == player2.lower() if player2 else False:
+                                wins = p2_wins
+                            else:
+                                # Fallback: use whichever is non-zero
+                                wins = p1_wins if p1_wins > 0 else p2_wins
+                            
+                            win_pct = round(wins / count * 100) if count > 0 else 0
+                            response += f"| **{label}** | {count} | {wins} | {win_pct}% |\n"
                 
                 return response
             
@@ -11608,7 +11563,7 @@ Answer:"""
                     if sub_results.get('type') == 'group':
                         response += f"\n**{label}:**\n"
                         response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
-                                                             metrics, player1, player2, player_filter, depth + 1)
+                                                             metrics, player1, player2, player_filter, depth + 1, classification=classification)
                     else:
                         per_player = sub_results.get('per_player_metrics', {}).get(primary_metric, {})
                         p1_data = per_player.get('player1', {})
@@ -11643,7 +11598,7 @@ Answer:"""
                     # Nested group - recurse
                     response += f"\n**{label}:**\n"
                     response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
-                                                         metrics, player1, player2, player_filter, depth + 1)
+                                                         metrics, player1, player2, player_filter, depth + 1, classification=classification)
                 else:
                     # Leaf node - show metrics
                     p1_wins = sub_results.get('player1_wins', 0)
@@ -11678,7 +11633,20 @@ Answer:"""
                     pct = round(100 * count / total_shots, 1) if total_shots > 0 else 0
                     response += f"| **{shot_type.title()}** | {count} | {pct}% |\n"
                 
-                response += f"\n**Total Shots: {total_shots}**\n"
+                # Build descriptive total label with filters
+                total_label = "Total Shots"
+                metric_filters_map = classification.get('metric_filters', {}) if classification else {}
+                if 'shot_count' in metric_filters_map:
+                    filters = metric_filters_map['shot_count'].get('filters', {})
+                    filter_parts = []
+                    if filters.get('direction'):
+                        filter_parts.append(filters['direction'].replace('_', '-').title())
+                    if filters.get('shot_type'):
+                        filter_parts.append(filters['shot_type'].title())
+                    if filter_parts:
+                        total_label = "Total " + ' '.join(filter_parts) + " Shots"
+                
+                response += f"\n**{total_label}: {total_shots}**\n"
                 
                 # Calculate ratio if forehand and backhand both present
                 if 'forehand' in shot_counts and 'backhand' in shot_counts:
@@ -11705,8 +11673,6 @@ Answer:"""
             
             response += f"\n**Results:**\n"
             response += f"- Total Points: {results['total_points']}\n"
-            response += f"- {player1}: {results.get('player1_wins', 0)} ({results.get('player1_pct', 0)}%)\n"
-            response += f"- {player2}: {results.get('player2_wins', 0)} ({results.get('player2_pct', 0)}%)\n"
             
             # Get all metric counts
             metrics_results = results.get('metrics', {})
@@ -11715,6 +11681,32 @@ Answer:"""
             
             # Game-level metrics get special formatting
             game_metrics = {'games_won', 'service_games_held', 'breaks', 'sets_won'}
+            
+            # Percentage metrics that need PER-PLAYER breakdown (not just aggregate)
+            # These metrics have different denominators per player (e.g., each player's own serve attempts)
+            per_player_pct_metrics = {'first_serve_pct', 'first_serve_win_pct', 'second_serve_pct', 'second_serve_win_pct'}
+            
+            # Check if we have a per-player percentage metric that should show individual breakdowns
+            primary_metric = metrics[0] if metrics else None
+            if primary_metric in per_player_pct_metrics and per_player and primary_metric in per_player:
+                # Show EACH PLAYER'S individual percentage (not aggregated)
+                metric_label = primary_metric.replace('_', ' ').title()
+                p1_data = per_player[primary_metric].get('player1', {})
+                p2_data = per_player[primary_metric].get('player2', {})
+                
+                response += f"\n**{metric_label} (Per Player):**\n"
+                if p1_data.get('total', 0) > 0:
+                    response += f"- {player1}: {p1_data.get('pct', 0)}% ({p1_data.get('count', 0)} of {p1_data.get('total', 0)})\n"
+                else:
+                    response += f"- {player1}: No data (0 attempts)\n"
+                if p2_data.get('total', 0) > 0:
+                    response += f"- {player2}: {p2_data.get('pct', 0)}% ({p2_data.get('count', 0)} of {p2_data.get('total', 0)})\n"
+                else:
+                    response += f"- {player2}: No data (0 attempts)\n"
+            else:
+                # Default: show point wins (for points_won, win_percentage, etc.)
+                response += f"- {player1}: {results.get('player1_wins', 0)} ({results.get('player1_pct', 0)}%)\n"
+                response += f"- {player2}: {results.get('player2_wins', 0)} ({results.get('player2_pct', 0)}%)\n"
             
             # Percentage metrics - show as X% (count of total)
             pct_metrics = {'first_serve_pct', 'first_serve_win_pct', 'second_serve_pct', 'second_serve_win_pct',
@@ -11763,13 +11755,26 @@ Answer:"""
                 
                 print(f"[FORMAT-DEBUG] Inside is_shot_percentage block: numerator={numerator_metric} ({numerator_count}), denominator={denominator_metric} (count={denominator_data.get('count', 0)}, total={denominator_data.get('total', 0)}, final={denominator_count})")
                 
+                # Build descriptive label with filters
+                metric_label = numerator_metric.replace('_', ' ').title()
+                metric_filters_map = classification.get('metric_filters', {}) if classification else {}
+                if numerator_metric in metric_filters_map:
+                    filters = metric_filters_map[numerator_metric].get('filters', {})
+                    filter_parts = []
+                    if filters.get('direction'):
+                        filter_parts.append(filters['direction'].replace('_', '-').title())
+                    if filters.get('shot_type'):
+                        filter_parts.append(filters['shot_type'].title())
+                    if filter_parts:
+                        metric_label = ' '.join(filter_parts) + ' ' + metric_label
+                
                 if denominator_count > 0:
                     pct = round(100 * numerator_count / denominator_count, 1)
-                    response += f"- {numerator_metric.replace('_', ' ').title()}: {pct}% ({numerator_count} of {denominator_count} shots)\n"
+                    response += f"- {metric_label}: {pct}% ({numerator_count} of {denominator_count} shots)\n"
                     print(f"[FORMAT] Shot-level percentage: {numerator_metric} = {numerator_count}/{denominator_count} shots = {pct}%")
                 else:
                     print(f"[FORMAT-DEBUG] denominator_count is 0 or None, using fallback message")
-                    response += f"- {numerator_metric.replace('_', ' ').title()}: 0% (no shots)\n"
+                    response += f"- {metric_label}: 0% (no shots)\n"
                 
                 # Skip iterating over individual metrics since we handled the calculation
                 print(f"[FORMAT-DEBUG] Skipping standard metric iteration, response so far: {response[:200]}")
@@ -11779,22 +11784,35 @@ Answer:"""
                     count = m_data.get('count', 0)
                     total = m_data.get('total', 0) or m_data.get('_serve_total', 0)  # Unified: use total
                     
+                    # Build descriptive label with filters
+                    metric_label = m.replace('_', ' ').title()
+                    metric_filters_map = classification.get('metric_filters', {}) if classification else {}
+                    if m in metric_filters_map:
+                        filters = metric_filters_map[m].get('filters', {})
+                        filter_parts = []
+                        if filters.get('direction'):
+                            filter_parts.append(filters['direction'].replace('_', '-').title())
+                        if filters.get('shot_type'):
+                            filter_parts.append(filters['shot_type'].title())
+                        if filter_parts:
+                            metric_label = ' '.join(filter_parts) + ' ' + metric_label
+                    
                     if m in game_metrics and m in per_player:
                         # Format game-level metrics with per-player breakdown
                         p1_data = per_player.get(m, {}).get('player1', {})
                         p2_data = per_player.get(m, {}).get('player2', {})
-                        response += f"\n**{m.replace('_', ' ').title()}:**\n"
+                        response += f"\n**{metric_label}:**\n"
                         response += f"  - {player1}: {p1_data.get('count', 0)}\n"
                         response += f"  - {player2}: {p2_data.get('count', 0)}\n"
                     elif m in pct_metrics or total > 0:
                         # UNIFIED: All metrics with a total get percentage display
                         if total > 0:
                             pct = round(100 * count / total, 1)
-                            response += f"- {m.replace('_', ' ').title()}: {pct}% ({count} of {total})\n"
+                            response += f"- {metric_label}: {pct}% ({count} of {total})\n"
                         else:
-                            response += f"- {m.replace('_', ' ').title()}: 0% (no data)\n"
+                            response += f"- {metric_label}: 0% (no data)\n"
                     else:
-                        response += f"- {m.replace('_', ' ').title()}: {count}"
+                        response += f"- {metric_label}: {count}"
                         
                         # Calculate percentage of shots if we have total_shots
                         if total_shots > 0 and m != 'total_shots':
@@ -11805,854 +11823,7 @@ Answer:"""
         
         return response
     
-    def _analyze_by_taxonomy(self, classification: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        **DEPRECATED** - Use _analyze_n_dimensional instead.
-        
-        This function is kept for reference but all callers have been migrated
-        to use _analyze_n_dimensional which provides:
-        - Unified tracking with _track_per_player_metric
-        - Single code path for all metrics
-        - Player filter applied at end (not during calculation)
-        
-        Original description:
-        UNIFIED ANALYZER: Handles all query types via taxonomy classification.
-        
-        Supports:
-        - Filtering (player, situation, set, serve target, shot number, etc.)
-        - Grouping (by rally length, set, court side, shot type, etc.)
-        - Metrics (winners, errors, aces, points won, etc.)
-        - Comparisons and breakdowns
-        """
-        import warnings
-        warnings.warn("_analyze_by_taxonomy is deprecated, use _analyze_n_dimensional", DeprecationWarning)
-        import re
-        
-        domain = classification['domain']
-        analysis_type = classification['analysis_type']
-        filters = classification['filters']
-        metrics = classification['metrics']
-        group_by = classification.get('group_by')  # NEW: Grouping support
-        
-        # Use structured point-by-point data (loaded from JSON)
-        if not hasattr(self, 'point_by_point') or not self.point_by_point:
-            return {'error': 'No structured point-by-point data available. Load match first.'}
-        
-        point_data_list = self.point_by_point
-        print(f"[TAXONOMY] Using {len(point_data_list)} structured points")
-        
-        player_filter = filters.get('player')
-        player1 = self.player1
-        player2 = self.player2
-        
-        # Initialize results based on whether grouping is needed
-        if group_by:
-            results = self._init_grouped_results(classification, group_by, player1, player2)
-        else:
-            results = {
-                'classification': classification,
-                'total_points': 0,
-                'metrics_data': {metric: {'count': 0, 'points': []} for metric in metrics},
-                'player1': player1,
-                'player2': player2,
-                'player1_wins': 0,
-                'player2_wins': 0,
-                'matching_points': []  # Track all matching points for debugging
-            }
-        
-        for point_data in point_data_list:
-            point_num = point_data.get('point_number', 0)
-            server = point_data.get('server', '')
-            returner = point_data.get('returner', '')
-            score = point_data.get('score', '')
-            point_text = point_data.get('point_text', point_data.get('description', ''))
-            point_lower = point_text.lower()
-            
-            # === APPLY FILTERS ===
-            # Situation filter - GENERIC using SITUATION_CONFIG
-            situation_filter = filters.get('situation')
-            if situation_filter and not self._check_situation(situation_filter, score):
-                    continue
-            
-            # Set filter
-            set_filter = filters.get('set')
-            if set_filter:
-                current_set = self._extract_current_set(score)
-                if current_set and current_set != set_filter:
-                    continue
-            
-            # Serve target filter (wide/body/t) - GENERIC using filter value directly
-            serve_target_filter = filters.get('serve_target')
-            if serve_target_filter:
-                # Normalize and check if target is in point description
-                target_patterns = {'wide': 'wide', 'body': 'body', 't': 'down the t', 'center': 'center'}
-                pattern = target_patterns.get(serve_target_filter.lower(), serve_target_filter.lower())
-                if pattern not in point_lower[:50]:
-                    continue
-            
-            # Serve number filter (1st serve vs 2nd serve)
-            serve_number_filter = filters.get('serve_number')
-            if serve_number_filter:
-                has_fault = 'fault' in point_lower[:80]  # Fault in first 80 chars = 1st serve missed
-                has_2nd_serve = '2nd serve' in point_lower
-                is_2nd_serve_point = has_fault or has_2nd_serve
-                
-                if serve_number_filter == 1 and is_2nd_serve_point:
-                    continue  # Skip 2nd serve points when filtering for 1st serve
-                elif serve_number_filter == 2 and not is_2nd_serve_point:
-                    continue  # Skip 1st serve points when filtering for 2nd serve
-            
-            # Role filter (server or returner)
-            role_filter = filters.get('role')
-            if role_filter:
-                player_filter_for_role = (filters.get('player') or '').lower()
-                if player_filter_for_role:
-                    # GENERIC role filter using ROLE_CONFIG
-                    role_player = self._get_player_for_role(role_filter, server, returner)
-                    if player_filter_for_role not in role_player.lower():
-                        continue  # Skip if player wasn't in the expected role
-            
-            # Rally length range filter
-            rally_range = filters.get('rally_length_range')
-            # Will be applied after parsing rally
-            
-            # Net point filter
-            net_point_filter = filters.get('at_net')
-            # Will be applied after parsing rally
-            
-            # === PARSE RALLY ===
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
-            rally_length = len(actual_shots)
-            
-            # === DETERMINE POINT OUTCOME ===
-            # First try to extract from [Point won by:] tag (authoritative)
-            point_winner = None
-            winner_match = re.search(r'\[Point won by:\s*([^\]]+)\]', point_text)
-            if winner_match:
-                point_winner = winner_match.group(1).strip()
-            
-            winning_shot_type = None
-            error_player = None
-            error_shot_type = None  # backhand, forehand, etc.
-            
-            if actual_shots:
-                last_shot = actual_shots[-1]
-                outcome = last_shot.get('outcome', '')
-                last_player = last_shot.get('player', '')
-                last_description = last_shot.get('description', '').lower()
-                
-                # GENERIC OUTCOME HANDLING using OUTCOME_CONFIG
-                outcome_config = self._get_outcome_config(outcome)
-                winning_shot_type = outcome_config.get('winning_shot_type', '')
-                player_attribution = outcome_config.get('player_attribution', '')
-                is_positive = outcome_config.get('is_positive', True)
-                
-                # Determine point winner based on outcome attribution
-                if not point_winner:
-                    if player_attribution == 'server':
-                        point_winner = server if is_positive else returner
-                    elif player_attribution == 'error':
-                        # Error player loses, opponent wins
-                        point_winner = returner if last_player == server else server
-                        error_player = last_player
-                    elif player_attribution == 'winner':
-                        point_winner = last_player
-                    else:
-                        point_winner = last_player
-                
-                # Refine winner type based on description (for winner shots)
-                if winning_shot_type == 'winner':
-                    if 'volley' in last_description:
-                        winning_shot_type = 'volley_winner'
-                    elif 'inside-out' in last_description or 'inside-in' in last_description:
-                        winning_shot_type = 'specialty_winner'
-                    elif 'at net' in last_description:
-                        winning_shot_type = 'net_winner'
-                
-                # Set error_player for error outcomes
-                if player_attribution == 'error':
-                    error_player = last_player
-                    # Detect shot type of the error from description - find FIRST (leftmost) occurrence
-                    # GENERIC: Check which shot type appears first in the description
-                    shot_type_detected = None
-                    earliest_pos = len(last_description)
-                    for shot in ['backhand', 'forehand', 'serve']:
-                        pos = last_description.find(shot)
-                        if pos != -1 and pos < earliest_pos:
-                            earliest_pos = pos
-                            shot_type_detected = shot
-                    if shot_type_detected:
-                        error_shot_type = shot_type_detected
-            
-            # === METRIC FILTERING - GENERIC using CLASS-LEVEL METRIC_CONFIG ===
-            shot_type_filter = filters.get('shot_type') or filters.get('shot_base')
-            player_filter = filters.get('player')
-            
-            # Apply metric-specific filters using CLASS-LEVEL config
-            if metrics:
-                metric = metrics[0]  # Primary metric
-                config = self.METRIC_CONFIG.get(metric, {})
-                player_role = config.get('player_role', 'both')
-                keywords = config.get('keywords', [])
-                
-                # Filter by winning_shot_type using keywords from config
-                if keywords:
-                    shot_matches = False
-                    winning_lower = (winning_shot_type or '').lower()
-                    
-                    # GENERIC keyword matching - check if winning_shot_type matches ANY keyword
-                    for kw in keywords:
-                        kw_lower = kw.lower()
-                        if kw_lower == 'winner':
-                            # Special: use WINNER_TYPES set for winner detection
-                            if winning_shot_type in self.WINNER_TYPES:
-                                shot_matches = True
-                                break
-                        elif kw_lower in winning_lower or winning_lower in kw_lower.replace(' ', '_'):
-                            shot_matches = True
-                            break
-                    
-                    if not shot_matches:
-                            continue
-                    
-                # Determine target player for this metric based on player_role - GENERIC using ROLE_CONFIG
-                target_player = point_winner  # Default
-                target_shot = actual_shots[-1].get('description', '').lower() if actual_shots else ''
-                    
-                role_config = self.ROLE_CONFIG.get(player_role, {})
-                player_field = role_config.get('player_field', '')
-                if player_field:
-                    field_to_player = {
-                        'server': server,
-                        'returner': returner,
-                        'point_winner': point_winner,
-                        'error_player': error_player
-                    }
-                    target_player = field_to_player.get(player_field, point_winner)
-                    
-                    # For error metrics, also update target_shot
-                    if player_field == 'error_player':
-                        target_shot = error_shot_type if error_shot_type else ''
-                
-                # Apply shot type filter using parsed metadata - GENERIC
-                is_error_metric = player_field == 'error_player'
-                if shot_type_filter:
-                    if is_error_metric and target_shot and target_shot != shot_type_filter.lower():
-                        continue
-                    elif not is_error_metric and actual_shots:
-                        last_shot = actual_shots[-1]
-                        shot_meta = self._extract_shot_metadata(last_shot.get('description', ''))
-                        if shot_meta.get('shot_type') != shot_type_filter.lower():
-                            continue
-                    
-                    # NOTE: Player filtering is now handled by _check_metric_match for consistency
-                    pass
-            
-            # === DETERMINE GROUP (if grouping) ===
-            group_key = None
-            if group_by:
-                # For shot_direction/shot_type grouping, use the target shot description
-                target_shot_desc = ''
-                if group_by in ['shot_direction', 'shot_type'] and actual_shots:
-                    target_shot_desc = actual_shots[-1].get('description', '').lower()
-                
-                # Set dynamic values in filters for outcome/shot_number/player grouping
-                if group_by == 'outcome':
-                    filters['_current_outcome'] = winning_shot_type
-                if group_by == 'shot_number':
-                    filters['_rally_length'] = rally_length
-                if group_by == 'player':
-                    filters['_server'] = server
-                    filters['_returner'] = returner
-                    filters['_point_winner'] = point_winner
-                    filters['_error_player'] = error_player
-                    filters['_current_metric'] = metrics[0] if metrics else None
-                
-                # Set enriched data in filters for new grouping dimensions
-                if group_by == 'pressure_level':
-                    pressure_data = point_data.get('pressure', {})
-                    filters['_pressure_tightness'] = pressure_data.get('score_tightness', 0)
-                if group_by == 'serve_plus_one_type':
-                    tactics = point_data.get('tactics', {})
-                    filters['_serve_plus_one_shot'] = tactics.get('serve_plus_one_shot', '')
-                if group_by == 'after_rally_length':
-                    context = point_data.get('context', {})
-                    filters['_prev_rally_length'] = context.get('prev_rally_length', 0)
-                
-                # Get or compute metadata for this point
-                if '_metadata' not in point_data:
-                    point_data['_metadata'] = self._get_point_metadata(point_data)
-                point_meta = point_data['_metadata']
-                
-                group_key = self._determine_group_key(group_by, rally_length, score, point_lower, filters, target_shot_desc, rally_shots=actual_shots, metadata=point_meta)
-                if group_key is None:
-                    continue  # Skip if can't determine group
-            
-            # === TRACK RESULTS ===
-            if group_by and group_key:
-                # Grouped tracking
-                if group_key in results['groups']:
-                    results['groups'][group_key]['total'] += 1
-                    
-                    # Track points won per player
-                    if point_winner:
-                        # For player grouping, group_key is 'player1' or 'player2'
-                        if group_by == 'player':
-                            # group_key is already 'player1' or 'player2'
-                            if group_key == 'player1':
-                                results['groups'][group_key]['player1_wins'] += 1
-                            elif group_key == 'player2':
-                                results['groups'][group_key]['player2_wins'] += 1
-                        else:
-                            # For other groupings, determine player by name match
-                            if player1 and player1.lower() in point_winner.lower():
-                                results['groups'][group_key]['player1_wins'] += 1
-                            elif player2 and player2.lower() in point_winner.lower():
-                                results['groups'][group_key]['player2_wins'] += 1
-                    
-                    # Track if ANY metric matched (for matching_points)
-                    any_metric_matched_grouped = False
-                    
-                    # Track specific metrics per player (flexible, not hardcoded)
-                    # Check each metric type and increment appropriate counter
-                    for metric in metrics:
-                        if metric in ['unforced_errors', 'double_faults'] and error_player:
-                            # Error-based metrics: count who made the error
-                            any_metric_matched_grouped = True
-                            results['groups'][group_key].setdefault('player1_' + metric, 0)
-                            results['groups'][group_key].setdefault('player2_' + metric, 0)
-                            
-                            # For player grouping, group_key is 'player1' or 'player2'
-                            if group_by == 'player':
-                                if group_key == 'player1':
-                                    results['groups'][group_key]['player1_' + metric] += 1
-                                elif group_key == 'player2':
-                                    results['groups'][group_key]['player2_' + metric] += 1
-                            else:
-                                # For other groupings, determine player by name match
-                                if player1 and player1.lower() in error_player.lower():
-                                    results['groups'][group_key]['player1_' + metric] += 1
-                                elif player2 and player2.lower() in error_player.lower():
-                                    results['groups'][group_key]['player2_' + metric] += 1
-                        elif metric in ['winners', 'groundstroke_winners', 'baseline_winners', 'rally_winners']:
-                            # Check if this is a winner type (use class constant)
-                            if winning_shot_type not in self.WINNER_TYPES:
-                                continue  # Not a winner, skip
-                            
-                            # Apply shot-type filtering based on metric
-                            skip_point = False
-                            
-                            # For groundstroke/baseline/rally winners: exclude volleys and specialty shots
-                            if metric in ['groundstroke_winners', 'baseline_winners', 'rally_winners']:
-                                if actual_shots:
-                                    last_shot = actual_shots[-1]
-                                    shot_meta = self._extract_shot_metadata(last_shot.get('description', ''))
-                                    shot_modifier = shot_meta.get('shot_modifier', '')
-                                    direction = shot_meta.get('direction', '')
-                                    
-                                    # Exclude net shots (volleys) and specialty directions
-                                    if shot_modifier in ['volley', 'half_volley', 'swinging_volley']:
-                                        skip_point = True
-                                    if direction in ['inside_out', 'inside_in']:
-                                        skip_point = True
-                            
-                            if skip_point:
-                                continue  # Skip this point for winner counting
-                            
-                            # Count winners (all or filtered based on metric)
-                            any_metric_matched_grouped = True
-                            metric_key = metric  # Use actual metric name for storage
-                            results['groups'][group_key].setdefault(f'player1_{metric_key}', 0)
-                            results['groups'][group_key].setdefault(f'player2_{metric_key}', 0)
-                            if point_winner:
-                                # For player grouping, group_key is 'player1' or 'player2'
-                                if group_by == 'player':
-                                    if group_key == 'player1':
-                                        results['groups'][group_key][f'player1_{metric_key}'] += 1
-                                    elif group_key == 'player2':
-                                        results['groups'][group_key][f'player2_{metric_key}'] += 1
-                                else:
-                                    # For other groupings (set, rally_length, etc.), determine player by name match
-                                    if player1 and player1.lower() in point_winner.lower():
-                                        results['groups'][group_key][f'player1_{metric_key}'] += 1
-                                    elif player2 and player2.lower() in point_winner.lower():
-                                        results['groups'][group_key][f'player2_{metric_key}'] += 1
-                            # GENERIC metric tracking using METRIC_CONFIG
-                            else:
-                                # Get metric config to determine who to attribute to
-                                metric_cfg = self.METRIC_CONFIG.get(metric, {})
-                                player_role = metric_cfg.get('player_role', 'both')
-                                keywords = metric_cfg.get('keywords', [])
-                                
-                                # Check if this metric matches the current point's outcome
-                                shot_matches = True
-                                if keywords:
-                                    winning_lower = (winning_shot_type or '').lower()
-                                    if 'winner' in keywords:
-                                        shot_matches = winning_shot_type in self.WINNER_TYPES
-                                    elif 'ace' in keywords:
-                                        shot_matches = winning_lower == 'ace'
-                                    elif 'double fault' in keywords:
-                                        shot_matches = winning_lower == 'double_fault'
-                                    elif 'forced error' in keywords:
-                                        shot_matches = winning_lower == 'forced_error'
-                                    elif 'unforced error' in keywords:
-                                        shot_matches = winning_lower == 'unforced_error'
-                                else:
-                                    shot_matches = any(kw.lower() in winning_lower for kw in keywords)
-                                
-                                if shot_matches:
-                                    any_metric_matched_grouped = True
-                                results['groups'][group_key].setdefault(f'player1_{metric}', 0)
-                                results['groups'][group_key].setdefault(f'player2_{metric}', 0)
-                                
-                                # Determine which player to attribute based on player_role - GENERIC using ROLE_CONFIG
-                                attribution_player = ''
-                                role_config = self.ROLE_CONFIG.get(player_role, {})
-                                player_field = role_config.get('player_field', '')
-                                if player_field:
-                                    field_to_player = {
-                                        'server': server,
-                                        'returner': returner,
-                                        'point_winner': point_winner,
-                                        'error_player': error_player
-                                    }
-                                    attribution_player = field_to_player.get(player_field, point_winner)
-                                else:  # 'both' or unknown
-                                    attribution_player = point_winner
-                            
-                            # For player grouping, group_key is 'player1' or 'player2'
-                            if group_by == 'player':
-                                    results['groups'][group_key][f'{group_key}_{metric}'] += 1
-                            else:
-                                    # Determine which player to credit
-                                    if player1 and attribution_player and player1.lower() in attribution_player.lower():
-                                        results['groups'][group_key][f'player1_{metric}'] += 1
-                                    elif player2 and attribution_player and player2.lower() in attribution_player.lower():
-                                        results['groups'][group_key][f'player2_{metric}'] += 1
-                    
-                    # Track secondary metrics (for correlation queries) - GENERIC
-                    secondary_metric = classification.get('secondary_metric')
-                    if secondary_metric:
-                        # Convert metric name to shot type for comparison
-                        secondary_shot_type = secondary_metric.rstrip('s').replace('_', ' ')
-                        winning_lower = (winning_shot_type or '').replace('_', ' ')
-                        
-                        if secondary_shot_type in winning_lower or winning_lower in secondary_shot_type:
-                            results['groups'][group_key].setdefault(secondary_metric, 0)
-                            results['groups'][group_key][secondary_metric] += 1
-                        
-                        # Store example
-                        if len(results['groups'][group_key].get('examples', [])) < 3:
-                            results['groups'][group_key].setdefault('examples', []).append({
-                            'point': point_num, 'winner': point_winner, 'length': rally_length,
-                            'error_player': error_player, 'error_shot': error_shot_type,
-                            'outcome': winning_shot_type,
-                            'excerpt': point_text.strip()
-                            })
-                    
-                    # Store matching point for debugging (only if metric matched!)
-                    # For metrics like win_percentage or points_won with no specific metric, store all points
-                    if any_metric_matched_grouped or not metrics or metrics[0] in ['points_won', 'win_percentage', 'points_lost']:
-                        # Track actual matching points per group
-                        if 'matching_points' not in results['groups'][group_key]:
-                            results['groups'][group_key]['matching_points'] = []
-                        
-                        # Extract metadata for display filtering
-                        shot_meta_grp = {}
-                        if actual_shots:
-                            last_shot_grp = actual_shots[-1]
-                            shot_meta_grp = self._extract_shot_metadata(last_shot_grp.get('description', ''))
-                        
-                        results['groups'][group_key]['matching_points'].append({
-                            'point_number': point_num,
-                            'server': server,
-                            'returner': returner,
-                            'score': score,
-                            'winner': point_winner,
-                            'outcome': winning_shot_type,
-                            'rally_length': rally_length,
-                            'description': point_text,
-                            # Add metadata for display filter
-                            'shot_type': shot_meta_grp.get('shot_type'),
-                            'shot_modifier': shot_meta_grp.get('shot_modifier'),
-                            'direction': shot_meta_grp.get('direction'),
-                            'at_net': shot_meta_grp.get('at_net', False)
-                        })
-                        
-                        # Also store in top-level matching_points for grouped analysis
-                        if 'matching_points' not in results:
-                            results['matching_points'] = []
-                        
-                        # Extract metadata for display filtering (top-level)
-                        shot_meta_top = {}
-                        if actual_shots:
-                            last_shot_top = actual_shots[-1]
-                            shot_meta_top = self._extract_shot_metadata(last_shot_top.get('description', ''))
-                        
-                        results['matching_points'].append({
-                            'point_number': point_num,
-                            'server': server,
-                            'returner': returner,
-                            'score': score,
-                            'winner': point_winner,
-                            'outcome': winning_shot_type,
-                            'rally_length': rally_length,
-                            'description': point_text,
-                            # Add metadata for display filter
-                            'shot_type': shot_meta_top.get('shot_type'),
-                            'shot_modifier': shot_meta_top.get('shot_modifier'),
-                            'direction': shot_meta_top.get('direction'),
-                            'at_net': shot_meta_top.get('at_net', False)
-                        })
-                
-                results['total_points'] += 1
-            else:
-                # Non-grouped tracking
-                results['total_points'] += 1
-                
-                if point_winner:
-                    if player1 and player1.lower() in point_winner.lower():
-                        results['player1_wins'] += 1
-                    elif player2 and player2.lower() in point_winner.lower():
-                        results['player2_wins'] += 1
-                
-                # Track metrics
-                # Create point_data for complex metric checks
-                point_data_for_metric = {
-                    'point_text': point_text,
-                    'rally_length': rally_length,
-                    'server': server,
-                    'returner': returner,
-                    'error_player': error_player
-                }
-                
-                # Track if ANY metric matched (for matching_points deduplication)
-                any_metric_matched = False
-                
-                for metric in metrics:
-                    matched = self._check_metric_match(metric, winning_shot_type, point_winner, 
-                                                       server, player_filter, point_data_for_metric)
-                    if matched:
-                        any_metric_matched = True
-                        results['metrics_data'][metric]['count'] += 1
-                        if len(results['metrics_data'][metric]['points']) < 5:
-                            results['metrics_data'][metric]['points'].append({
-                                'point': point_num, 'winner': point_winner, 
-                                'shot_type': winning_shot_type, 'excerpt': point_text.strip()
-                            })
-                
-                # Store matching point for debugging (once per point, even if multiple metrics match)
-                if any_metric_matched:
-                    if 'matching_points' not in results:
-                        results['matching_points'] = []
-                    
-                    # Extract metadata for display filtering
-                    shot_meta_nogrp = {}
-                    if actual_shots:
-                        last_shot_nogrp = actual_shots[-1]
-                        shot_meta_nogrp = self._extract_shot_metadata(last_shot_nogrp.get('description', ''))
-                    
-                    results['matching_points'].append({
-                        'point_number': point_num,
-                        'server': server,
-                        'returner': returner,
-                        'score': score,
-                        'winner': point_winner,
-                        'outcome': winning_shot_type,
-                        'rally_length': rally_length,
-                        'description': point_text,
-                        # Add metadata for display filter
-                        'shot_type': shot_meta_nogrp.get('shot_type'),
-                        'shot_modifier': shot_meta_nogrp.get('shot_modifier'),
-                        'direction': shot_meta_nogrp.get('direction'),
-                        'at_net': shot_meta_nogrp.get('at_net', False)
-                    })
-        
-        # === CALCULATE PERCENTAGES ===
-        if group_by:
-            self._calculate_group_percentages(results, player_filter)
-        else:
-            if results['total_points'] > 0:
-                results['player1_pct'] = round(100 * results['player1_wins'] / results['total_points'], 1)
-                results['player2_pct'] = round(100 * results['player2_wins'] / results['total_points'], 1)
-        
-        return results
     
-    def _init_grouped_results(self, classification: Dict, group_by: str, player1: str, player2: str) -> Dict:
-        """
-        METADATA-DRIVEN group initialization.
-        Initialize results structure using values from match_filter_inventory.
-        """
-        results = {
-            'classification': classification,
-            'group_by': group_by,
-            'total_points': 0,
-            'player1': player1,
-            'player2': player2,
-            'groups': {},
-            'best_group_for_player': None
-        }
-        
-        # Get inventory for dynamic group generation
-        inventory = getattr(self, 'match_filter_inventory', {})
-        
-        # Helper to create group entry
-        def make_group(label):
-            return {'label': label, 'total': 0, 'player1_wins': 0, 'player2_wins': 0, 'player1_metric': 0, 'player2_metric': 0}
-        
-        # GENERIC: Get display config from GROUP_CONFIG
-        config = self._get_group_config(group_by)
-        if not config:
-            # Unknown group_by - return empty groups (will be populated dynamically during traversal)
-            return results
-        
-        display_source = config.get('display_source', 'dynamic')
-        
-        # Handle custom display functions
-        if display_source == 'custom':
-            custom_display = config.get('custom_display')
-            if custom_display == 'get_player_display':
-                results['groups'] = self._get_player_display(classification)
-            elif custom_display == 'get_set_groups_display':
-                results['groups'] = self._get_set_groups_display(classification)
-            return results
-        
-        # Handle inventory-based groups
-        if display_source == 'inventory':
-            inventory_key = config.get('inventory_key')
-            default_branches = config.get('default_branches', [])
-            always_include = config.get('always_include', [])
-            include_modifiers = config.get('include_modifiers', False)
-            
-            # Get branches from inventory or use defaults
-            branches = inventory.get(inventory_key, default_branches) if inventory_key else default_branches
-            
-            # Create groups with labels using GENERIC helper
-            groups = {}
-            for branch in branches:
-                label = self._get_display_label(group_by, branch, classification)
-                groups[str(branch)] = make_group(label)
-            
-            # Always include specified branches
-            for branch in always_include:
-                branch_str = str(branch)
-                if branch_str not in groups:
-                    label = self._get_display_label(group_by, branch, classification)
-                    groups[branch_str] = make_group(label)
-            
-            # Include modifiers if specified (e.g., for shot_type)
-            if include_modifiers:
-                known_mods = inventory.get('shot_modifiers', [])
-                for mod in known_mods:
-                    mod_str = str(mod)
-                    if mod_str not in groups:
-                        label = self._get_display_label(group_by, mod, classification)
-                        groups[mod_str] = make_group(label)
-            
-            results['groups'] = groups
-            return results
-        
-        # Handle predefined groups (fixed branches)
-        if display_source == 'predefined':
-            default_branches = config.get('default_branches', [])
-            
-            groups = {}
-            for branch in default_branches:
-                branch_str = str(branch)
-                label = self._get_display_label(group_by, branch, classification)
-                groups[branch_str] = make_group(label)
-            
-            results['groups'] = groups
-            return results
-        
-        # Handle dynamic groups (discovered during traversal)
-        # Return empty groups - will be populated as points are processed
-        if display_source == 'dynamic':
-            results['groups'] = {}
-            return results
-        
-        # Fallback: return empty groups
-        results['groups'] = {}
-        return results
-    
-    def _prepare_group_structure_LEGACY(self, classification: Dict, player1: str, player2: str) -> Dict:
-        """
-        LEGACY - DEPRECATED: Not used anywhere. Kept for reference only.
-        This function has hard-coded labels and should NOT be used.
-        Use _init_grouped_results instead, which uses GROUP_CONFIG generically.
-        """
-        group_by = classification.get('group_by', '')  # Extract from classification
-        results = {
-            'classification': classification,
-            'group_by': group_by,
-            'total_points': 0,
-            'player1': player1,
-            'player2': player2,
-            'groups': {},
-            'best_group_for_player': None
-        }
-        
-        # Get inventory for dynamic group generation
-        inventory = getattr(self, 'match_filter_inventory', {})
-        
-        # Helper to create group entry
-        def make_group(label):
-            return {'label': label, 'total': 0, 'player1_wins': 0, 'player2_wins': 0, 'player1_metric': 0, 'player2_metric': 0}
-        
-        # Define groups based on group_by type
-        if group_by == 'rally_length_category':
-            # Use rally categories from inventory if available
-            known_cats = inventory.get('rally_categories', ['1-3', '4-6', '7-9', '10+'])
-            rally_labels = {'1-3': 'Short (1-3 shots)', '4-6': 'Medium (4-6 shots)', 
-                          '7-9': 'Extended (7-9 shots)', '10+': 'Long (10+ shots)'}
-            results['groups'] = {cat: make_group(rally_labels.get(cat, cat)) for cat in known_cats}
-            
-        elif group_by == 'court_side':
-            # Use court sides from inventory
-            known_sides = inventory.get('court_sides', ['deuce', 'ad'])
-            side_labels = {'deuce': 'Deuce Court', 'ad': 'Ad Court'}
-            results['groups'] = {side: make_group(side_labels.get(side, side.title() + ' Court')) for side in known_sides}
-            
-        elif group_by == 'serve_number':
-            # Use serve numbers from inventory
-            known_serves = inventory.get('serve_numbers', ['1st', '2nd'])
-            serve_labels = {'1st': '1st Serve', '2nd': '2nd Serve', '1': '1st Serve', '2': '2nd Serve'}
-            results['groups'] = {sn: make_group(serve_labels.get(sn, f'{sn} Serve')) for sn in known_serves}
-            
-        elif group_by == 'serve_direction':
-            # Use serve targets from inventory
-            known_targets = inventory.get('serve_targets', ['wide', 'body', 't'])
-            target_labels = {'wide': 'Wide', 'body': 'Body', 't': 'T (Down the Middle)'}
-            results['groups'] = {t: make_group(target_labels.get(t, t.title())) for t in known_targets}
-            
-        elif group_by == 'shot_direction':
-            # Use directions from inventory
-            known_dirs = inventory.get('directions', ['crosscourt', 'down_the_line', 'inside_out', 'inside_in', 'down_the_middle'])
-            dir_labels = {
-                'crosscourt': 'Crosscourt', 'down_the_line': 'Down the Line', 
-                'inside_out': 'Inside-Out', 'inside_in': 'Inside-In', 'down_the_middle': 'Down the Middle'
-            }
-            results['groups'] = {d: make_group(dir_labels.get(d, d.replace('_', ' ').title())) for d in known_dirs}
-            
-        elif group_by == 'return_depth':
-            # Use depths from inventory
-            known_depths = inventory.get('depths', ['shallow', 'deep', 'very_deep'])
-            depth_labels = {'shallow': 'Shallow', 'deep': 'Deep', 'very_deep': 'Very Deep', 'unspecified': 'Unspecified'}
-            results['groups'] = {d: make_group(depth_labels.get(d, d.replace('_', ' ').title())) for d in known_depths}
-            # Add unspecified if needed
-            if 'unspecified' not in results['groups']:
-                results['groups']['unspecified'] = make_group('Unspecified')
-                
-        elif group_by == 'shot_type':
-            # Use shot types from inventory
-            known_types = inventory.get('shot_types', ['forehand', 'backhand'])
-            type_labels = {
-                'forehand': 'Forehand', 'backhand': 'Backhand', 'volley': 'Volley',
-                'overhead': 'Overhead/Smash', 'drop_shot': 'Drop Shot', 'serve': 'Serve'
-            }
-            results['groups'] = {t: make_group(type_labels.get(t, t.replace('_', ' ').title())) for t in known_types}
-            # Also include modifiers that can be shot types
-            known_mods = inventory.get('shot_modifiers', [])
-            for mod in known_mods:
-                if mod not in results['groups']:
-                    results['groups'][mod] = make_group(mod.replace('_', ' ').title())
-                    
-        elif group_by == 'outcome':
-            # Use outcomes from inventory
-            known_outcomes = inventory.get('outcomes', ['winner', 'ace', 'forced_error', 'unforced_error', 'double_fault'])
-            outcome_labels = {
-                'winner': 'Winner', 'ace': 'Ace', 'forced_error': 'Forced Error (Induced)',
-                'unforced_error': 'Unforced Error', 'double_fault': 'Double Fault'
-            }
-            results['groups'] = {o: make_group(outcome_labels.get(o, o.replace('_', ' ').title())) for o in known_outcomes}
-            
-        elif group_by == 'shot_number':
-            # Shot numbers are positional, not from inventory
-            results['groups'] = {
-                '1': make_group('Serve (1st shot)'),
-                '2': make_group('Return (2nd shot)'),
-                '3': make_group('Serve+1 (3rd shot)'),
-                '4+': make_group('Rally (4+ shots)')
-            }
-            
-        elif group_by == 'sets':
-            # Use sets played from inventory
-            known_sets = inventory.get('sets_played', [1, 2, 3, 4, 5])
-            results['groups'] = {str(s): make_group(f'Set {s}') for s in known_sets}
-            
-        elif group_by == 'player':
-            results['groups'] = {
-                'player1': make_group(player1),
-                'player2': make_group(player2)
-            }
-            
-        elif group_by == 'set_groups':
-            filters = classification.get('filters', {})
-            set_a = filters.get('set_group_a', [])
-            set_b = filters.get('set_group_b', [])
-            set_a_label = f"Set{'s' if len(set_a) > 1 else ''} {', '.join(map(str, set_a))}" if set_a else "Group A"
-            set_b_label = f"Set{'s' if len(set_b) > 1 else ''} {', '.join(map(str, set_b))}" if set_b else "Group B"
-            results['groups'] = {
-                'group_a': {'label': set_a_label, 'sets': set_a, **make_group(set_a_label)},
-                'group_b': {'label': set_b_label, 'sets': set_b, **make_group(set_b_label)}
-            }
-            
-        elif group_by == 'pressure_level':
-            # Use pressure levels from inventory
-            known_pressures = inventory.get('pressure_levels', ['low', 'medium', 'high'])
-            pressure_labels = {'low': 'Low Pressure (0-3)', 'medium': 'Medium Pressure (4-6)', 'high': 'High Pressure (7-10)'}
-            results['groups'] = {p: make_group(pressure_labels.get(p, p.title())) for p in known_pressures}
-            
-        elif group_by == 'serve_plus_one_type':
-            # Use serve+1 types from inventory
-            known_sp1 = inventory.get('serve_plus_one_shot_types', ['forehand', 'backhand', 'volley'])
-            sp1_labels = {
-                'forehand': 'Serve+1 Forehand', 'backhand': 'Serve+1 Backhand', 
-                'volley': 'Serve+1 Volley', 'none': 'No Serve+1 (ended on serve/return)'
-            }
-            results['groups'] = {t: make_group(sp1_labels.get(t, f'Serve+1 {t.title()}')) for t in known_sp1}
-            if 'none' not in results['groups']:
-                results['groups']['none'] = make_group('No Serve+1 (ended on serve/return)')
-                
-        elif group_by == 'after_rally_length':
-            results['groups'] = {
-                'after_short': make_group('After Short Rally (1-4 shots)'),
-                'after_medium': make_group('After Medium Rally (5-9 shots)'),
-                'after_long': make_group('After Long Rally (10+ shots)'),
-                'first_point': make_group('First Point (no previous rally)')
-            }
-        
-        elif group_by == 'shot_modifier':
-            # Use shot modifiers from inventory
-            known_mods = inventory.get('shot_modifiers', ['slice', 'volley', 'drop_shot', 'approach'])
-            results['groups'] = {mod: make_group(mod.replace('_', ' ').title()) for mod in known_mods}
-            
-        elif group_by == 'spin':
-            # Use spin types from inventory
-            known_spins = inventory.get('spin_types', ['topspin', 'slice', 'flat'])
-            spin_labels = {'topspin': 'Topspin', 'slice': 'Slice', 'flat': 'Flat'}
-            results['groups'] = {s: make_group(spin_labels.get(s, s.title())) for s in known_spins}
-            
-        elif group_by == 'court_position':
-            # Use court positions from inventory
-            known_positions = inventory.get('court_positions', ['baseline', 'net', 'approach'])
-            position_labels = {'baseline': 'Baseline', 'net': 'Net', 'approach': 'Approach'}
-            results['groups'] = {p: make_group(position_labels.get(p, p.title())) for p in known_positions}
-            
-        elif group_by == 'depth':
-            # Use depths from inventory (for all shots, not just returns)
-            known_depths = inventory.get('depths', ['shallow', 'deep', 'very_deep'])
-            depth_labels = {'shallow': 'Shallow', 'deep': 'Deep', 'very_deep': 'Very Deep'}
-            results['groups'] = {d: make_group(depth_labels.get(d, d.replace('_', ' ').title())) for d in known_depths}
-            
-        elif group_by == 'net_play_type':
-            # Use net play types from inventory
-            known_net_types = inventory.get('net_play_types', [])
-            results['groups'] = {nt: make_group(nt.replace('_', ' ').title()) for nt in known_net_types}
-        
-        return results
     
     def _determine_group_key(self, group_by: str, rally_length: int, score: str, point_lower: str, filters: Dict, target_shot_desc: str = '', rally_shots: list = None, metadata: Dict = None) -> str:
         """
@@ -14303,6 +13474,29 @@ Format in markdown."""
         
         return "\n".join(guidance_parts)
     
+    def _sort_chunks_chronologically(self, chunks: List[Dict]) -> List[Dict]:
+        """
+        Sort chunks by their first point number to preserve chronological flow.
+        
+        FAISS retrieves by semantic similarity, which ignores temporal order.
+        For narrative/momentum queries, chronological order is critical to understanding flow.
+        """
+        import re
+        
+        def extract_min_point_number(chunk_text: str) -> int:
+            """Extract the minimum point number from chunk text"""
+            # Find all "Point X:" or "Point X [" patterns
+            matches = re.findall(r'Point (\d+)[\[:]', chunk_text)
+            if matches:
+                return min(map(int, matches))
+            # If no point numbers found, push to end
+            return 999999
+        
+        # Sort chunks by minimum point number
+        sorted_chunks = sorted(chunks, key=lambda c: extract_min_point_number(c.get('text', '')))
+        
+        return sorted_chunks
+    
     def _handle_narrative_query(self, question: str, classification: Dict, top_k: int = None) -> str:
         """
         Handle narrative queries using NL retrieval + LLM synthesis.
@@ -14324,6 +13518,22 @@ Format in markdown."""
         
         if not relevant_chunks:
             return "I couldn't find relevant information to answer your question."
+        
+        # CRITICAL: Sort chunks chronologically for momentum/flow questions
+        # FAISS retrieves by similarity, but narratives need temporal order
+        question_lower = question.lower()
+        needs_chronological_order = any(kw in question_lower for kw in [
+            'momentum', 'flow', 'story', 'how did', 'what happened',
+            'turning point', 'shift', 'changed', 'evolved', 'unfolded',
+            'from start', 'from beginning', 'throughout', 'progression',
+            'journey', 'narrative', 'sequence', 'chronological',
+            'get away', 'come back', 'comeback', 'rally', 'surge',
+            'decline', 'drop off', 'improve', 'deteriorate'
+        ])
+        
+        if needs_chronological_order:
+            print("[NARRATIVE] Sorting chunks chronologically for temporal flow...")
+            relevant_chunks = self._sort_chunks_chronologically(relevant_chunks)
         
         print(f"[NARRATIVE] Retrieved {len(relevant_chunks)} chunks, generating synthesis...")
         
@@ -17420,12 +16630,40 @@ Return ONLY the JSON:"""
         # When doing situation_comparison (tiebreak vs rest), situation is used for GROUPING, not filtering
         # DON'T overwrite existing situation detection from _detect_filters_mcp with null/None
         if llm_parse.get('situation') and not llm_parse.get('situation_comparison'):
-            print(f"[LLM-PARSE] Updating situation filter from taxonomy '{filters.get('situation')}' to LLM '{llm_parse['situation']}'")
-            filters['situation'] = llm_parse['situation']
+            llm_situation = llm_parse['situation']
+            
+            # CRITICAL: Check if LLM misidentified a point_score as a situation
+            # Point scores look like "30-30", "15-40", "40-AD" (not valid situations)
+            # Valid situations are: break_point, game_point, deuce, set_point, match_point, tiebreak
+            valid_situations = set(self.SITUATION_CONFIG.keys())
+            
+            if llm_situation not in valid_situations:
+                # Check if it looks like a point score using config-based validation
+                if self._is_valid_point_score(llm_situation):
+                    # It's a point score, not a situation!
+                    filters['point_score'] = self._normalize_point_score(llm_situation)
+                    print(f"[LLM-PARSE] LLM incorrectly set situation='{llm_situation}' - converted to point_score='{filters['point_score']}'")
+                else:
+                    # Unknown situation - only set if we don't have point_score
+                    # (LLM often confuses point scores like "30-30" with situations like "even_score")
+                    if filters.get('point_score'):
+                        print(f"[LLM-PARSE] Ignoring unknown situation '{llm_situation}' - already have point_score='{filters['point_score']}'")
+                    else:
+                        print(f"[LLM-PARSE] WARNING: Unknown situation '{llm_situation}' (not in SITUATION_CONFIG) - setting anyway")
+                        filters['situation'] = llm_situation
+            else:
+                # Valid situation
+                print(f"[LLM-PARSE] Updating situation filter from taxonomy '{filters.get('situation')}' to LLM '{llm_situation}'")
+                filters['situation'] = llm_situation
         elif filters.get('situation'):
             print(f"[LLM-PARSE] Keeping taxonomy-detected situation '{filters['situation']}' (LLM returned: {llm_parse.get('situation')})")
         # If LLM returned null but we already detected one, keep it
         # (Don't let LLM null overwrite good taxonomy detection)
+        
+        # === PRESERVE point_score FROM TAXONOMY DETECTION ===
+        # If _detect_filters_mcp already detected a point_score, don't let LLM override with None
+        if filters.get('point_score') and not llm_parse.get('point_score'):
+            print(f"[LLM-PARSE] Keeping taxonomy-detected point_score '{filters['point_score']}' (LLM returned: {llm_parse.get('point_score')})")
         
         if llm_parse.get('set_filter'):
             filters['set'] = llm_parse['set_filter']
@@ -17504,15 +16742,28 @@ Return ONLY the JSON:"""
                 # Store COMPLETE filter set for this metric (LLM decides everything)
                 metric_filters = mp.get('filters', {})
                 
+                # CRITICAL: Remove tree-dimension filters from metric filters
+                # These will be applied during tree traversal, not at metric level
+                # Re-checking them causes false negatives when metadata isn't populated
+                tree_dimensions = ['situation', 'set', 'point_score', 'serve_target', 'court_side', 'court_zone', 'rally_length', 'role']
+                for dim in tree_dimensions:
+                    if dim in metric_filters:
+                        print(f"[LLM-PARSE] Removing '{dim}={metric_filters[dim]}' from metric filters (tree dimension)")
+                        del metric_filters[dim]
+                
                 # CRITICAL: Merge top-level filters into metric-specific filters
-                # LLM sometimes puts player/role/set at top level but not in metric filters
-                # Merge global filters if not already present in metric-specific filters
-                top_level_filters = ['player', 'role', 'set', 'situation']
-                for filter_key in top_level_filters:
-                    top_value = llm_parse.get(filter_key)
-                    if top_value and filter_key not in metric_filters:
-                        metric_filters[filter_key] = top_value
-                        print(f"[LLM-PARSE] Merging top-level '{filter_key}={top_value}' into metric filters")
+                # BUT: DON'T merge filters that will be used as tree dimensions (they're filtered in the tree)
+                # Tree dimensions: situation, set, point_score, serve_target, court_side, court_zone, rally_length, role
+                # Re-checking them at metric level causes false negatives when metadata isn't populated
+                
+                # Only merge 'player' - it's not a tree dimension (except when used for grouping)
+                player_value = llm_parse.get('player')
+                if player_value and 'player' not in metric_filters:
+                    metric_filters['player'] = player_value
+                    print(f"[LLM-PARSE] Merging top-level 'player={player_value}' into metric filters")
+                
+                # DON'T merge: situation, set, point_score, serve_target, court_side, role, etc.
+                # Those are tree dimensions and will be filtered during tree traversal
                 
                 # CRITICAL: Type coercion for serve_number (LLM might return string)
                 if 'serve_number' in metric_filters and metric_filters['serve_number'] is not None:
@@ -17526,6 +16777,23 @@ Return ONLY the JSON:"""
                 if metric_name == 'first_serve_pct' and 'serve_number' in metric_filters:
                     print(f"[LLM-PARSE] WARNING: Removing serve_number filter from first_serve_pct (needs ALL serves)")
                     del metric_filters['serve_number']
+                
+                # CRITICAL: Validate and fix situation filters in metric_filters
+                # LLM often returns point scores like "30-30" as situations
+                valid_situations = set(self.SITUATION_CONFIG.keys())
+                metric_situation = metric_filters.get('situation')
+                if metric_situation and metric_situation.lower() not in valid_situations:
+                    if self._is_valid_point_score(metric_situation):
+                        # It's a point_score, not a situation
+                        print(f"[LLM-PARSE] Metric '{metric_key}': Converting invalid situation '{metric_situation}' to point_score")
+                        metric_filters['point_score'] = self._normalize_point_score(metric_situation)
+                        del metric_filters['situation']
+                    elif filters.get('point_score'):
+                        # If we have point_score at top level, don't use unknown situation
+                        print(f"[LLM-PARSE] Metric '{metric_key}': Ignoring unknown situation '{metric_situation}' (have point_score)")
+                        del metric_filters['situation']
+                    else:
+                        print(f"[LLM-PARSE] WARNING: Metric '{metric_key}' has unknown situation '{metric_situation}'")
                 
                 classification['metric_filters'][metric_key] = {
                     'metric': metric_name,  # Original metric name
@@ -17655,11 +16923,28 @@ Return ONLY the JSON:"""
             is_shot_percentage = (('percentage' in q_lower or 'percent' in q_lower or '%' in q_lower) and 
                                  ('shots' in q_lower or 'shot' in q_lower))
             
-            if is_shot_query or is_shot_percentage:
+            # "success rate" for shots = winners / total shots for that direction/type
+            # Patterns: "crosscourt success rate", "down-the-line shot success rate", "forehand success rate"
+            # Use config for direction and shot type terms
+            direction_config = self.GROUP_CONFIG.get('direction', {}).get('default_branches', [])
+            shot_type_config = self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+            # Build search terms (include both underscore and space/hyphen versions)
+            direction_terms = []
+            for d in direction_config:
+                direction_terms.append(d.lower())
+                direction_terms.append(d.lower().replace('_', ' '))
+                direction_terms.append(d.lower().replace('_', '-'))
+            shot_type_terms = [s.lower() for s in shot_type_config] if shot_type_config else []
+            is_shot_success_rate = 'success rate' in q_lower and any(term in q_lower for term in direction_terms + shot_type_terms + ['shot'])
+            
+            if is_shot_query or is_shot_percentage or is_shot_success_rate:
                 current_metrics = classification.get('metrics', [])
                 if 'shot_count' not in current_metrics:
                     current_metrics.append('shot_count')
                     print(f"[LLM-PARSE] Detected shot-level query -> Adding 'shot_count' for denominator")
+                
+                # For shot success rate: keep win_percentage (points won when using that direction)
+                # No transformation needed - win_percentage with direction filter is correct
         
         # Update query category
         if llm_parse.get('query_type'):
@@ -17670,6 +16955,16 @@ Return ONLY the JSON:"""
         if metric_clarity == 'vague':
             print(f"[LLM-PARSE] Metric clarity is VAGUE -> Overriding to narrative route")
             classification['query_category'] = 'narrative'
+        
+        # CRITICAL: Shot direction success rate -> narrative (too complex for tree analysis)
+        if original_question and 'success rate' in original_question.lower():
+            direction_config = self.GROUP_CONFIG.get('direction', {}).get('default_branches', [])
+            direction_terms = []
+            for d in direction_config:
+                direction_terms.extend([d.lower(), d.lower().replace('_', ' '), d.lower().replace('_', '-')])
+            if any(term in original_question.lower() for term in direction_terms + ['shot']):
+                print(f"[LLM-PARSE] Shot direction success rate question -> Overriding to narrative route")
+                classification['query_category'] = 'narrative'
         
         # === GENERIC: Detect role from keywords for ANY situation ===
         # This applies to break points, game points, set points, match points, deuce, etc.
@@ -18053,15 +17348,30 @@ Return ONLY the JSON:"""
         print(f"[ROUTING] Total Dimensions: {total_dimensions} (filters: {active_filters}, groups: {group_count})")
         
         # =====================================================================
-        # INTELLIGENT ROUTING (LLM-Driven)
+        # INTELLIGENT ROUTING (Two-Level System)
         # =====================================================================
-        # 1. NARRATIVE → LLM identified as narrative question → Use NL file
-        # 2. CHAIN LOGIC → "Shot A → Shot B" patterns → Use chain analysis
-        # 3. ANALYTICAL/COMPARATIVE → Taxonomy/PBP data with N-DIM for complex
+        # LEVEL 1: Query Type Detection
+        #   - SHOT-LEVEL: direction, shot_type filters → Embeddings (pre-computed)
+        #   - POINT-LEVEL: situation, serve, role filters → Tree (point aggregation)
+        #
+        # LEVEL 2: Within Point-Level
+        #   1. NARRATIVE → LLM identified descriptive/strategic
+        #   2. CHAIN LOGIC → Shot A → Shot B patterns
+        #   3. ANALYTICAL → Taxonomy/tree analysis
         # =====================================================================
         
         question_lower = question.lower()
         
+        # === LEVEL 1: SHOT-LEVEL vs POINT-LEVEL ROUTING ===
+        is_shot_level_query = self._is_shot_level_query(question, classification)
+        if is_shot_level_query:
+            print("[SHOT-LEVEL] Query requires shot-level stats -> Routing to embeddings ONLY (bypassing tree)")
+            answer = self._handle_narrative_query(question, classification, top_k)
+            self.last_answer = answer
+            self.last_analysis = None
+            return answer
+        
+        # === LEVEL 2: POINT-LEVEL ROUTING ===
         # === 0. NARRATIVE ROUTE → LLM identified as narrative ===
         # Questions about strategy, momentum, patterns, "did X change?", etc.
         # Narrative has access to BOTH NL file AND point-by-point data
@@ -18083,23 +17393,76 @@ Return ONLY the JSON:"""
             return answer
         
         # === 1. CHAIN LOGIC ANALYSIS → Shot A → Shot B patterns ===
-        if analysis_type == 'chain' or filters.get('chain_logic') or 'led to' in question_lower or 'lead to' in question_lower or 'followed by' in question_lower:
-            print("[CHAIN] Routing to chain logic analysis (Shot A -> Shot B)")
-            try:
-                analysis = self._analyze_chain_logic(classification)
-                if 'error' not in analysis and analysis.get('total_shot_a', 0) > 0:
-                    # Store analysis for external access
-                    self.last_analysis = analysis
-                    data_response = self._format_chain_logic_analysis(analysis)
-                    answer = self._synthesize_with_narrative(question, data_response, classification)
-                    self.last_answer = answer
-                    return answer
-                elif 'error' in analysis:
-                    print(f"[CHAIN] Error: {analysis.get('error')}, falling through to taxonomy")
-                else:
-                    print(f"[CHAIN] No matches found, falling through to taxonomy")
-            except Exception as e:
-                print(f"[CHAIN] Exception: {e}, falling through to taxonomy")
+        # CRITICAL: Chain logic is conceptually shot-level (requires full shot sequences)
+        # But we distinguish between:
+        #   - Shot-to-shot chains (Shot A with shot filters) → Embeddings (default)
+        #   - Point-level event chains (serve → return → outcome) → Tree
+        is_chain_query = analysis_type == 'chain' or filters.get('chain_logic') or 'led to' in question_lower or 'lead to' in question_lower or 'followed by' in question_lower
+        
+        if is_chain_query:
+            # Check if chain involves shot attributes (shot_type, direction, shot_modifier)
+            # Shot-to-shot chains require shot attributes; point-level chains don't
+            chain_logic = filters.get('chain_logic', {})
+            shot_a = chain_logic.get('shot_a', {})
+            
+            # Check if Shot A has shot-level attributes (in dict or as keywords in question)
+            has_shot_attributes_in_chain = False
+            if isinstance(shot_a, dict):
+                has_shot_attributes_in_chain = any(shot_a.get(key) for key in ['shot_type', 'direction', 'shot_modifier'])
+            elif isinstance(shot_a, str):
+                # Check question for shot type/direction keywords
+                shot_type_terms = []
+                shot_type_config = self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+                if shot_type_config:
+                    for st in shot_type_config:
+                        shot_type_terms.append(st.lower())
+                        shot_type_terms.append(st.lower().replace('_', ' '))
+                        shot_type_terms.append(st.lower().replace('_', '-'))
+                
+                direction_terms = []
+                direction_config = self.GROUP_CONFIG.get('direction', {}).get('default_branches', [])
+                for d in direction_config:
+                    direction_terms.append(d.lower())
+                    direction_terms.append(d.lower().replace('_', ' '))
+                    direction_terms.append(d.lower().replace('_', '-'))
+                
+                shot_a_lower = shot_a.lower()
+                has_shot_type = any(term in shot_a_lower for term in shot_type_terms)
+                has_direction = any(term in shot_a_lower for term in direction_terms)
+                has_shot_attributes_in_chain = has_shot_type or has_direction
+            
+            # Also check question for shot keywords if Shot A isn't explicitly provided
+            if not has_shot_attributes_in_chain:
+                shot_keywords_in_question = any(kw in question_lower for kw in ['forehand', 'backhand', 'volley', 'crosscourt', 'down-the-line', 'down the line', 'inside-out', 'inside-in'])
+                # But exclude serve/return (point-level events)
+                is_serve_return_only = ('serve' in question_lower or 'return' in question_lower) and not shot_keywords_in_question
+                has_shot_attributes_in_chain = shot_keywords_in_question and not is_serve_return_only
+            
+            if has_shot_attributes_in_chain:
+                # Shot-to-shot chain → Embeddings (requires full rally shot sequences)
+                print("[CHAIN] Shot-to-shot chain detected (requires shot sequences) -> Routing to embeddings")
+                answer = self._handle_narrative_query(question, classification, top_k)
+                self.last_answer = answer
+                self.last_analysis = None
+                return answer
+            else:
+                # Point-level event chain (serve → return → outcome) → Tree
+                print("[CHAIN] Point-level event chain detected (serve/return events) -> Routing to tree analysis")
+                try:
+                    analysis = self._analyze_chain_logic(classification)
+                    if 'error' not in analysis and analysis.get('total_shot_a', 0) > 0:
+                        # Store analysis for external access
+                        self.last_analysis = analysis
+                        data_response = self._format_chain_logic_analysis(analysis)
+                        answer = self._synthesize_with_narrative(question, data_response, classification)
+                        self.last_answer = answer
+                        return answer
+                    elif 'error' in analysis:
+                        print(f"[CHAIN] Error: {analysis.get('error')}, falling through to taxonomy")
+                    else:
+                        print(f"[CHAIN] No matches found, falling through to taxonomy")
+                except Exception as e:
+                    print(f"[CHAIN] Exception: {e}, falling through to taxonomy")
         
         # === 2. UNIFIED TREE ANALYZER → ALL analytical queries ===
         # ONE PATH for all queries - complexity just affects tree depth
@@ -19254,22 +18617,22 @@ Return ONLY the JSON:"""
                         number = value.split("(")[0].strip()
                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
                         if "All Net Points" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors at the net, which represents {percentage}% of net points for {player}.")
+                            sentences.append(f"{player} made {number} induced forced errors at the net, which represents {percentage}% of net points for {player}.")
                         elif "All Net Approaches" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors on net approaches, which represents {percentage}% of net approaches for {player}.")
+                            sentences.append(f"{player} made {number} induced forced errors on net approaches, which represents {percentage}% of net approaches for {player}.")
                         elif "Net Points (excl S-and-V)" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors at the net excluding serve and volleys, which represents {percentage}% of net points for {player}.")
+                            sentences.append(f"{player} made {number} induced forced errors at the net excluding serve and volleys, which represents {percentage}% of net points for {player}.")
                         elif "Net Approaches (excl S-and-V)" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors on net approaches excluding serve and volleys, which represents {percentage}% of net approaches for {player}.")
+                            sentences.append(f"{player} made {number} induced forced errors on net approaches excluding serve and volleys, which represents {percentage}% of net approaches for {player}.")
                         else:
-                            sentences.append(f"{player} induced {number} forced errors at the net, which represents {percentage}% of net points for {player}.")
+                            sentences.append(f"{player} made {number} induced forced errors at the net, which represents {percentage}% of net points for {player}.")
                     else:
                         if "All Net Points" in row_label:
-                            sentences.append(f"{player} induced {value} forced errors at the net.")
+                            sentences.append(f"{player} made {value} induced forced errors at the net.")
                         elif "All Net Approaches" in row_label:
-                            sentences.append(f"{player} induced {value} forced errors on net approaches.")
+                            sentences.append(f"{player} made {value} induced forced errors on net approaches.")
                         else:
-                            sentences.append(f"{player} induced {value} forced errors at the net.")
+                            sentences.append(f"{player} made {value} induced forced errors at the net.")
                 elif header == "UFE at Net":
                     # Extract number and percentage
                     if "(" in value and ")" in value:
@@ -19315,27 +18678,27 @@ Return ONLY the JSON:"""
                         else:
                             sentences.append(f"{player} was passed {value} times at the net.")
                 elif header == "PsgSht indFcd":
-                    # Extract number and percentage
+                    # Extract number and percentage (passing shots that forced errors)
                     if "(" in value and ")" in value:
                         number = value.split("(")[0].strip()
                         percentage = value.split("(")[1].split(")")[0].replace("%", "")
                         if "All Net Points" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors with passing shots at the net, which represents {percentage}% of net points.")
+                            sentences.append(f"{player} made {number} induced forced errors during passing shots at the net, which represents {percentage}% of net points.")
                         elif "All Net Approaches" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors with passing shots on net approaches, which represents {percentage}% of net approaches.")
+                            sentences.append(f"{player} made {number} induced forced errors during passing shots on net approaches, which represents {percentage}% of net approaches.")
                         elif "Net Points (excl S-and-V)" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors with passing shots at the net excluding serve and volleys, which represents {percentage}% of net points.")
+                            sentences.append(f"{player} made {number} induced forced errors during passing shots at the net excluding serve and volleys, which represents {percentage}% of net points.")
                         elif "Net Approaches (excl S-and-V)" in row_label:
-                            sentences.append(f"{player} induced {number} forced errors with passing shots on net approaches excluding serve and volleys, which represents {percentage}% of net approaches.")
+                            sentences.append(f"{player} made {number} induced forced errors during passing shots on net approaches excluding serve and volleys, which represents {percentage}% of net approaches.")
                         else:
-                            sentences.append(f"{player} induced {number} forced errors with passing shots at the net, which represents {percentage}% of net points.")
+                            sentences.append(f"{player} made {number} induced forced errors during passing shots at the net, which represents {percentage}% of net points.")
                     else:
                         if "All Net Points" in row_label:
-                            sentences.append(f"{player} induced {value} forced errors with passing shots at the net.")
+                            sentences.append(f"{player} made {value} induced forced errors during passing shots at the net.")
                         elif "All Net Approaches" in row_label:
-                            sentences.append(f"{player} induced {value} forced errors with passing shots on net approaches.")
+                            sentences.append(f"{player} made {value} induced forced errors during passing shots on net approaches.")
                         else:
-                            sentences.append(f"{player} induced {value} forced errors with passing shots at the net.")
+                            sentences.append(f"{player} made {value} induced forced errors during passing shots at the net.")
                 elif header == "rallyLen":
                     if "All Net Points" in row_label:
                         sentences.append(f"{player} played at the net and the average rally length was {value} strokes.")
@@ -19347,6 +18710,155 @@ Return ONLY the JSON:"""
                         sentences.append(f"{player} approached the net excluding serve and volleys and the average rally length was {value} strokes.")
                     else:
                         sentences.append(f"{context} and the average rally length was {value} strokes.")
+                else:
+                    # Generic fallback
+                    sentences.append(f"{context} and {header}: {value}.")
+        
+        return sentences
+
+    def _convert_netpts_table2_row_to_sentences(self, row_label: str, values: List[str], column_headers: List[str], player: str, opponent: str) -> List[str]:
+        """Convert net points table2 (serve-and-volley) statistics row to natural language sentences"""
+        sentences = []
+        
+        # Handle different serve-and-volley row types
+        # Check more specific strings FIRST to avoid substring matching issues
+        if "non-S-and-V 2nds" in row_label:
+            context = f"{player} played non-serve-and-volley points on second serves"
+            serve_type = "non-serve-and-volley on second serves"
+        elif "non-S-and-V 1sts" in row_label:
+            context = f"{player} played non-serve-and-volley points on first serves"
+            serve_type = "non-serve-and-volley on first serves"
+        elif "non-S-and-V" in row_label:
+            context = f"{player} played non-serve-and-volley points"
+            serve_type = "non-serve-and-volley"
+        elif "S-and-V 2nds" in row_label:
+            context = f"{player} played serve-and-volley points on second serves"
+            serve_type = "serve-and-volley on second serves"
+        elif "S-and-V 1sts" in row_label:
+            context = f"{player} played serve-and-volley points on first serves"
+            serve_type = "serve-and-volley on first serves"
+        elif "Serve-and-Volley" in row_label:
+            context = f"{player} played serve-and-volley points"
+            serve_type = "serve-and-volley"
+        else:
+            context = f"{player} played points"
+            serve_type = ""
+        
+        # Convert each value to a sentence with better formatting
+        for i, value in enumerate(values):
+            if i < len(column_headers) and value and value != "0":
+                header = column_headers[i]
+                
+                if header == "Pts":
+                    if "non-S-and-V" in row_label:
+                        sentences.append(f"{player} played {value} {serve_type} points.")
+                    elif "Serve-and-Volley" in row_label or "S-and-V" in row_label:
+                        sentences.append(f"{player} played {value} {serve_type} points.")
+                    else:
+                        sentences.append(f"{player} played {value} points.")
+                elif header == "Won-----%":
+                    # Extract the number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if "non-S-and-V" in row_label:
+                            sentences.append(f"{player} won {number} {serve_type} points, or {percentage}% of total {serve_type} points for {player}.")
+                        elif "Serve-and-Volley" in row_label or "S-and-V" in row_label:
+                            sentences.append(f"{player} won {number} {serve_type} points, or {percentage}% of total {serve_type} points for {player}.")
+                        else:
+                            sentences.append(f"{player} won {number} points, or {percentage}% of total points for {player}.")
+                    else:
+                        sentences.append(f"{context} and won {value} points.")
+                elif header == "Aces----%":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            sentences.append(f"{player} hit {number} aces on {serve_type} points, which represents {percentage}% of {serve_type} points for {player}.")
+                    else:
+                        if value != "0":
+                            sentences.append(f"{player} hit {value} aces on {serve_type} points.")
+                elif header == "Unret---%":
+                    # Extract number and percentage (unreturned serves)
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            sentences.append(f"{player} hit {number} unreturned serves during {serve_type}, which represents {percentage}% of {serve_type} points.")
+                    else:
+                        if value != "0":
+                            sentences.append(f"{player} hit {value} unreturned serves during {serve_type}.")
+                elif header == "retFcd--%":
+                    # Extract number and percentage (return forced errors)
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            error_text = "error" if number == "1" else "errors"
+                            sentences.append(f"{player} made {number} forced {error_text} during {opponent}'s returns during {serve_type}, which represents {percentage}% of {serve_type} points.")
+                    else:
+                        if value != "0":
+                            error_text = "error" if value == "1" else "errors"
+                            sentences.append(f"{player} made {value} forced {error_text} during {opponent}'s returns during {serve_type}.")
+                elif header == "Wnr at Net":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            sentences.append(f"{player} hit {number} winner{'s' if number != '1' else ''} at the net during {serve_type}, which represents {percentage}% of {serve_type} points.")
+                    else:
+                        if value != "0":
+                            sentences.append(f"{player} hit {value} winner{'s' if value != '1' else ''} at the net during {serve_type}.")
+                elif header == "indFcd at Net":
+                    # Extract number and percentage (induced forced errors while at the net)
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            error_text = "error" if number == "1" else "errors"
+                            sentences.append(f"{player} made {number} induced forced {error_text} while at the net during {serve_type}, which represents {percentage}% of {serve_type} points.")
+                    else:
+                        if value != "0":
+                            error_text = "error" if value == "1" else "errors"
+                            sentences.append(f"{player} made {value} induced forced {error_text} while at the net during {serve_type}.")
+                elif header == "UFE at Net":
+                    # Extract number and percentage (unforced errors made by the player at the net)
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            error_text = "error" if number == "1" else "errors"
+                            sentences.append(f"{player} had {number} unforced {error_text} while at the net during {serve_type}, which represents {percentage}% of {serve_type} points.")
+                    else:
+                        if value != "0":
+                            error_text = "error" if value == "1" else "errors"
+                            sentences.append(f"{player} had {value} unforced {error_text} while at the net during {serve_type}.")
+                elif header == "Passed at Net":
+                    # Extract number and percentage
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            sentences.append(f"{player} was passed at the net {number} time{'s' if number != '1' else ''} during {serve_type}, which represents {percentage}% of {serve_type} points.")
+                    else:
+                        if value != "0":
+                            sentences.append(f"{player} was passed at the net {value} time{'s' if value != '1' else ''} during {serve_type}.")
+                elif header == "PsgSht indFcd":
+                    # Extract number and percentage (passing shots that induced forced errors from opponent)
+                    if "(" in value and ")" in value:
+                        number = value.split("(")[0].strip()
+                        percentage = value.split("(")[1].split(")")[0].replace("%", "")
+                        if number != "0":
+                            error_text = "error" if number == "1" else "errors"
+                            sentences.append(f"{player} made {number} induced forced {error_text} during passing shots from {opponent} during {serve_type}, which represents {percentage}% of {serve_type} points.")
+                    else:
+                        if value != "0":
+                            error_text = "error" if value == "1" else "errors"
+                            sentences.append(f"{player} made {value} induced forced {error_text} during passing shots from {opponent} during {serve_type}.")
+                elif header == "rallyLen":
+                    sentences.append(f"{player} played {serve_type} points and the average rally length was {value} strokes.")
                 else:
                     # Generic fallback
                     sentences.append(f"{context} and {header}: {value}.")
@@ -20079,42 +19591,79 @@ Return ONLY the JSON:"""
         if netpts1_data:
             text.append("NETPTS1 STATISTICS:")
             text.append("-" * 21)
-            text.extend(self._convert_flat_netpts_player_to_text(netpts1_data, player1))
+            text.extend(self._convert_flat_netpts_player_to_text(netpts1_data, player1, player2))
             text.append("")
         
         if netpts2_data:
             text.append("NETPTS2 STATISTICS:")
             text.append("-" * 21)
-            text.extend(self._convert_flat_netpts_player_to_text(netpts2_data, player2))
+            text.extend(self._convert_flat_netpts_player_to_text(netpts2_data, player2, player1))
             text.append("")
         
         return text
 
-    def _convert_flat_netpts_player_to_text(self, netpts_data: Dict[str, Any], player: str) -> List[str]:
+    def _convert_flat_netpts_player_to_text(self, netpts_data: Dict[str, Any], player: str, opponent: str) -> List[str]:
         """Convert flat netpts data for one player to natural language text"""
         text = []
         
-        # Find the header row
-        header_key = None
+        # Find table1 header row (NET POINTS)
+        table1_header_key = None
         for key in netpts_data.keys():
-            if 'NET POINTS' in key:
-                header_key = key
+            if 'NET POINTS' in key and '_table1' in key:
+                table1_header_key = key
                 break
         
-        if header_key:
-            headers = netpts_data[header_key].split(' | ')
+        # Find table2 header row (SERVE-AND-VOLLEY)
+        table2_header_key = None
+        for key in netpts_data.keys():
+            if 'SERVE-AND-VOLLEY' in key and '_table2' in key:
+                table2_header_key = key
+                break
+        
+        # Process table1 (NET POINTS format - general net points statistics)
+        if table1_header_key:
+            headers = [h.strip() for h in netpts_data[table1_header_key].split(' | ')]
             
-            # Process each data row
+            # Add section header for table1 (net points/net approaches)
+            text.append("Net Points and Net Approaches Statistics:")
+            text.append("-" * 40)
+            
+            # Process each table1 data row
             for key, value in netpts_data.items():
-                if key != header_key and 'NET POINTS' not in key:
+                if key != table1_header_key and '_table1' in key and 'NET POINTS' not in key and 'SERVE-AND-VOLLEY' not in key:
                     # Extract the row label
                     row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                    row_label = row_label.replace('_table1', '').strip()
                     
                     # Split the value by | to get individual values
                     values = [v.strip() for v in value.split(' | ')]
                     
                     # Convert to sentences using the existing method
                     sentences = self._convert_netpts_row_to_sentences(row_label, values, headers, player)
+                    text.extend(sentences)
+            
+            text.append("")
+        
+        # Process table2 (SERVE-AND-VOLLEY format - serve-and-volley vs non-serve-and-volley breakdown)
+        if table2_header_key:
+            headers = [h.strip() for h in netpts_data[table2_header_key].split(' | ')]
+            
+            # Add section header for table2 (serve-and-volley breakdown)
+            text.append("Serve-and-Volley vs Non-Serve-and-Volley Breakdown:")
+            text.append("-" * 47)
+            
+            # Process each table2 data row
+            for key, value in netpts_data.items():
+                if key != table2_header_key and '_table2' in key and 'SERVE-AND-VOLLEY' not in key:
+                    # Extract the row label
+                    row_label = key.split(' - ', 1)[1] if ' - ' in key else key
+                    row_label = row_label.replace('_table2', '').strip()
+                    
+                    # Split the value by | to get individual values
+                    values = [v.strip() for v in value.split(' | ')]
+                    
+                    # Convert to sentences using the table2-specific method
+                    sentences = self._convert_netpts_table2_row_to_sentences(row_label, values, headers, player, opponent)
                     text.extend(sentences)
         
         return text
