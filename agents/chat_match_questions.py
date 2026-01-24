@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 
 import json
 import os
@@ -18,10 +18,10 @@ class TennisChatAgentEmbeddingQALocal:
     Supports Claude, Gemini, and OpenAI for answering questions.
     """
     
-    # ══════════════════════════════════════════════════════════════════════════════
-    # VAGUE TERM → METRIC MAPPING SYSTEM
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # VAGUE TERM â†’ METRIC MAPPING SYSTEM
     # Converts "vague" analytical terms into computable metric bundles
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     # Step 1: Normalize synonyms to canonical tokens
     TERM_NORMALIZATION = {
@@ -118,9 +118,9 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # GLOBAL CONSTANTS - Used throughout the codebase
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     # All winner outcome types (referenced in multiple places)
     WINNER_TYPES = {
@@ -162,9 +162,9 @@ class TennisChatAgentEmbeddingQALocal:
         'situation': ['situation'],
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # OUTCOME CONFIGURATION - Maps outcome strings to their properties
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     OUTCOME_CONFIG = {
         'WINNER': {
             'winning_shot_type': 'winner',
@@ -204,9 +204,9 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # SITUATION CONFIGURATION - Maps situations to their detection logic
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     SITUATION_CONFIG = {
         'break_point': {
             'detection_method': '_is_break_point_score',
@@ -240,35 +240,35 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # POINT SCORE CONFIGURATION - Valid point scores and normalization
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     POINT_SCORE_CONFIG = {
         'valid_values': ['0', '15', '30', '40', 'AD'],  # Valid tennis point scores
         'aliases': {
             # Common alternative representations
             'DEUCE': '40-40',
-            'ALL': None,  # Special marker: "30-all" → use first value repeated
+            'ALL': None,  # Special marker: "30-all" â†’ use first value repeated
             'ADVANTAGE': 'AD',
             'ADV': 'AD',
             'A': 'AD',
         },
         'patterns': {
             # Regex patterns for detecting point scores in queries
-            'standard': r'(?:at\s+|when\s+)?(\d{1,2})[\-–](\d{1,2}|AD|all)',
-            'with_context': r'(?:at\s+|when\s+)?(\d{1,2})[\-–](\d{1,2}|AD|all)(?:\s+(?:points?|score))?',
+            'standard': r'(?:at\s+|when\s+)?(\d{1,2})[\-â€“](\d{1,2}|AD|all)',
+            'with_context': r'(?:at\s+|when\s+)?(\d{1,2})[\-â€“](\d{1,2}|AD|all)(?:\s+(?:points?|score))?',
         },
         'normalization_rules': {
             # How to normalize point scores for comparison
             'uppercase': True,
             'deuce_to_40_40': True,
-            'handle_en_dash': True,  # Convert en dash (–) to hyphen (-)
+            'handle_en_dash': True,  # Convert en dash (â€“) to hyphen (-)
         }
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # ROLE CONFIGURATION - Maps roles to player resolution
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     ROLE_CONFIG = {
         'server': {
             'player_field': 'server',
@@ -292,9 +292,9 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # DOMAIN CONFIGURATION - Maps domains to their properties
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     DOMAIN_CONFIG = {
         'serve': {
             'role': 'server',
@@ -318,9 +318,9 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # COURT SIDE CONFIGURATION - Maps court sides to their properties
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     COURT_SIDE_CONFIG = {
         'deuce': {
             'game_score_patterns': ['0-', '30-', 'deuce'],
@@ -332,9 +332,9 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # COURT ZONE CONFIGURATION - Maps court zones to their properties
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     COURT_ZONE_CONFIG = {
         'net': {
             'detection_fields': ['at_net', 'court_position'],
@@ -348,10 +348,10 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # GROUP BY CONFIGURATION - Maps group_by values to their grouping logic
     # FULLY VARIABLE-DRIVEN: Add new groupings here, no code changes needed!
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     GROUP_CONFIG = {
         'player': {
             'extraction_method': 'metric_aware',  # Uses METRIC_CONFIG to determine player_field
@@ -577,9 +577,9 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # METRIC CONFIGURATION - SINGLE SOURCE OF TRUTH
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # 
     # This config defines EVERYTHING about how metrics behave:
     #   - player_role: whose metric (server/returner/winner/error/both/performer)
@@ -594,11 +594,11 @@ class TennisChatAgentEmbeddingQALocal:
     #
     # The tree handles ALL filtering (situation, set, role, point_score).
     # METRIC_CONFIG ONLY defines what counts for numerator/denominator.
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     METRIC_CONFIG = {
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # SERVE PERCENTAGE METRICS - Per-player percentages (each player's own stats)
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'first_serve_pct': {
             'player_role': 'server',
             'total_filter': 'always',       # Denominator: all serve attempts by this player
@@ -628,9 +628,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Second Serve Win %'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # POINT OUTCOME METRICS - Shows who won how many points
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'points_won': {
             'player_role': 'both',
             'total_filter': 'always',
@@ -646,9 +646,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Win Percentage'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # COUNT METRICS - Raw counts per player
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'winners': {
             'player_role': 'winner',
             'total_filter': 'always',
@@ -690,9 +690,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Unforced Errors'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # NET PLAY METRICS
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'net_points_won': {
             'player_role': 'performer',
             'total_filter': 'on_match',
@@ -710,9 +710,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Net Approaches'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # RETURN METRICS
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'return_winners': {
             'player_role': 'returner',
             'total_filter': 'always',
@@ -745,9 +745,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Return Points Won %'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # SHOT-BASED OUTCOME METRICS
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'forehand_winners': {
             'player_role': 'winner',
             'total_filter': 'always',
@@ -781,9 +781,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Backhand Errors'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # RALLY-BASED METRICS
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'rally_winners': {
             'player_role': 'winner',
             'total_filter': 'always',
@@ -812,9 +812,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Baseline Winners'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # SERVICE-BASED METRICS
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'service_winners': {
             'player_role': 'server',
             'total_filter': 'always',
@@ -832,9 +832,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'First Serves In'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # GENERIC OUTCOME METRICS
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'errors': {
             'player_role': 'error',
             'total_filter': 'always',
@@ -860,9 +860,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Induced Forced Errors'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # BREAK POINT METRICS - Per-player percentages
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'break_point_conversion': {
             'player_role': 'returner',
             'total_filter': 'always',  # Tree already filters to break points
@@ -878,9 +878,9 @@ class TennisChatAgentEmbeddingQALocal:
             'label': 'Break Points Saved %'
         },
         
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         # GAME-LEVEL METRICS (aggregated from points)
-        # ═══════════════════════════════════════════════════════════════════════════
+        # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
         'games_won': {
             'player_role': 'game_winner',
             'total_filter': 'games',
@@ -923,26 +923,26 @@ class TennisChatAgentEmbeddingQALocal:
         },
     }
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # DISPLAY TYPE REFERENCE (for understanding the config above)
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # 
     # 'per_player_pct': Each player gets their own percentage
-    #   → "Sinner: 58% (7/12), Medvedev: 33% (3/9)"
+    #   â†’ "Sinner: 58% (7/12), Medvedev: 33% (3/9)"
     #   Used for: first_serve_pct, serve_win_pct, return_pct, net_points_won
     #
     # 'aggregate_pct': Combined percentage across both players
-    #   → "Overall: 47% (10/21)"
+    #   â†’ "Overall: 47% (10/21)"
     #   Used for: rare, mostly when explicitly combining
     #
     # 'count': Raw count per player
-    #   → "Sinner: 15, Medvedev: 12"
+    #   â†’ "Sinner: 15, Medvedev: 12"
     #   Used for: aces, winners, errors, double_faults
     #
     # 'points_won': Win/loss distribution with percentages
-    #   → "Sinner: 142 (50%), Medvedev: 141 (50%)"
+    #   â†’ "Sinner: 142 (50%), Medvedev: 141 (50%)"
     #   Used for: points_won, win_percentage
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def __init__(self, llm_provider: str = "gemini", api_key: str = None, model: str = None):
         """
@@ -990,10 +990,10 @@ class TennisChatAgentEmbeddingQALocal:
         # Initialize the appropriate LLM client
         self._init_llm_client()
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # GENERIC CONFIG-DRIVEN HELPER METHODS
     # These replace ALL hardcoded if/elif chains with config lookups
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
     def _get_outcome_config(self, outcome: str) -> Dict:
         """Get config for an outcome - NEVER hardcode outcome checks!"""
@@ -1029,7 +1029,7 @@ class TennisChatAgentEmbeddingQALocal:
         Examples:
             "30-30" -> "30-30"
             "DEUCE" -> "40-40"
-            "30–30" (en dash) -> "30-30"
+            "30â€“30" (en dash) -> "30-30"
             "40-AD" -> "40-AD"
         """
         if not point_score:
@@ -1040,7 +1040,7 @@ class TennisChatAgentEmbeddingQALocal:
         
         # Handle en dash -> hyphen
         if self.POINT_SCORE_CONFIG['normalization_rules']['handle_en_dash']:
-            normalized = normalized.replace('–', '-')
+            normalized = normalized.replace('â€“', '-')
         
         # Uppercase
         if self.POINT_SCORE_CONFIG['normalization_rules']['uppercase']:
@@ -1588,10 +1588,10 @@ class TennisChatAgentEmbeddingQALocal:
         # U+2019 = ' (right single quote - most common smart quote)
         # U+2018 = ' (left single quote)
         # U+0060 = ` (grave accent/backtick)
-        # U+00B4 = ´ (acute accent)
-        # U+2032 = ′ (prime)
+        # U+00B4 = Â´ (acute accent)
+        # U+2032 = â€² (prime)
         question_normalized = question
-        for char in ['\u2019', '\u2018', '\u0060', '\u00b4', '\u2032', ''', ''', '`', '´']:
+        for char in ['\u2019', '\u2018', '\u0060', '\u00b4', '\u2032', ''', ''', '`', 'Â´']:
             question_normalized = question_normalized.replace(char, "'")
         question_lower = question_normalized.lower()
         filters = classification.get('filters', {})
@@ -1608,21 +1608,21 @@ class TennisChatAgentEmbeddingQALocal:
         # NOTE: Patterns are ordered from most specific to least specific
         # After normalization, all apostrophes are converted to straight quote '
         patterns = [
-            # "On Sinner's return games" → player=Sinner, role=returner (most specific)
+            # "On Sinner's return games" â†’ player=Sinner, role=returner (most specific)
             (r"(?:on\s+)?(\w+)'s\s+return\s+(?:games?|points?)", 'returner'),
-            # "On Sinner's service/serve games" → player=Sinner, role=server
+            # "On Sinner's service/serve games" â†’ player=Sinner, role=server
             (r"(?:on\s+)?(\w+)'s\s+(?:service|serve)\s+(?:games?|points?)", 'server'),
-            # "On Sinner's return" (without games/points) → player=Sinner, role=returner
+            # "On Sinner's return" (without games/points) â†’ player=Sinner, role=returner
             (r"on\s+(\w+)'s\s+return(?:\s|$|,)", 'returner'),
-            # "On Sinner's serve" (without games/points) → player=Sinner, role=server
+            # "On Sinner's serve" (without games/points) â†’ player=Sinner, role=server
             (r"on\s+(\w+)'s\s+(?:service|serve)(?:\s|$|,)", 'server'),
-            # "When Sinner returns" → player=Sinner, role=returner
+            # "When Sinner returns" â†’ player=Sinner, role=returner
             (r"when\s+(\w+)\s+returns?", 'returner'),
-            # "When Sinner serves" → player=Sinner, role=server
+            # "When Sinner serves" â†’ player=Sinner, role=server
             (r"when\s+(\w+)\s+serves?", 'server'),
-            # "Sinner returning" or "Sinner on return" → player=Sinner, role=returner
+            # "Sinner returning" or "Sinner on return" â†’ player=Sinner, role=returner
             (r"(\w+)\s+(?:returning|on\s+return)", 'returner'),
-            # "Sinner serving" or "Sinner on serve" → player=Sinner, role=server
+            # "Sinner serving" or "Sinner on serve" â†’ player=Sinner, role=server
             (r"(\w+)\s+(?:serving|on\s+serve)", 'server'),
         ]
         
@@ -1781,7 +1781,7 @@ class TennisChatAgentEmbeddingQALocal:
                         'context': context
                     }
         
-        # Force group_by if term has special grouping (e.g., momentum → by sets)
+        # Force group_by if term has special grouping (e.g., momentum â†’ by sets)
         if 'group_by' in term_config and not classification.get('group_by'):
             classification['group_by'] = term_config['group_by']
             print(f"[VAGUE-RESOLVE] Forcing group_by: {term_config['group_by']}")
@@ -3079,8 +3079,8 @@ class TennisChatAgentEmbeddingQALocal:
         # === INDICATOR 6: Net points, approaches, net statistics ===
         # Questions about "net points", "approach", "approaching net" are shot-level stats from embeddings
         # Volley routing rule:
-        # - If "volley" is used as a filter (e.g., "all volleys", "volleys hit") → shot-level
-        # - If "volley" is used as a label for the winning shot only (e.g., "volley winners") → point-level
+        # - If "volley" is used as a filter (e.g., "all volleys", "volleys hit") â†’ shot-level
+        # - If "volley" is used as a label for the winning shot only (e.g., "volley winners") â†’ point-level
         #   BUT only if the tree explicitly tracks whether the point-ending shot was a volley
         # Safer rule: Unless the tree explicitly tracks point-ending volleys, treat all volley queries as shot-level
         net_keywords = [
@@ -3988,7 +3988,7 @@ class TennisChatAgentEmbeddingQALocal:
         # PREFER the annotated rally count "(X-shot rally)" if it exists
         # CRITICAL: In tennis terminology, rallies START AT THE RETURN (shot 1), NOT the serve.
         # The annotated count correctly excludes serves, counting from return onwards.
-        # Example: Serve → Return → Groundstroke → Groundstroke = 3-shot rally
+        # Example: Serve â†’ Return â†’ Groundstroke â†’ Groundstroke = 3-shot rally
         # Try multiple patterns to match annotated rally count
         annotated_rally_match = (
             re.search(r'\((\d+)\s*-\s*shot\s*rally\)', point_text, re.IGNORECASE) or
@@ -4224,8 +4224,8 @@ class TennisChatAgentEmbeddingQALocal:
         Extract comprehensive game/set information from score string.
         
         Handles scores like:
-        - "0-0 1-2 15-30" → set 1, game 4 in set (1+2+1), game 4 overall
-        - "1-1 3-4 40-30" → set 3, game 8 in set (3+4+1), game 8 + prev sets overall
+        - "0-0 1-2 15-30" â†’ set 1, game 4 in set (1+2+1), game 4 overall
+        - "1-1 3-4 40-30" â†’ set 3, game 8 in set (3+4+1), game 8 + prev sets overall
         
         Returns:
             {
@@ -5066,7 +5066,7 @@ class TennisChatAgentEmbeddingQALocal:
     def chunk_text(self, text: str, max_tokens: int = 500) -> List[str]:
         """
         Splits a long text into chunks small enough to feed an LLM.
-        Uses simple token count approximation (1 token ≈ 4 chars).
+        Uses simple token count approximation (1 token â‰ˆ 4 chars).
         """
         approx_chunk_size = max_tokens * 4  # 4 chars per token
         chunks = []
@@ -6410,7 +6410,7 @@ class TennisChatAgentEmbeddingQALocal:
                 
                 # Only force the relevant player's chunks
                 if player_mentioned:
-                    # FLIP logic for serve-return questions: if asking about X's serve → need OTHER player's returns
+                    # FLIP logic for serve-return questions: if asking about X's serve â†’ need OTHER player's returns
                     if is_serve_return_question:
                         # If server is mentioned, get the OTHER player's return stats
                         if player_mentioned.lower() == self.player1.lower():
@@ -6830,7 +6830,7 @@ class TennisChatAgentEmbeddingQALocal:
             elif "total" in q or "overall" in q:
                 return "both"  # Need both serve and return for complete totals
             else:
-                # No keyword → Default = Return side (converted), because that's most common in questions
+                # No keyword â†’ Default = Return side (converted), because that's most common in questions
                 return f"{player_prefix.replace('serve', 'return')}_statistics"
         
         # --- GAME POINTS (GP) ---
@@ -6854,7 +6854,7 @@ class TennisChatAgentEmbeddingQALocal:
             elif "total" in q or "overall" in q or "each player" in q or "both player" in q:
                 return "both"  # Need both serve and return for complete totals
             else:
-                # No keyword → Default = Serve side (Game Pts won), because that's the most natural reading
+                # No keyword â†’ Default = Serve side (Game Pts won), because that's the most natural reading
                 return f"{player_prefix}_statistics"
         
         # --- DEUCE POINTS ---
@@ -6866,7 +6866,7 @@ class TennisChatAgentEmbeddingQALocal:
             elif "each player" in q or "both player" in q:
                 return "both"  # Need both serve and return for "each player" questions
             else:
-                # No keyword → Need both, since "deuce points" could mean either. Safest = "both"
+                # No keyword â†’ Need both, since "deuce points" could mean either. Safest = "both"
                 return "both"
         
         return "unknown"
@@ -7137,14 +7137,14 @@ class TennisChatAgentEmbeddingQALocal:
 
 IMPORTANT: Do not use emojis in your response. Use plain text only.
 
-🚨 CRITICAL RULES FOR READING POINT-BY-POINT DATA 🚨
+ðŸš¨ CRITICAL RULES FOR READING POINT-BY-POINT DATA ðŸš¨
 
 **RULE #1: Score Notation - "Score: 2-0" and "Score: 0-2" can be THE SAME SET!**
 - Score format: Score: [Sets_Server]-[Sets_Returner] [Games]-[Games] [Points]
 - The set numbers FLIP based on who is serving
 - Example for Set 3 (after Sinner leads 2-0 in sets):
-  - When Sinner serves: "Score: 2-0 4-5" ← SET 3
-  - When Alcaraz serves: "Score: 0-2 4-5" ← SET 3 (SAME SET!)
+  - When Sinner serves: "Score: 2-0 4-5" â† SET 3
+  - When Alcaraz serves: "Score: 0-2 4-5" â† SET 3 (SAME SET!)
 - **DO NOT call this an "inconsistency"** - it's normal server/returner perspective
 
 **RULE #2: Point Header Format - READ IT CAREFULLY**
@@ -7167,7 +7167,7 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
 - Every point ends with: "[Point won by: PLAYER_NAME]"
 - Use this tag to determine who won each point - don't guess!
 - To determine game outcomes: count sequential point winners
-- Example: If Points 204-207 all show "[Point won by: Alcaraz]" → Alcaraz won all 4 points
+- Example: If Points 204-207 all show "[Point won by: Alcaraz]" â†’ Alcaraz won all 4 points
 
 **RULE #4: Each Shot Shows Who Hit It**
 - The FIRST shot in a point is ALWAYS by the Server (from the header)
@@ -7193,14 +7193,14 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
 
 **RULE #6: TENNIS SET SCORING - CRITICAL FOR SET/GAME QUESTIONS**
 - A set is won by the first player to win 6 games (with a 2-game margin), or 7-6 in a tiebreak
-- IMPORTANT: If a player is leading 5-4 and wins the next game → They win the set 6-4 (NOT 5-5!)
+- IMPORTANT: If a player is leading 5-4 and wins the next game â†’ They win the set 6-4 (NOT 5-5!)
 - IMPORTANT: If a set is tied 5-5, the next game makes it 6-5 (NOT the end of the set)
-- IMPORTANT: If a player is leading 6-5 and wins the next game → They win the set 7-5
-- IMPORTANT: If a set is tied 6-6 → Tiebreak is played
+- IMPORTANT: If a player is leading 6-5 and wins the next game â†’ They win the set 7-5
+- IMPORTANT: If a set is tied 6-6 â†’ Tiebreak is played
 - Examples:
-  * Leading 5-4, break serve → Set ends 6-4 ✓
-  * Tied 5-5, hold serve → Score becomes 6-5 (set continues) ✓
-  * Leading 6-5, hold serve → Set ends 7-5 ✓
+  * Leading 5-4, break serve â†’ Set ends 6-4 âœ“
+  * Tied 5-5, hold serve â†’ Score becomes 6-5 (set continues) âœ“
+  * Leading 6-5, hold serve â†’ Set ends 7-5 âœ“
 
 **RULE #7: MATCH FORMAT SCORING - WHICH SET ARE WE IN?**
 - Best-of-3 matches: First to win 2 sets (men's non-Slams, all women's matches)
@@ -7218,10 +7218,10 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
 - DO NOT say "the match ended 3-1 after 4 sets" if you see 2-2 scoring!
 
 **CRITICAL EXAMPLE - Tracking Games Through Server Changes:**
-Game 9 ends at: "Score: 0-2 5-3" → Player serving is DOWN 5-3 in games, opponent LEADS 5-3
-Player leading 5-3 LOSES Game 9 → Score becomes 5-4 (still leading, but by less)
-Game 10 starts at: "Score: 2-0 4-5" → Player serving is DOWN 4-5 in games, opponent LEADS 5-4
-Player leading 5-4 WINS Game 10 → Score becomes 6-4 → SET OVER! ✓
+Game 9 ends at: "Score: 0-2 5-3" â†’ Player serving is DOWN 5-3 in games, opponent LEADS 5-3
+Player leading 5-3 LOSES Game 9 â†’ Score becomes 5-4 (still leading, but by less)
+Game 10 starts at: "Score: 2-0 4-5" â†’ Player serving is DOWN 4-5 in games, opponent LEADS 5-4
+Player leading 5-4 WINS Game 10 â†’ Score becomes 6-4 â†’ SET OVER! âœ“
 **DO NOT say "5-5" - when you see the set score jump from "0-2"/"2-0" to "1-2", the set ENDED!**
 
 IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
@@ -7338,8 +7338,8 @@ Always stop at the highest-priority source available. Do not combine across diff
 - Always make the separation explicit ("X on serve, Y on return, Z total")
 
 **General rule of thumb:**
-- Break points → choose one side only (serve or return), depending on the question
-- Game points & Deuce points → always combine serve and return values, and provide a total
+- Break points â†’ choose one side only (serve or return), depending on the question
+- Game points & Deuce points â†’ always combine serve and return values, and provide a total
 
 - **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total
 
@@ -7390,12 +7390,12 @@ Always stop at the highest-priority source available. Do not combine across diff
 - **RECOGNIZING CONDITIONAL QUESTIONS**: Look for both explicit and implied conditions:
   - **Explicit**: "after losing key points", "when rallies got longer", "following breaks of serve", "in tight moments"
   - **Implied**: Questions with situational context that require PBP analysis:
-    - "How did the player react under pressure?" → implies pressure points → needs PBP
-    - "Did rally length change in critical games?" → implies game-specific context → needs PBP
-    - "Performance on important points?" → implies key points → needs PBP
-    - "In tight moments?" → implies close scores, pressure situations → needs PBP
-    - "Effectiveness on big points?" → implies key points → needs PBP
-    - "During crucial stages?" → implies specific game/set situations → needs PBP
+    - "How did the player react under pressure?" â†’ implies pressure points â†’ needs PBP
+    - "Did rally length change in critical games?" â†’ implies game-specific context â†’ needs PBP
+    - "Performance on important points?" â†’ implies key points â†’ needs PBP
+    - "In tight moments?" â†’ implies close scores, pressure situations â†’ needs PBP
+    - "Effectiveness on big points?" â†’ implies key points â†’ needs PBP
+    - "During crucial stages?" â†’ implies specific game/set situations â†’ needs PBP
 
 - **MULTI-STEP PROCESS** (YOU MUST FOLLOW THESE STEPS - DO NOT SKIP TO GENERAL STATISTICS):
   1. **Identify the condition**: What is the triggering event? (e.g., "after losing key points", "when rallies got longer", "after breaks of serve")
@@ -7494,11 +7494,11 @@ Always stop at the highest-priority source available. Do not combine across diff
 - Each point explicitly shows "[Point won by: PLAYER_NAME]" - use this to count game outcomes
 - When asked about a specific set, you'll only receive data for that set
 - If you see mixed sets in a chunk, filter by matching score patterns
-- **Example:** Points 204-207 all show "[Point won by: Alcaraz]" at score 0-0, 0-15, 0-30, 0-40 → Alcaraz won 4 straight points → Broke serve → Won set 6-4
+- **Example:** Points 204-207 all show "[Point won by: Alcaraz]" at score 0-0, 0-15, 0-30, 0-40 â†’ Alcaraz won 4 straight points â†’ Broke serve â†’ Won set 6-4
 
 **IMPORTANT DISTINCTION:**
-- "Forehand/Backhand" alone usually means groundstrokes → Use SHOT DIRECTION
-- "Forehand/Backhand side" means all shots from that side → Use SHOT STATISTICS
+- "Forehand/Backhand" alone usually means groundstrokes â†’ Use SHOT DIRECTION
+- "Forehand/Backhand side" means all shots from that side â†’ Use SHOT STATISTICS
 
 **SHOT DIRECTION CLARIFICATION:**
 - Inside-out = forehand hit crosscourt from the backhand corner
@@ -7673,7 +7673,7 @@ Answer:"""
                 'handedness': 'left' | 'right' or None  # For direction mapping
             },
             'metrics': ['winners', 'forced_errors', 'induced_fe', 'aces', etc.],
-            'chain': {'from_shot': str, 'to_outcome': str} or None  # For A→B queries
+            'chain': {'from_shot': str, 'to_outcome': str} or None  # For Aâ†’B queries
         }
         """
         query_lower = query.lower()
@@ -7728,14 +7728,14 @@ Answer:"""
         Detect the category of query to route appropriately.
         
         Categories:
-        - 'analytical': Count, percentage, specific stats → PBP parsing
-        - 'comparative': Trends, changes, evolution → PBP + LLM synthesis
-        - 'narrative': Summary, story, what happened → NL retrieval + LLM
+        - 'analytical': Count, percentage, specific stats â†’ PBP parsing
+        - 'comparative': Trends, changes, evolution â†’ PBP + LLM synthesis
+        - 'narrative': Summary, story, what happened â†’ NL retrieval + LLM
         """
         # CRITICAL: Net points routing logic
-        # - General net points questions → narrative
-        # - Serve and volley questions → narrative (net points)
-        # - Questions about specific net shots (volleys, half volleys, overheads, swinging volleys) → analytical
+        # - General net points questions â†’ narrative
+        # - Serve and volley questions â†’ narrative (net points)
+        # - Questions about specific net shots (volleys, half volleys, overheads, swinging volleys) â†’ analytical
         net_points_keywords = ['net points', 'net approaches', 'serve and volley', 'serve-and-volley', 's-and-v', 'at the net', 'net play', 
         'at net', 'net point', 'net points won', 'net points lost', 'net percentage', 'net points won percentage', 'net points percentage', 'net']
         net_shot_keywords = ['volley', 'volleys', 'half volley', 'half volleys', 'half-volley', 'half-volleys', 
@@ -7744,14 +7744,14 @@ Answer:"""
         has_net_points = any(kw in query_lower for kw in net_points_keywords)
         has_net_shots = any(kw in query_lower for kw in net_shot_keywords)
         
-        # If question mentions net points or serve-and-volley → narrative (except if asking about specific net shots)
+        # If question mentions net points or serve-and-volley â†’ narrative (except if asking about specific net shots)
         if has_net_points or 'serve and volley' in query_lower or 'serve-and-volley' in query_lower:
             # BUT: If asking about specific net shots (volleys, half volleys, overheads), route to analytical
             if has_net_shots and not has_net_points:
-                # Only about net shots, not general net points → analytical
+                # Only about net shots, not general net points â†’ analytical
                 pass  # Continue to default analytical
             else:
-                # General net points or serve-and-volley → narrative
+                # General net points or serve-and-volley â†’ narrative
                 return 'narrative'
         
         # CRITICAL: Questions about "returnable" serves must go to narrative
@@ -7806,10 +7806,10 @@ Answer:"""
         Detect how results should be grouped based on inventory values.
         
         Examples:
-        - "by rally length category" → 'rally_length_category'
-        - "in sets 2,4 vs sets 1,3,5" → 'set_groups'
-        - "deuce vs ad court" → 'court_side'
-        - "1st serve vs 2nd serve" → 'serve_number'
+        - "by rally length category" â†’ 'rally_length_category'
+        - "in sets 2,4 vs sets 1,3,5" â†’ 'set_groups'
+        - "deuce vs ad court" â†’ 'court_side'
+        - "1st serve vs 2nd serve" â†’ 'serve_number'
         """
         inventory = getattr(self, 'match_filter_inventory', {})
         
@@ -8065,23 +8065,23 @@ Answer:"""
                 print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with BOTH defensive and offensive keywords - leaving role=None (will show both perspectives)")
             elif has_defensive_kw:
                 filters['role'] = 'server'
-                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with defensive keywords → role='server'")
+                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with defensive keywords â†’ role='server'")
             elif has_offensive_kw:
                 filters['role'] = 'returner'
-                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with offensive keywords → role='returner'")
+                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with offensive keywords â†’ role='returner'")
         
         # === ROLE DETECTION FOR NON-SITUATION QUERIES ===
-        # Service games → role=server, Return games → role=returner
+        # Service games â†’ role=server, Return games â†’ role=returner
         if not filters.get('situation') and not filters.get('role'):
             if 'service game' in query_lower or ('service' in query_lower and 'game' in query_lower):
                 filters['role'] = 'server'
-                print(f"[DETECT-FILTERS] Service game query → role='server'")
+                print(f"[DETECT-FILTERS] Service game query â†’ role='server'")
             elif 'return game' in query_lower or ('return' in query_lower and 'game' in query_lower):
                 filters['role'] = 'returner'
-                print(f"[DETECT-FILTERS] Return game query → role='returner'")
+                print(f"[DETECT-FILTERS] Return game query â†’ role='returner'")
             elif 'break serve' in query_lower or 'break of serve' in query_lower:
                 filters['role'] = 'returner'
-                print(f"[DETECT-FILTERS] Break serve query → role='returner'")
+                print(f"[DETECT-FILTERS] Break serve query â†’ role='returner'")
         
         # Set filter - single set or set groups
         # Check for set group comparison first (e.g., "sets 2 and 4 versus sets 1, 3, and 5")
@@ -8144,11 +8144,11 @@ Answer:"""
                     break
         
         # Rally length filter - detect exact, minimum, or threshold
-        # "beyond 6 shots" / "more than 6" / "over 6" → '>6'
-        # "at least 6 shots" / "6+ shots" / "6 or more shots" → '>=6'
-        # "6 or under/fewer/less shots" → '<=6'
-        # "under 6 shots" / "less than 6" / "fewer than 6" → '<6'
-        # "6 shot rallies" → exact 6
+        # "beyond 6 shots" / "more than 6" / "over 6" â†’ '>6'
+        # "at least 6 shots" / "6+ shots" / "6 or more shots" â†’ '>=6'
+        # "6 or under/fewer/less shots" â†’ '<=6'
+        # "under 6 shots" / "less than 6" / "fewer than 6" â†’ '<6'
+        # "6 shot rallies" â†’ exact 6
         beyond_match = re.search(r'(?:beyond|more than|longer than|over|exceeding|extended beyond)\s+(\d+)', query_lower)
         or_more_match = re.search(r'(\d+)\s+or\s+more\s*(?:shot|stroke)?', query_lower)
         or_under_match = re.search(r'(\d+)\s+or\s+(?:under|fewer|less)\s*(?:shot|stroke)?', query_lower)
@@ -8227,7 +8227,7 @@ Answer:"""
             known_serve_targets = inventory.get('serve_targets', [])
             
             # Check query for serve target aliases (maps user input to canonical)
-            # Uses SHOT_ALIASES: "down the t" → "t", "out wide" → "wide", "to body" → "body"
+            # Uses SHOT_ALIASES: "down the t" â†’ "t", "out wide" â†’ "wide", "to body" â†’ "body"
             serve_target_aliases = {
                 't': 't', 'down the t': 't', 'center': 't', 'down t': 't',
                 'wide': 'wide', 'out wide': 'wide', 'wide serve': 'wide',
@@ -8257,8 +8257,8 @@ Answer:"""
         # === SHOT NUMBER (parsed sequence position) ===
         # PARSED SEQUENCE: shot_number=1 (serve), shot_number=2 (return), shot_number=3 (server response)
         # TENNIS TERMINOLOGY: Rally shot 1 = return (parsed shot_number=2)
-        # "return winner" → shot_number=2 (return in parsed sequence)
-        # "serve+1 winner" → shot_number=3 (server's first groundstroke)
+        # "return winner" â†’ shot_number=2 (return in parsed sequence)
+        # "serve+1 winner" â†’ shot_number=3 (server's first groundstroke)
         if 'serve+1' in query_lower or 'serve + 1' in query_lower or 'third ball' in query_lower or '3rd ball' in query_lower:
             filters['shot_number'] = 3  # Server's first groundstroke (rally shot 2)
             print(f"[DETECT-FILTERS] Set shot_number=3 (serve+1)")
@@ -8511,7 +8511,7 @@ Answer:"""
     
     def _detect_chain_logic(self, query_lower: str) -> Dict[str, str]:
         """
-        Detect chain/sequence logic: Shot A → Outcome B
+        Detect chain/sequence logic: Shot A â†’ Outcome B
         MCP: Critical for understanding "slice led to error" type queries.
         
         METADATA-DRIVEN: Uses inventory for shot types and outcomes.
@@ -8570,213 +8570,6 @@ Answer:"""
         
         return (has_set_groups or has_won_lost_comparison) and has_ratio
     
-    def _analyze_set_group_comparison(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze and compare metrics between different set groups.
-        
-        Handles queries like:
-        - "Forehand winner to error ratio in sets 2,4 vs sets 1,3,5"
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect player
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # Detect shot filter
-        shot_info = self._detect_shot_from_query(query)
-        shot_filter = shot_info['shot_type']
-        
-        # Detect metrics (winner, error, etc.)
-        metrics_to_track = []
-        if 'winner' in query_lower:
-            metrics_to_track.append('winners')
-        
-        # CRITICAL: Distinguish between "error" (all errors) vs "unforced error" (specific type)
-        if 'unforced error' in query_lower:
-            metrics_to_track.append('unforced_errors')
-        elif 'forced error' in query_lower:
-            metrics_to_track.append('forced_errors')
-        elif 'error' in query_lower:
-            # Generic "error" means ALL errors (both unforced AND forced)
-            metrics_to_track.append('unforced_errors')
-            metrics_to_track.append('forced_errors')
-        
-        if not metrics_to_track:
-            metrics_to_track = ['winners', 'unforced_errors']  # Default for ratio queries
-        
-        # Parse set groups
-        filters = self._detect_filters_mcp(query)
-        set_group_a = filters.get('set_group_a', [])
-        set_group_b = filters.get('set_group_b', [])
-        
-        # If no explicit groups found, try to infer from "won/lost" language
-        if not set_group_a or not set_group_b:
-            # Look for patterns like "sets he won (Sets 2 and 4)"
-            won_sets_match = re.search(r'sets?\s*(?:he|she)?\s*won\s*\(?(?:sets?)?\s*([\d,\s]+(?:and\s+\d+)?)', query_lower)
-            lost_sets_match = re.search(r'sets?\s*(?:he|she)?\s*lost\s*\(?(?:sets?)?\s*([\d,\s]+(?:and\s+\d+)?)', query_lower)
-            
-            if won_sets_match:
-                set_group_a = [int(d) for d in re.findall(r'\d', won_sets_match.group(1))]
-            if lost_sets_match:
-                set_group_b = [int(d) for d in re.findall(r'\d', lost_sets_match.group(1))]
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available'}
-        
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        results = {
-            'player': player_mentioned or 'both players',
-            'shot_filter': shot_filter,
-            'metrics': metrics_to_track,
-            'set_group_a': set_group_a,
-            'set_group_b': set_group_b,
-            'group_a_data': {metric: 0 for metric in metrics_to_track},
-            'group_b_data': {metric: 0 for metric in metrics_to_track},
-            'group_a_examples': [],
-            'group_b_examples': []
-        }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # Get current set from score - use robust extraction
-            current_set = self._extract_current_set(score)
-            if not current_set:
-                continue
-            
-            # Determine which group this set belongs to
-            in_group_a = current_set in set_group_a
-            in_group_b = current_set in set_group_b
-            
-            if not in_group_a and not in_group_b:
-                continue
-            
-            # Parse rally
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            
-            # Analyze shots for the specific player
-            for shot in rally_shots:
-                shot_player = shot.get('player', '')
-                shot_desc = shot.get('description', '').lower()
-                outcome = shot.get('outcome', '')
-                
-                # Check player filter
-                if player_mentioned and player_mentioned.lower() not in shot_player.lower():
-                    continue
-                
-                # Check shot type filter (e.g., forehand)
-                if shot_filter and shot_filter.lower() not in shot_desc:
-                    continue
-                
-                # Track metrics - GENERIC using config
-                for metric in metrics_to_track:
-                    # Use generic outcome matching from config
-                    matched = self._outcome_matches_metric(outcome, metric)
-                    
-                    if matched:
-                        if in_group_a:
-                            results['group_a_data'][metric] += 1
-                            if len(results['group_a_examples']) < 3:
-                                results['group_a_examples'].append({
-                                    'point': point_num, 'set': current_set,
-                                    'shot': shot_desc, 'outcome': outcome
-                                })
-                        elif in_group_b:
-                            results['group_b_data'][metric] += 1
-                            if len(results['group_b_examples']) < 3:
-                                results['group_b_examples'].append({
-                                    'point': point_num, 'set': current_set,
-                                    'shot': shot_desc, 'outcome': outcome
-                                })
-        
-        # Calculate ratios if we have winners and errors
-        # CRITICAL: "errors" means ALL errors (unforced + forced)
-        if 'winners' in results['group_a_data']:
-            total_errors_a = results['group_a_data'].get('unforced_errors', 0) + results['group_a_data'].get('forced_errors', 0)
-            if total_errors_a > 0:
-                results['group_a_ratio'] = round(results['group_a_data']['winners'] / total_errors_a, 2)
-                results['group_a_total_errors'] = total_errors_a
-            elif results['group_a_data'].get('unforced_errors', 0) > 0 or results['group_a_data'].get('forced_errors', 0) > 0:
-                results['group_a_ratio'] = float('inf')
-        
-        if 'winners' in results['group_b_data']:
-            total_errors_b = results['group_b_data'].get('unforced_errors', 0) + results['group_b_data'].get('forced_errors', 0)
-            if total_errors_b > 0:
-                results['group_b_ratio'] = round(results['group_b_data']['winners'] / total_errors_b, 2)
-                results['group_b_total_errors'] = total_errors_b
-            elif results['group_b_data'].get('unforced_errors', 0) > 0 or results['group_b_data'].get('forced_errors', 0) > 0:
-                results['group_b_ratio'] = float('inf')
-        
-        return results
-    
-    def _format_set_group_comparison(self, analysis: Dict[str, Any]) -> str:
-        """Format set group comparison analysis."""
-        if 'error' in analysis:
-            return f"Unable to perform set group comparison: {analysis['error']}"
-        
-        shot_desc = analysis['shot_filter'] or 'All Shots'
-        group_a_sets = ', '.join(map(str, analysis['set_group_a']))
-        group_b_sets = ', '.join(map(str, analysis['set_group_b']))
-        
-        response = f"**Set Group Comparison: {shot_desc.title()}**\n\n"
-        response += f"**Player:** {analysis['player']}\n\n"
-        
-        response += f"**Group A (Sets {group_a_sets}):**\n"
-        response += f"| Metric | Count |\n"
-        response += f"|--------|-------|\n"
-        for metric, count in analysis['group_a_data'].items():
-            response += f"| {metric.replace('_', ' ').title()} | {count} |\n"
-        if 'group_a_ratio' in analysis:
-            response += f"\n**Winner:Error Ratio:** **{analysis['group_a_ratio']}:1**\n"
-        
-        response += f"\n**Group B (Sets {group_b_sets}):**\n"
-        response += f"| Metric | Count |\n"
-        response += f"|--------|-------|\n"
-        for metric, count in analysis['group_b_data'].items():
-            response += f"| {metric.replace('_', ' ').title()} | {count} |\n"
-        if 'group_b_ratio' in analysis:
-            response += f"\n**Winner:Error Ratio:** **{analysis['group_b_ratio']}:1**\n"
-        
-        # Comparison
-        if 'group_a_ratio' in analysis and 'group_b_ratio' in analysis:
-            ratio_a = analysis['group_a_ratio']
-            ratio_b = analysis['group_b_ratio']
-            
-            response += f"\n**Comparison:**\n"
-            if ratio_a > ratio_b:
-                diff = round(ratio_a - ratio_b, 2)
-                response += f"Sets {group_a_sets} had a **better** winner:error ratio ({ratio_a}:1 vs {ratio_b}:1, +{diff})\n"
-            elif ratio_b > ratio_a:
-                diff = round(ratio_b - ratio_a, 2)
-                response += f"Sets {group_b_sets} had a **better** winner:error ratio ({ratio_b}:1 vs {ratio_a}:1, +{diff})\n"
-            else:
-                response += f"Both groups had **equal** winner:error ratios ({ratio_a}:1)\n"
-        
-        return response
-    
-    def _detect_filters(self, query: str) -> Dict[str, Any]:
-        """Legacy wrapper - redirects to MCP version."""
-        return self._detect_filters_mcp(query)
-    
-    def _detect_metrics(self, query_lower: str) -> list:
-        """Legacy wrapper - redirects to MCP version."""
-        return self._detect_metrics_mcp(query_lower)
-    
-    # ==========================================================================
-    # N-DIMENSIONAL TAXONOMY TREE
-    # ==========================================================================
-    
     def _build_query_tree(self, classification: Dict) -> Dict:
         """
         Build an N-dimensional query tree from classification.
@@ -8793,11 +8586,11 @@ Answer:"""
         Example tree for "On break points, serving to T, compare 1st vs 2nd serve win %":
         
         ROOT
-        └─ filter: situation=break_point
-           └─ filter: serve_target=t
-              └─ group: serve_number
-                 ├─ leaf: serve_number=1st → win_percentage
-                 └─ leaf: serve_number=2nd → win_percentage
+        â””â”€ filter: situation=break_point
+           â””â”€ filter: serve_target=t
+              â””â”€ group: serve_number
+                 â”œâ”€ leaf: serve_number=1st â†’ win_percentage
+                 â””â”€ leaf: serve_number=2nd â†’ win_percentage
         """
         filters = classification.get('filters', {})
         metrics = classification.get('metrics', ['points_won'])
@@ -9354,7 +9147,7 @@ Answer:"""
                 if value in self.ROLE_CONFIG:
                     role_player = self._get_player_for_role(value, server, returner, meta.get('point_winner', ''), point_data.get('error_player', ''))
                     if player_filter and player_filter != 'both':
-                        # Player specified with role → filter by that role's player
+                        # Player specified with role â†’ filter by that role's player
                         passes_filter = player_filter in role_player.lower() if role_player else True
                     else:
                         # No specific player, role means keep all points (everyone plays both roles)
@@ -9399,8 +9192,8 @@ Answer:"""
                 elif group_by == 'player' and ('points_won' in metrics or 'win_percentage' in metrics or analysis_type in ['ratio', 'comparison']):
                     passes_filter = self._names_match_robust(value, point_winner)
                 # For shot-based groupings (shot_type/direction/etc.), use metric's player_role to determine who to filter by
-                # "Sinner's forehand winners" → player_role='winner' → filter to points Sinner won
-                # "Sinner's backhand errors" → player_role='error' → filter to points where Sinner hit the error
+                # "Sinner's forehand winners" â†’ player_role='winner' â†’ filter to points Sinner won
+                # "Sinner's backhand errors" â†’ player_role='error' â†’ filter to points where Sinner hit the error
                 elif group_by in ['shot_type', 'direction', 'shot_modifier', 'depth', 'court_zone', 'shot_number']:
                     # Get the metric's player_role from CLASS CONSTANT (single source of truth)
                     primary_metric = metrics[0] if metrics else None
@@ -9430,7 +9223,7 @@ Answer:"""
                             self._player_filter_debug_count += 1
                             print(f"[PLAYER-FILTER-DEBUG] Point {point_num} | Filter: '{value}' | player_field: {player_field} | target_player: '{target_player}' | Match: {passes_filter}")
                     else:
-                        # player_role='both' or unknown → filter to points player was involved in
+                        # player_role='both' or unknown â†’ filter to points player was involved in
                         passes_filter = self._names_match_robust(value, server) or self._names_match_robust(value, returner)
                 # Otherwise, check if player is involved in either role
                 else:
@@ -10606,7 +10399,7 @@ Answer:"""
                     print(f"{debug_prefix} | FILTERED: serve_number={serve_number} != filter={serve_number_filter}")
                 return
             if should_debug:
-                print(f"{debug_prefix} | ✓ serve_number={serve_number} matches filter={serve_number_filter}")
+                print(f"{debug_prefix} | âœ“ serve_number={serve_number} matches filter={serve_number_filter}")
         
         # REMOVED: situation filter check
         # Situation filtering is done by the TREE during traversal, not here.
@@ -10635,7 +10428,7 @@ Answer:"""
                             print(f"{debug_prefix} | MATCH {filter_key}={filter_str} matches in rally shots (not winning shot)")
                     else:
                         if should_debug:
-                            print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches winning_shot_type={safe_lower(winning_shot_type)}")
+                            print(f"{debug_prefix} | âœ“ {filter_key}={filter_str} matches winning_shot_type={safe_lower(winning_shot_type)}")
                 else:
                     shot_matches = any(safe_lower(shot.get(filter_key) or '') == filter_str for shot in actual_shots)
                     if not shot_matches:
@@ -10658,7 +10451,7 @@ Answer:"""
                         print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} != point_value={point_val}")
                     return
                 if should_debug:
-                    print(f"{debug_prefix} | ✓ {filter_key}={filter_str} matches point_value={point_val}")
+                    print(f"{debug_prefix} | âœ“ {filter_key}={filter_str} matches point_value={point_val}")
         
         # set filter (exact match, not string comparison)
         set_filter = filters.get('set')
@@ -10669,7 +10462,7 @@ Answer:"""
                     print(f"{debug_prefix} | FILTERED: set={set_filter} != point_set={point_set}")
                 return
             if should_debug:
-                print(f"{debug_prefix} | ✓ set={set_filter} matches point_set={point_set}")
+                print(f"{debug_prefix} | âœ“ set={set_filter} matches point_set={point_set}")
         
         # DEBUG: Point passed all filters (only show first 3)
         active_filters = {k: v for k, v in filters.items() if v is not None}
@@ -11228,7 +11021,7 @@ Answer:"""
             response += "**Filter Path:**\n"
             for i, (dim, val) in enumerate(filters):
                 indent = "  " * i
-                response += f"{indent}└─ {dim}: {val}\n"
+                response += f"{indent}â””â”€ {dim}: {val}\n"
             response += "\n"
         
         # Format results based on structure
@@ -11435,7 +11228,7 @@ Answer:"""
         # SPECIAL CASE: When grouping by PLAYER, each branch IS a player
         # Don't do a cross-comparison, just show each player's total
         if dimension == 'player':
-            response = f"\n\n**📊 {metric_label} Summary:**\n\n"
+            response = f"\n\n**ðŸ“Š {metric_label} Summary:**\n\n"
             
             for key, branch in branches.items():
                 label = branch.get('label', key)
@@ -11491,12 +11284,12 @@ Answer:"""
                 if show_counts_first and count1 != count2:
                     diff = abs(count1 - count2)
                     winner = label1 if count1 > count2 else label2
-                    response += f"\n**📊 Conclusion:** {winner} had **{diff} more {metric_label.lower()}**\n"
+                    response += f"\n**ðŸ“Š Conclusion:** {winner} had **{diff} more {metric_label.lower()}**\n"
             
             return response
         
         # NORMAL CASE: Comparing conditions (Set 1 vs Set 2, etc.)
-        response = f"\n\n**📊 {metric_label} Comparison:**\n\n"
+        response = f"\n\n**ðŸ“Š {metric_label} Comparison:**\n\n"
         
         # Collect data for each group
         group_data = []
@@ -11577,29 +11370,29 @@ Answer:"""
                 p2_total_count = g1['p2_count'] + g2['p2_count']
                 if p1_total_count > p2_total_count:
                     diff = p1_total_count - p2_total_count
-                    response += f"**📊 Conclusion:** {player1} had **{diff} more {metric_label.lower()}** overall\n"
+                    response += f"**ðŸ“Š Conclusion:** {player1} had **{diff} more {metric_label.lower()}** overall\n"
                 elif p2_total_count > p1_total_count:
                     diff = p2_total_count - p1_total_count
-                    response += f"**📊 Conclusion:** {player2} had **{diff} more {metric_label.lower()}** overall\n"
+                    response += f"**ðŸ“Š Conclusion:** {player2} had **{diff} more {metric_label.lower()}** overall\n"
                 else:
-                    response += f"**📊 Conclusion:** Both players had equal {metric_label.lower()}\n"
+                    response += f"**ðŸ“Š Conclusion:** Both players had equal {metric_label.lower()}\n"
             else:
                 # For percentage queries, compare changes
                 p1_drop = -p1_change  # Positive means dropped
                 p2_drop = -p2_change
                 
                 if p1_drop > p2_drop + 0.1:  # P1 dropped more
-                    response += f"**📉 Conclusion:** {player1}'s {metric_label.lower()} dropped more ({abs(p1_drop - p2_drop):.1f}{unit} greater decline)\n"
+                    response += f"**ðŸ“‰ Conclusion:** {player1}'s {metric_label.lower()} dropped more ({abs(p1_drop - p2_drop):.1f}{unit} greater decline)\n"
                 elif p2_drop > p1_drop + 0.1:  # P2 dropped more
-                    response += f"**📉 Conclusion:** {player2}'s {metric_label.lower()} dropped more ({abs(p2_drop - p1_drop):.1f}{unit} greater decline)\n"
+                    response += f"**ðŸ“‰ Conclusion:** {player2}'s {metric_label.lower()} dropped more ({abs(p2_drop - p1_drop):.1f}{unit} greater decline)\n"
                 else:
-                    response += f"**📉 Conclusion:** Both players had similar changes in {metric_label.lower()}\n"
+                    response += f"**ðŸ“‰ Conclusion:** Both players had similar changes in {metric_label.lower()}\n"
         
         return response
     
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # UNIFIED METRIC FORMATTING - Uses METRIC_CONFIG.display_type
-    # ══════════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     def _format_metric_for_display(self, metric_name: str, results: Dict, 
                                     player1: str, player2: str, player_filter: str = None) -> str:
         """
@@ -11705,7 +11498,7 @@ Answer:"""
         if results.get('type') == 'filter':
             # Show filter narrowing
             response += f"{indent}**{results['dimension']}={results['value']}**: "
-            response += f"{results['points_before']} → {results['points_after']} points\n"
+            response += f"{results['points_before']} â†’ {results['points_after']} points\n"
             
             if results.get('children'):
                 response += self._format_tree_results(results['children'], groups, metrics,
@@ -11921,9 +11714,9 @@ Answer:"""
             response += f"\n**Results:**\n"
             response += f"- Total Points: {results['total_points']}\n"
             
-            # ═══════════════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             # UNIFIED METRIC FORMATTING using METRIC_CONFIG.display_type
-            # ═══════════════════════════════════════════════════════════════════════════
+            # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
             metrics_results = results.get('metrics', {})
             per_player = results.get('per_player_metrics', {})
             
@@ -12206,255 +11999,6 @@ Answer:"""
                 'player': player_filter
             }
     
-    def _analyze_2d_grouping(self, classification: Dict) -> Dict[str, Any]:
-        """
-        2D Grouping Analysis - Cross-tabulation of two dimensions.
-        
-        Example: shot_direction (IO/DTL) × set_groups (sets won/lost)
-        Output: Matrix showing metric for each combination
-        """
-        filters = classification.get('filters', {})
-        metrics = classification.get('metrics', ['points_won'])
-        group_by = classification.get('group_by')
-        secondary_group = classification.get('secondary_group_by')
-        
-        if not group_by or not secondary_group:
-            return {'error': '2D grouping requires both group_by and secondary_group_by'}
-        
-        player1 = self.player1
-        player2 = self.player2
-        player_filter = filters.get('player')
-        
-        # Initialize 2D results structure
-        primary_groups = self._get_group_labels(group_by, classification)
-        secondary_groups = self._get_group_labels(secondary_group, classification)
-        
-        results = {
-            'classification': classification,
-            'group_by': group_by,
-            'secondary_group_by': secondary_group,
-            'total_points': 0,
-            'player1': player1,
-            'player2': player2,
-            'matrix': {}  # {primary_key: {secondary_key: {data}}}
-        }
-        
-        # Initialize matrix
-        for p_key, p_label in primary_groups.items():
-            results['matrix'][p_key] = {
-                'label': p_label,
-                'secondary': {}
-            }
-            for s_key, s_label in secondary_groups.items():
-                results['matrix'][p_key]['secondary'][s_key] = {
-                    'label': s_label,
-                    'total': 0,
-                    'player1_wins': 0,
-                    'player2_wins': 0,
-                    'player1_metric': 0,
-                    'player2_metric': 0
-                }
-        
-        # Parse point-by-point
-        if not hasattr(self, 'point_by_point') or not self.point_by_point:
-            return {'error': 'No point-by-point data available'}
-        
-        for point_num, point_data in enumerate(self.point_by_point, 1):
-            point_text = point_data.get('point_text', point_data.get('description', ''))
-            if not point_text:
-                continue
-            
-            point_lower = point_text.lower()
-            score = point_data.get('score', '')
-            server = point_data.get('server', '')
-            returner = point_data.get('returner', '')
-            
-            # Parse rally
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
-            rally_length = len(actual_shots)
-            
-            # UNIFIED: Use _determine_point_winner
-            point_winner, winning_shot_type, error_player = self._determine_point_winner(
-                actual_shots, server, returner, return_details=True
-            )
-            
-            # Determine primary group key
-            target_shot_desc = actual_shots[-1].get('description', '').lower() if actual_shots else ''
-            filters['_current_outcome'] = winning_shot_type
-            filters['_rally_length'] = rally_length
-            # Add player-related context for metric-aware grouping
-            filters['_server'] = server
-            filters['_returner'] = returner
-            filters['_point_winner'] = point_winner
-            filters['_error_player'] = error_player
-            filters['_current_metric'] = metrics[0] if metrics else None
-            
-            # Get or compute metadata for this point
-            if '_metadata' not in point_data:
-                point_data['_metadata'] = self._get_point_metadata(point_data)
-            point_meta = point_data['_metadata']
-            
-            primary_key = self._determine_group_key(group_by, rally_length, score, point_lower, filters, target_shot_desc, rally_shots=actual_shots, metadata=point_meta)
-            secondary_key = self._determine_group_key(secondary_group, rally_length, score, point_lower, filters, target_shot_desc, rally_shots=actual_shots, metadata=point_meta)
-            
-            if primary_key is None or secondary_key is None:
-                continue
-            
-            if primary_key not in results['matrix'] or secondary_key not in results['matrix'][primary_key]['secondary']:
-                continue
-            
-            # Track results
-            cell = results['matrix'][primary_key]['secondary'][secondary_key]
-            cell['total'] += 1
-            results['total_points'] += 1
-            
-            if point_winner:
-                if player1 and player1.lower() in point_winner.lower():
-                    cell['player1_wins'] += 1
-                elif player2 and player2.lower() in point_winner.lower():
-                    cell['player2_wins'] += 1
-        
-        return results
-    
-    def _get_group_labels(self, group_by: str, classification: Dict = None) -> Dict[str, str]:
-        """
-        Get the group keys and labels for a given group_by type.
-        GENERIC: Uses GROUP_CONFIG as single source of truth.
-        """
-        return self._get_all_group_values(group_by, classification)
-    
-    def _analyze_momentum(self, classification: Dict) -> Dict[str, Any]:
-        """
-        Momentum Analysis - Track game-by-game or set-by-set momentum shifts.
-        
-        Example: "After winning a break point, did they play more aggressively?"
-        """
-        filters = classification.get('filters', {})
-        player_filter = filters.get('player')
-        
-        if not hasattr(self, 'point_by_point') or not self.point_by_point:
-            return {'error': 'No point-by-point data available for momentum analysis'}
-        
-        # Track momentum by games
-        game_results = []
-        current_game = {'game_num': 0, 'points_p1': 0, 'points_p2': 0, 'server': None}
-        prev_game_score = ""
-        break_point_converts = []
-        after_break_aggression = []
-        
-        player1 = self.player1
-        player2 = self.player2
-        
-        for point_data in self.point_by_point:
-            point_text = point_data.get('point_text', point_data.get('description', ''))
-            score = point_data.get('score', '')
-            server = point_data.get('server', '')
-            
-            # Detect new game
-            game_score = score.split()[-1] if score else ""  # Last part is game score
-            set_game_score = ' '.join(score.split()[:-1]) if score else ""
-            
-            if set_game_score != prev_game_score:
-                if current_game['game_num'] > 0:
-                    game_results.append(current_game.copy())
-                current_game = {
-                    'game_num': len(game_results) + 1,
-                    'points_p1': 0,
-                    'points_p2': 0,
-                    'server': server,
-                    'winners': 0,
-                    'errors': 0
-                }
-                prev_game_score = set_game_score
-            
-            # UNIFIED: Use _determine_point_winner
-            returner = point_data.get('returner', '')
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
-            
-            point_winner, shot_type, _ = self._determine_point_winner(
-                actual_shots, server, returner, return_details=True
-            )
-            is_winner = shot_type in ['ace', 'winner', 'service_winner']
-            is_error = shot_type in ['unforced_error', 'forced_error', 'double_fault']
-            
-            if point_winner:
-                if player1 and player1.lower() in point_winner.lower():
-                    current_game['points_p1'] += 1
-                elif player2 and player2.lower() in point_winner.lower():
-                    current_game['points_p2'] += 1
-            
-            if is_winner:
-                current_game['winners'] = current_game.get('winners', 0) + 1
-            if is_error:
-                current_game['errors'] = current_game.get('errors', 0) + 1
-            
-            # Track break point conversions
-            if self._is_break_point_score(score):
-                returner = point_data.get('returner', '')
-                if point_winner and returner.lower() in point_winner.lower():
-                    break_point_converts.append({
-                        'game': current_game['game_num'],
-                        'player': returner,
-                        'score': score
-                    })
-        
-        # Calculate momentum trends
-        momentum_shifts = []
-        for i, game in enumerate(game_results[:-1]):
-            next_game = game_results[i + 1]
-            
-            # Check if a break happened
-            if game['server'] and next_game['server']:
-                was_break = game['points_p1'] > game['points_p2'] if player2 and player2.lower() in game['server'].lower() else game['points_p2'] > game['points_p1']
-                
-                if was_break:
-                    momentum_shifts.append({
-                        'after_game': i + 1,
-                        'type': 'break',
-                        'aggression_next': (next_game.get('winners', 0) - next_game.get('errors', 0))
-                    })
-        
-        return {
-            'classification': classification,
-            'game_results': game_results,
-            'break_point_converts': break_point_converts,
-            'momentum_shifts': momentum_shifts,
-            'player1': player1,
-            'player2': player2
-        }
-    
-    def _format_momentum_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format momentum analysis results."""
-        if 'error' in analysis:
-            return f"Unable to perform momentum analysis: {analysis['error']}"
-        
-        game_results = analysis['game_results']
-        momentum_shifts = analysis['momentum_shifts']
-        break_converts = analysis['break_point_converts']
-        player1 = analysis['player1']
-        player2 = analysis['player2']
-        
-        response = f"**Momentum Analysis**\n\n"
-        response += f"**Total Games Analyzed:** {len(game_results)}\n"
-        response += f"**Break Points Converted:** {len(break_converts)}\n\n"
-        
-        if momentum_shifts:
-            response += "**Momentum After Breaks:**\n"
-            for shift in momentum_shifts:
-                aggression = shift['aggression_next']
-                direction = "more aggressive" if aggression > 0 else "more conservative" if aggression < 0 else "neutral"
-                response += f"- After Game {shift['after_game']}: Player played {direction} ({aggression:+d} W-E)\n"
-        
-        response += "\n**Per-Game Summary:**\n"
-        response += "| Game | Server | P1 | P2 | W | E |\n"
-        response += "|------|--------|----|----|---|---|\n"
-        for g in game_results[:20]:  # First 20 games
-            response += f"| {g['game_num']} | {g.get('server', 'N/A')[:10]} | {g['points_p1']} | {g['points_p2']} | {g.get('winners', 0)} | {g.get('errors', 0)} |\n"
-        
-        return response
-    
     def _analyze_chain_logic(self, classification: Dict) -> Dict[str, Any]:
         """
         Chain Logic Analysis - Track Shot A leading to Shot B patterns.
@@ -12476,7 +12020,7 @@ Answer:"""
                 for key in ['shot_type', 'shot_modifier', 'hand', 'direction']:
                     val = shot_data.get(key)
                     if val:
-                        # Split multi-word values: "forehand volley" → ["forehand", "volley"]
+                        # Split multi-word values: "forehand volley" â†’ ["forehand", "volley"]
                         keywords.extend(val.lower().split())
             elif isinstance(shot_data, str):
                 # Split string into individual keywords
@@ -12590,7 +12134,7 @@ Answer:"""
             rally_shots = self._parse_rally_sequence(point_text, server, returner)
             actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
             
-            # Look for Shot A → Shot B pattern
+            # Look for Shot A â†’ Shot B pattern
             for i, shot in enumerate(actual_shots[:-1]):
                 shot_desc = (shot.get('description') or '').lower()
                 shot_player = shot.get('player') or ''
@@ -12628,7 +12172,7 @@ Answer:"""
                     is_serve = 'serve' in shot_desc or '1st serve' in shot_desc or '2nd serve' in shot_desc
                     
                     if is_serve and player_filter:
-                        # Serve → Serve + 1 pattern: Skip the return (i+1), check serve + 1 (i+2)
+                        # Serve â†’ Serve + 1 pattern: Skip the return (i+1), check serve + 1 (i+2)
                         # This handles both "next shot" and "very next shot" queries
                         if i + 2 < len(actual_shots):
                             next_shot = actual_shots[i + 2]  # Serve + 1 (skip return)
@@ -12759,7 +12303,7 @@ Answer:"""
         win_pct = analysis.get('win_percentage', 0)
         rate = analysis['conversion_rate']
         
-        response = f"**Chain Logic Analysis: {shot_a.title()} → {shot_b.title()}**\n\n"
+        response = f"**Chain Logic Analysis: {shot_a.title()} â†’ {shot_b.title()}**\n\n"
         
         if player:
             response += f"**Player:** {player}\n"
@@ -12768,337 +12312,20 @@ Answer:"""
         response += f"**Led to {shot_b.title()}:** {total_chain} ({rate}% conversion)\n\n"
         
         # Win percentage section
-        response += f"**Win Percentage on {shot_a.title()} → {shot_b.title()} sequences:**\n"
+        response += f"**Win Percentage on {shot_a.title()} â†’ {shot_b.title()} sequences:**\n"
         response += f"- Points Won: {wins} / {total_chain}\n"
         response += f"- **Win %: {win_pct}%**\n\n"
         
         if matches:
             response += f"**Examples ({min(len(matches), 10)} shown):**\n\n"
             for m in matches[:10]:
-                won_str = "✅ WON" if m.get('won') else "❌ LOST" if m.get('won') == False else ""
+                won_str = "âœ… WON" if m.get('won') else "âŒ LOST" if m.get('won') == False else ""
                 shot_a_num = m.get('shot_a_number', '?')
                 shot_b_num = m.get('shot_b_number', '?')
                 response += f"- **Score:** {m['score']} {won_str}\n"
                 response += f"  - **Shot A (#{shot_a_num}):** {m['shot_a']} by {m['player_a']}\n"
                 response += f"  - **Shot B (#{shot_b_num}):** {m['shot_b']} by {m['player_b']}\n"
                 response += f"  - Rally: {m['point']}\n\n"
-        
-        return response
-    
-    def _format_2d_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format 2D grouping analysis as a cross-tabulation table."""
-        if 'error' in analysis:
-            return f"Unable to perform 2D analysis: {analysis['error']}"
-        
-        classification = analysis['classification']
-        filters = classification.get('filters', {})
-        player_filter = filters.get('player')
-        
-        group_by = analysis['group_by']
-        secondary_group = analysis['secondary_group_by']
-        matrix = analysis['matrix']
-        
-        response = f"**2D Cross-Tabulation: {group_by.replace('_', ' ').title()} × {secondary_group.replace('_', ' ').title()}**\n\n"
-        if player_filter:
-            response += f"**Player:** {player_filter}\n"
-        response += f"**Total Points:** {analysis['total_points']}\n\n"
-        
-        # Build header row
-        secondary_labels = []
-        for p_key in matrix:
-            for s_key, s_data in matrix[p_key]['secondary'].items():
-                if s_data['label'] not in secondary_labels:
-                    secondary_labels.append(s_data['label'])
-        
-        response += f"| {group_by.replace('_', ' ').title()} |"
-        for s_label in secondary_labels:
-            response += f" {s_label} |"
-        response += "\n"
-        
-        response += "|" + "----|" * (len(secondary_labels) + 1) + "\n"
-        
-        # Build data rows
-        for p_key, p_data in matrix.items():
-            row_label = p_data['label']
-            response += f"| **{row_label}** |"
-            for s_label in secondary_labels:
-                # Find matching cell
-                for s_key, s_data in p_data['secondary'].items():
-                    if s_data['label'] == s_label:
-                        total = s_data['total']
-                        p1_pct = round(100 * s_data['player1_wins'] / total, 1) if total > 0 else 0
-                        response += f" {total} ({p1_pct}%) |"
-                        break
-            response += "\n"
-        
-        return response
-    
-    def _analyze_with_ratio(self, classification: Dict) -> Dict[str, Any]:
-        """
-        Ratio Analysis - Calculate ratio between two metrics.
-        
-        Example: Winners to Unforced Errors ratio
-        """
-        filters = classification.get('filters', {})
-        metrics = classification.get('metrics', [])
-        ratio_metrics = classification.get('ratio_metrics', metrics[:2] if len(metrics) >= 2 else None)
-        
-        if not ratio_metrics or len(ratio_metrics) < 2:
-            return {'error': 'Ratio analysis requires two metrics'}
-        
-        metric_a, metric_b = ratio_metrics[0], ratio_metrics[1]
-        
-        # UNIFIED: Use _analyze_n_dimensional for both metrics at once
-        classification_combined = classification.copy()
-        classification_combined['metrics'] = [metric_a, metric_b]
-        result = self._analyze_n_dimensional(classification_combined)
-        
-        if 'error' in result:
-            return result
-        
-        # Extract counts from unified results structure
-        tree_results = result.get('results', {})
-        per_player = tree_results.get('per_player_metrics', {})
-        player_filter = classification.get('filters', {}).get('player')
-        
-        # Get counts - use per_player_metrics (always populated)
-        if player_filter and player_filter.lower() != 'both':
-            # Single player - get that player's counts
-            is_player1 = self._names_match_robust(player_filter, self.player1)
-            player_key = 'player1' if is_player1 else 'player2'
-            count_a = per_player.get(metric_a, {}).get(player_key, {}).get('count', 0)
-            count_b = per_player.get(metric_b, {}).get(player_key, {}).get('count', 0)
-        else:
-            # Both players - sum counts
-            count_a = (per_player.get(metric_a, {}).get('player1', {}).get('count', 0) +
-                      per_player.get(metric_a, {}).get('player2', {}).get('count', 0))
-            count_b = (per_player.get(metric_b, {}).get('player1', {}).get('count', 0) +
-                      per_player.get(metric_b, {}).get('player2', {}).get('count', 0))
-        
-        ratio = count_a / count_b if count_b > 0 else float('inf')
-        
-        return {
-            'classification': classification,
-            'metric_a': metric_a,
-            'metric_b': metric_b,
-            'count_a': count_a,
-            'count_b': count_b,
-            'ratio': ratio,
-            'total_points': tree_results.get('total_points', 0)
-        }
-    
-    def _format_ratio_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format ratio analysis results."""
-        if 'error' in analysis:
-            return f"Unable to perform ratio analysis: {analysis['error']}"
-        
-        metric_a = analysis['metric_a'].replace('_', ' ').title()
-        metric_b = analysis['metric_b'].replace('_', ' ').title()
-        count_a = analysis['count_a']
-        count_b = analysis['count_b']
-        ratio = analysis['ratio']
-        
-        response = f"**Ratio Analysis: {metric_a} to {metric_b}**\n\n"
-        response += f"| Metric | Count |\n"
-        response += f"|--------|-------|\n"
-        response += f"| **{metric_a}** | {count_a} |\n"
-        response += f"| **{metric_b}** | {count_b} |\n\n"
-        
-        if ratio != float('inf'):
-            response += f"**Ratio:** {ratio:.2f}:1 ({metric_a} : {metric_b})\n"
-            if ratio > 1:
-                response += f"📈 {ratio:.1f}x more {metric_a.lower()} than {metric_b.lower()}\n"
-            elif ratio < 1:
-                response += f"📉 {1/ratio:.1f}x more {metric_b.lower()} than {metric_a.lower()}\n"
-            else:
-                response += f"➡️ Equal amounts of both\n"
-        else:
-            response += f"**Ratio:** Cannot calculate (no {metric_b.lower()})\n"
-        
-        return response
-    
-    def _analyze_trend_across_sets(self, classification: Dict) -> Dict[str, Any]:
-        """
-        Trend Analysis - Track how a metric changes across sets.
-        
-        Example: How did Djokovic's 1st serve % change across sets?
-        """
-        filters = classification.get('filters', {})
-        metrics = classification.get('metrics', ['points_won'])
-        metric = metrics[0] if metrics else 'points_won'
-        player_filter = filters.get('player')
-        
-        # UNIFIED: Use _analyze_n_dimensional with set grouping
-        classification['group_by'] = 'sets'
-        result = self._analyze_n_dimensional(classification)
-        
-        if 'error' in result:
-            return result
-        
-        # Extract per-set data from unified results structure
-        tree_results = result.get('results', {})
-        branches = tree_results.get('branches', {}) if tree_results.get('type') == 'group' else {}
-        trend_data = []
-        
-        for set_num in ['1', '2', '3', '4', '5']:
-            if set_num in branches:
-                branch = branches[set_num]
-                branch_results = branch.get('results', {})
-                total = branch_results.get('total_points', 0)
-                if total > 0:
-                    p1_wins = branch_results.get('player1_wins', 0)
-                    p2_wins = branch_results.get('player2_wins', 0)
-                    p1_pct = round(100 * p1_wins / total, 1)
-                    p2_pct = round(100 * p2_wins / total, 1)
-                    trend_data.append({
-                        'set': int(set_num),
-                        'total': total,
-                        'player1_wins': p1_wins,
-                        'player2_wins': p2_wins,
-                        'player1_pct': p1_pct,
-                        'player2_pct': p2_pct
-                    })
-        
-        # Calculate trend
-        if len(trend_data) >= 2:
-            if player_filter and self.player1 and player_filter.lower() in self.player1.lower():
-                values = [d['player1_pct'] for d in trend_data]
-            elif player_filter and self.player2 and player_filter.lower() in self.player2.lower():
-                values = [d['player2_pct'] for d in trend_data]
-            else:
-                values = [d['player1_pct'] for d in trend_data]
-            
-            # Simple trend direction
-            start, end = values[0], values[-1]
-            diff = end - start
-            trend_direction = 'increasing' if diff > 5 else 'decreasing' if diff < -5 else 'stable'
-        else:
-            trend_direction = 'insufficient data'
-        
-        return {
-            'classification': classification,
-            'metric': metric,
-            'trend_data': trend_data,
-            'trend_direction': trend_direction,
-            'player1': self.player1,
-            'player2': self.player2
-        }
-    
-    def _format_trend_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format trend analysis results."""
-        if 'error' in analysis:
-            return f"Unable to perform trend analysis: {analysis['error']}"
-        
-        metric = analysis['metric'].replace('_', ' ').title()
-        trend_data = analysis['trend_data']
-        trend_direction = analysis['trend_direction']
-        player1 = analysis['player1']
-        player2 = analysis['player2']
-        
-        filters = analysis['classification'].get('filters', {})
-        player_filter = filters.get('player')
-        
-        response = f"**Trend Analysis: {metric} Across Sets**\n\n"
-        
-        response += f"| Set | Total | {player1} | {player2} |\n"
-        response += f"|-----|-------|-----------|----------|\n"
-        
-        for d in trend_data:
-            response += f"| **Set {d['set']}** | {d['total']} | {d['player1_wins']} ({d['player1_pct']}%) | {d['player2_wins']} ({d['player2_pct']}%) |\n"
-        
-        response += f"\n**Trend:** "
-        if trend_direction == 'increasing':
-            response += f"📈 {player_filter or player1}'s {metric.lower()} **increased** across the match\n"
-        elif trend_direction == 'decreasing':
-            response += f"📉 {player_filter or player1}'s {metric.lower()} **decreased** across the match\n"
-        else:
-            response += f"➡️ {player_filter or player1}'s {metric.lower()} remained **stable** across the match\n"
-        
-        return response
-    
-    def _format_taxonomy_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format taxonomy-based analysis results - handles both grouped and non-grouped."""
-        if 'error' in analysis:
-            return f"Unable to perform analysis: {analysis['error']}"
-        
-        classification = analysis['classification']
-        filters = classification['filters']
-        metrics = classification.get('metrics', [])
-        group_by = analysis.get('group_by')
-        
-        player = filters.get('player') or 'Both Players'
-        situation = (filters.get('situation') or 'all points').replace('_', ' ').title()
-        
-        # DEBUG: Print what we're working with
-        print(f"[FORMAT] group_by={group_by}, has_groups={'groups' in analysis}, groups={analysis.get('groups', {}).keys() if 'groups' in analysis else 'N/A'}")
-        print(f"[FORMAT] metrics={metrics}, filters={filters}")
-        
-        # === GROUPED ANALYSIS FORMAT ===
-        if group_by and 'groups' in analysis:
-            print(f"[FORMAT] Routing to GROUPED analysis formatter")
-            return self._format_grouped_analysis(analysis)
-        
-        # === NON-GROUPED ANALYSIS FORMAT ===
-        response = f"**Point Outcome Analysis**\n\n"
-        response += f"**Player:** {player}\n"
-        response += f"**Situation:** {situation}\n"
-        response += f"**Total Points Analyzed:** {analysis['total_points']}\n\n"
-        
-        # Show metrics comparison
-        if len(metrics) > 1:
-            response += f"**Comparison:**\n"
-            response += f"| Metric | Count |\n"
-            response += f"|--------|-------|\n"
-            for metric in metrics:
-                data = analysis.get('metrics_data', {}).get(metric, {'count': 0})
-                metric_label = metric.replace('_', ' ').title()
-                response += f"| {metric_label} | **{data['count']}** |\n"
-            
-            # Determine winner of comparison
-            if len(metrics) == 2:
-                m1, m2 = metrics[0], metrics[1]
-                c1 = analysis.get('metrics_data', {}).get(m1, {'count': 0})['count']
-                c2 = analysis.get('metrics_data', {}).get(m2, {'count': 0})['count']
-                m1_label = m1.replace('_', ' ').title()
-                m2_label = m2.replace('_', ' ').title()
-                
-                if c1 > c2:
-                    response += f"\n**Answer:** {player} had more **{m1_label}** ({c1}) than **{m2_label}** ({c2})\n"
-                elif c2 > c1:
-                    response += f"\n**Answer:** {player} had more **{m2_label}** ({c2}) than **{m1_label}** ({c1})\n"
-                else:
-                    response += f"\n**Answer:** {player} had equal **{m1_label}** and **{m2_label}** ({c1} each)\n"
-        elif len(metrics) == 1:
-            metric = metrics[0]
-            data = analysis['metrics_data'].get(metric, {'count': 0})
-            metric_label = metric.replace('_', ' ').title()
-            response += f"**{metric_label}:** {data['count']}\n"
-        
-        # Show examples for each metric
-        for metric in metrics:
-            data = analysis.get('metrics_data', {}).get(metric, {'count': 0, 'points': []})
-            if data.get('points'):
-                metric_label = metric.replace('_', ' ').title()
-                response += f"\n**{metric_label} Examples:**\n"
-                for ex in data['points'][:3]:
-                    response += f"- Point {ex.get('point', '?')} ({ex.get('score', '?')}): {ex.get('excerpt', '')}...\n"
-        
-        # DEBUG: Show matching points if filtering actually happened
-        # Skip if all points returned (no filtering = noise)
-        matching_points = analysis.get('matching_points', [])
-        total_points = len(self.point_by_point) if hasattr(self, 'point_by_point') else 283
-        
-        if matching_points and len(matching_points) < total_points:
-            total_msg = f"Showing {len(matching_points)} of {total_points} points (filtered)"
-            response += f"\n\n**DEBUG: {total_msg}:**\n"
-            for i, pt in enumerate(matching_points, 1):
-                response += f"\n{i}. **Point {pt.get('point_number', '?')}** [{pt.get('server', '?')} serving]\n"
-                response += f"   Score: {pt.get('score', '?')}\n"
-                winner = pt.get('winner', '?')
-                outcome = pt.get('outcome', '?')
-                rally_len = pt.get('rally_length', '?')
-                response += f"   Winner: {winner} | Outcome: {outcome} | Rally: {rally_len} shots\n"
-                response += f"   {pt.get('description', '')}\n"
         
         return response
     
@@ -13278,7 +12505,7 @@ Answer:"""
             # Find most frequent (highest total)
             most_frequent = max(group_data_list, key=lambda x: x['total'])
             
-            response += f"📊 **Most Frequent:** {most_frequent['label']} ({most_frequent['total']} total, {most_frequent['total']/analysis['total_points']*100:.0f}% of analyzed points)\n"
+            response += f"ðŸ“Š **Most Frequent:** {most_frequent['label']} ({most_frequent['total']} total, {most_frequent['total']/analysis['total_points']*100:.0f}% of analyzed points)\n"
             
             # Only show win % insights if relevant
             if show_win_pct:
@@ -13288,15 +12515,15 @@ Answer:"""
                 # Find lowest win %
                 lowest_win_pct = min(group_data_list, key=lambda x: x['win_pct'] if x['total'] > 0 else 100)
                 
-                response += f"🎯 **Success Rate vs {most_frequent['label']}:** {most_frequent['win_pct']}% ({most_frequent['won']} won, {most_frequent['lost']} lost)\n\n"
+                response += f"ðŸŽ¯ **Success Rate vs {most_frequent['label']}:** {most_frequent['win_pct']}% ({most_frequent['won']} won, {most_frequent['lost']} lost)\n\n"
                 
                 if highest_win_pct['key'] != most_frequent['key']:
-                    response += f"✅ **Best Success:** vs {highest_win_pct['label']} ({highest_win_pct['win_pct']}%)\n"
+                    response += f"âœ… **Best Success:** vs {highest_win_pct['label']} ({highest_win_pct['win_pct']}%)\n"
                 if lowest_win_pct['key'] != most_frequent['key'] and lowest_win_pct['total'] > 0:
-                    response += f"⚠️ **Worst Success:** vs {lowest_win_pct['label']} ({lowest_win_pct['win_pct']}%)\n"
+                    response += f"âš ï¸ **Worst Success:** vs {lowest_win_pct['label']} ({lowest_win_pct['win_pct']}%)\n"
             else:
                 # For self-evident metrics, just show the counts
-                response += f"🎯 **{metric_name} at {most_frequent['label']}:** {most_frequent['won']}\n\n"
+                response += f"ðŸŽ¯ **{metric_name} at {most_frequent['label']}:** {most_frequent['won']}\n\n"
             
             # For 2-group comparisons (like set_groups), also show ratio
             if len(group_data_list) == 2:
@@ -13305,11 +12532,11 @@ Answer:"""
                 if val_a > 0:
                     ratio = val_b / val_a
                     if ratio >= 2:
-                        response += f"\n✅ **More than doubled!** ({val_a} → {val_b}, **{ratio:.1f}x**)\n"
+                        response += f"\nâœ… **More than doubled!** ({val_a} â†’ {val_b}, **{ratio:.1f}x**)\n"
                     elif ratio > 1:
-                        response += f"\n📈 +{((ratio-1)*100):.0f}% change ({val_a} → {val_b})\n"
+                        response += f"\nðŸ“ˆ +{((ratio-1)*100):.0f}% change ({val_a} â†’ {val_b})\n"
                     elif ratio < 1:
-                        response += f"\n📉 -{((1-ratio)*100):.0f}% change ({val_a} → {val_b})\n"
+                        response += f"\nðŸ“‰ -{((1-ratio)*100):.0f}% change ({val_a} â†’ {val_b})\n"
         
         # === EXAMPLES (optional) ===
         for group_key in group_keys:
@@ -13519,23 +12746,23 @@ Answer:"""
         # Use LLM to synthesize data + narrative into insight with FORMATTING FREEDOM
         synthesis_prompt = f"""You are a tennis analyst answering analytical questions using calculated match data.
 
-⚠️ **ABSOLUTE RULE:** This is an ANALYTICAL QUESTION requiring NUMBERS. You MUST use ONLY the numbers from the CALCULATED DATA section below. DO NOT use ANY numbers, statistics, or counts from the narrative context. The narrative is for CONTEXT and INSIGHT only.
+âš ï¸ **ABSOLUTE RULE:** This is an ANALYTICAL QUESTION requiring NUMBERS. You MUST use ONLY the numbers from the CALCULATED DATA section below. DO NOT use ANY numbers, statistics, or counts from the narrative context. The narrative is for CONTEXT and INSIGHT only.
 
 **USER'S QUESTION:** {question}
 
 **QUESTION INTENT:** {intent['primary_format']}
 {format_guidance}
 
-═══════════════════════════════════════════════════════════════════════════════
-📊 **CALCULATED DATA (SOURCE OF TRUTH - USE THESE NUMBERS ONLY):**
-═══════════════════════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+ðŸ“Š **CALCULATED DATA (SOURCE OF TRUTH - USE THESE NUMBERS ONLY):**
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 {data_for_llm}
-═══════════════════════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-📖 **NARRATIVE CONTEXT (for insight/context ONLY - DO NOT extract numbers from here):**
+ðŸ“– **NARRATIVE CONTEXT (for insight/context ONLY - DO NOT extract numbers from here):**
 {narrative_context if narrative_context else "No additional context available."}
 
-═══════════════════════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 **YOUR TASK:**
 
@@ -13545,11 +12772,11 @@ Answer:"""
    - Format the numbers in the way that best answers the user's question{f"   - **RELATED METRICS:** If the question asks about multiple related metrics (e.g., 'first serve % and first serve win %'), synthesize them together in a cohesive answer that shows how they relate to each other." if synthesize_related else ""}
 
 2. **PRESENT THE ANSWER CLEARLY:**
-   - If asking "how many" → Lead with the COUNT (e.g., "Sinner hit **33 winners**, Medvedev hit **29 winners**")
-   - If asking "percentage" → Lead with the PERCENTAGE
-   - If asking "comparison" → Show side-by-side comparison with numbers from calculated data
-   - If asking about "final score" or "match score" → Include the Match Score from the calculated data section
-   - If asking about "how long" or "duration" → Look for this information in the narrative context (it's not in calculated data){f"   - **MULTI-METRIC:** If multiple metrics are provided, present them together showing their relationship (e.g., 'First serve % was X%, and on those first serves, win % was Y%')" if synthesize_related else ""}
+   - If asking "how many" â†’ Lead with the COUNT (e.g., "Sinner hit **33 winners**, Medvedev hit **29 winners**")
+   - If asking "percentage" â†’ Lead with the PERCENTAGE
+   - If asking "comparison" â†’ Show side-by-side comparison with numbers from calculated data
+   - If asking about "final score" or "match score" â†’ Include the Match Score from the calculated data section
+   - If asking about "how long" or "duration" â†’ Look for this information in the narrative context (it's not in calculated data){f"   - **MULTI-METRIC:** If multiple metrics are provided, present them together showing their relationship (e.g., 'First serve % was X%, and on those first serves, win % was Y%')" if synthesize_related else ""}
    - Use tables, bullets, or plain text - whatever is clearest
 
 3. **ADD BRIEF TACTICAL INSIGHT (2-3 sentences):**
@@ -13559,11 +12786,11 @@ Answer:"""
    - **EXCEPTION:** Match duration/time is NOT in calculated data - you may extract this from narrative context if the question asks for it
 
 **FORBIDDEN:**
-- ❌ Using any numbers from the narrative context
-- ❌ Contradicting the calculated data
-- ❌ Showing percentages when they asked for counts
-- ❌ Answering a different question than what was asked
-- ❌ **NEVER mention "win rate" or "win percentage" for winners, aces, errors, or double faults**
+- âŒ Using any numbers from the narrative context
+- âŒ Contradicting the calculated data
+- âŒ Showing percentages when they asked for counts
+- âŒ Answering a different question than what was asked
+- âŒ **NEVER mention "win rate" or "win percentage" for winners, aces, errors, or double faults**
   (Winners/aces are always won points, errors/DFs are always lost points - stating this is redundant)
 
 Format in markdown."""
@@ -13622,29 +12849,29 @@ Format in markdown."""
         guidance_parts = []
         
         if intent['wants_count']:
-            guidance_parts.append("→ User wants COUNTS (raw numbers). Show counts prominently, not percentages.")
+            guidance_parts.append("â†’ User wants COUNTS (raw numbers). Show counts prominently, not percentages.")
         
         if intent['wants_percentage']:
-            guidance_parts.append("→ User wants PERCENTAGES/RATES. Calculate and show percentages clearly.")
+            guidance_parts.append("â†’ User wants PERCENTAGES/RATES. Calculate and show percentages clearly.")
         
         if intent['wants_comparison']:
-            guidance_parts.append("→ User wants COMPARISON. Show side-by-side and state who was better/worse.")
+            guidance_parts.append("â†’ User wants COMPARISON. Show side-by-side and state who was better/worse.")
         
         if intent['wants_trend']:
-            guidance_parts.append("→ User wants TREND over time. Show progression across sets/games.")
+            guidance_parts.append("â†’ User wants TREND over time. Show progression across sets/games.")
         
         if intent['wants_breakdown']:
-            guidance_parts.append("→ User wants BREAKDOWN by category. Show grouped/categorized data.")
+            guidance_parts.append("â†’ User wants BREAKDOWN by category. Show grouped/categorized data.")
         
         if intent['is_simple_lookup']:
-            guidance_parts.append("→ Simple lookup question. Give a direct, brief answer.")
+            guidance_parts.append("â†’ Simple lookup question. Give a direct, brief answer.")
         
         if metrics:
             metric_name = metrics[0].replace('_', ' ').title()
-            guidance_parts.append(f"→ Primary metric: {metric_name}")
+            guidance_parts.append(f"â†’ Primary metric: {metric_name}")
         
         if not guidance_parts:
-            guidance_parts.append("→ Use your judgment on the best format to answer this question.")
+            guidance_parts.append("â†’ Use your judgment on the best format to answer this question.")
         
         return "\n".join(guidance_parts)
     
@@ -13732,7 +12959,7 @@ MATCH DATA AVAILABLE:
         enhanced_prompt = f"""You are analyzing a tennis match with COMPLETE point-by-point data.
 {match_overview}
 
-⚠️ CRITICAL - DATA AVAILABILITY:
+âš ï¸ CRITICAL - DATA AVAILABILITY:
 The match file contains ALL {total_points} points with:
 - Full shot-by-shot descriptions for every point
 - Every serve placement, rally sequence, and outcome
@@ -13792,1606 +13019,15 @@ Answer:"""
         
         return answer
     
-    def _handle_comparative_query(self, question: str, classification: Dict, top_k: int = None) -> str:
-        """
-        Handle comparative queries: extract data from multiple conditions, then synthesize.
-        
-        For questions like:
-        - "How did Federer's first serves change when facing break points?"
-        - "How did tactics change in Set 1 vs Set 3?"
-        - "Serve effectiveness across sets"
-        """
-        print("[COMPARATIVE] Extracting data for comparison...")
-        
-        query_lower = question.lower()
-        player = classification['filters'].get('player')
-        
-        # Determine what's being compared
-        comparison_data = {}
-        
-        # Set comparison (Set 1 vs Set 3, etc.)
-        if 'set 1' in query_lower and ('set 3' in query_lower or 'set 5' in query_lower):
-            sets_to_compare = []
-            for i in [1, 2, 3, 4, 5]:
-                if f'set {i}' in query_lower or f'{i}st set' in query_lower or f'{i}nd set' in query_lower or f'{i}rd set' in query_lower or f'{i}th set' in query_lower:
-                    sets_to_compare.append(i)
-            
-            if len(sets_to_compare) >= 2:
-                for set_num in sets_to_compare:
-                    # UNIFIED: Use _analyze_n_dimensional for each set
-                    set_classification = classification.copy()
-                    set_classification['filters'] = classification['filters'].copy()
-                    set_classification['filters']['set'] = set_num
-                    set_classification['group_by'] = None
-                    
-                    analysis = self._analyze_n_dimensional(set_classification)
-                    if 'error' not in analysis:
-                        tree_results = analysis.get('results', {})
-                        comparison_data[f'Set {set_num}'] = {
-                            'total_points': tree_results.get('total_points', 0),
-                            'player1_wins': tree_results.get('player1_wins', 0),
-                            'player2_wins': tree_results.get('player2_wins', 0),
-                            'player1_pct': tree_results.get('player1_pct', 0),
-                            'player2_pct': tree_results.get('player2_pct', 0)
-                        }
-        
-        # Situation comparison (break points vs non-break points)
-        if 'break point' in query_lower or 'facing' in query_lower:
-            # UNIFIED: Use _analyze_n_dimensional for break point stats
-            bp_classification = classification.copy()
-            bp_classification['filters'] = classification['filters'].copy()
-            bp_classification['filters']['situation'] = 'break_point'
-            bp_classification['group_by'] = None
-            
-            bp_analysis = self._analyze_n_dimensional(bp_classification)
-            if 'error' not in bp_analysis:
-                tree_results = bp_analysis.get('results', {})
-                comparison_data['Break Points'] = {
-                    'total_points': tree_results.get('total_points', 0),
-                    'player1_wins': tree_results.get('player1_wins', 0),
-                    'player2_wins': tree_results.get('player2_wins', 0)
-                }
-            
-            # Get non-break point stats (all points minus break points)
-            all_classification = classification.copy()
-            all_classification['filters'] = classification['filters'].copy()
-            all_classification['filters']['situation'] = None
-            all_classification['group_by'] = None
-            
-            all_analysis = self._analyze_n_dimensional(all_classification)
-            if 'error' not in all_analysis:
-                tree_results = all_analysis.get('results', {})
-                comparison_data['All Points'] = {
-                    'total_points': tree_results.get('total_points', 0),
-                    'player1_wins': tree_results.get('player1_wins', 0),
-                    'player2_wins': tree_results.get('player2_wins', 0)
-                }
-        
-        # Format comparison results
-        if comparison_data:
-            response = self._format_comparative_analysis(question, comparison_data, classification)
-            
-            # If we have structured data, also get LLM interpretation
-            if len(comparison_data) >= 2:
-                # Add LLM synthesis for deeper insight
-                context_text = f"Comparison data:\n"
-                for condition, data in comparison_data.items():
-                    context_text += f"- {condition}: {data}\n"
-                
-                synthesis_prompt = f"Based on this data, briefly interpret the comparison for: {question}\n\n{context_text}"
-                
-                # Get LLM interpretation
-                try:
-                    llm_insight = self.answer_query_with_llm(synthesis_prompt, [])
-                    if llm_insight and len(llm_insight) > 50:
-                        response += f"\n**Interpretation:**\n{llm_insight}"
-                except:
-                    pass  # Skip LLM synthesis if it fails
-            
-            return response
-        
-        # Fallback to narrative handling if no structured comparison possible
-        print("[COMPARATIVE] No structured comparison found, falling back to narrative")
-        return self._handle_narrative_query(question, classification, top_k)
-    
-    def _format_comparative_analysis(self, question: str, comparison_data: Dict, classification: Dict) -> str:
-        """Format comparative analysis results."""
-        player1 = self.player1 or 'Player 1'
-        player2 = self.player2 or 'Player 2'
-        
-        response = f"**Comparative Analysis**\n\n"
-        response += f"**Query:** {question}\n\n"
-        
-        response += f"| Condition | Total | {player1} | {player2} |\n"
-        response += f"|-----------|-------|-----------|----------|\n"
-        
-        for condition, data in comparison_data.items():
-            total = data.get('total_points', 0)
-            p1 = data.get('player1_wins', 0)
-            p2 = data.get('player2_wins', 0)
-            p1_pct = round(100 * p1 / total, 1) if total > 0 else 0
-            p2_pct = round(100 * p2 / total, 1) if total > 0 else 0
-            response += f"| **{condition}** | {total} | {p1} ({p1_pct}%) | {p2} ({p2_pct}%) |\n"
-        
-        return response
-    
-    def _is_return_depth_situational_query(self, query: str) -> bool:
-        """
-        Detect if query asks about return depth in specific situations or win percentage.
-        
-        Example queries that return True:
-        - "How deep were Alcaraz's returns on break points?"
-        - "Return depth on game points"
-        - "Did Djokovic hit deep returns when facing break point?"
-        - "Win percentage on very deep returns"
-        - "Points won when return was deep"
-        """
-        query_lower = query.lower()
-        
-        # Must have return + depth keywords
-        return_keywords = ['return', 'returns', 'returning']
-        depth_keywords = ['deep', 'shallow', 'short', 'depth', 'very deep']
-        
-        # Situation keywords (optional for win percentage queries)
-        situation_keywords = ['break point', 'game point', 'set point', 'match point', 
-                             'deuce', 'crucial', 'important', 'pressure', 'key point']
-        
-        # Win percentage keywords
-        win_keywords = ['win percentage', 'won percentage', 'win rate', 'won rate',
-                       'points won', 'won points', 'win when', 'won when', 'percentage on']
-        
-        has_return = any(kw in query_lower for kw in return_keywords)
-        has_depth = any(kw in query_lower for kw in depth_keywords)
-        has_situation = any(kw in query_lower for kw in situation_keywords)
-        has_win_query = any(kw in query_lower for kw in win_keywords)
-        
-        # Return + depth + (situation OR win query)
-        return has_return and has_depth and (has_situation or has_win_query or True)
-    
-    def _analyze_return_depth_in_situations(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze return depth in specific game situations.
-        
-        Parses point-by-point data to find situational points and
-        categorizes returns by depth (deep/shallow) from descriptions.
-        Also tracks win/loss outcomes for each depth category.
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect if query asks for specific depth filter
-        depth_filter = None
-        if 'very deep' in query_lower:
-            depth_filter = 'very_deep'
-        elif 'shallow' in query_lower or 'short' in query_lower:
-            depth_filter = 'shallow'
-        elif 'deep' in query_lower:
-            depth_filter = 'deep'  # Will match both "deep" and "very deep" unless very_deep already set
-        
-        # Detect which player is being asked about
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # Detect situation type
-        situation_type = None
-        if 'break point' in query_lower:
-            situation_type = 'break_point'
-        elif 'game point' in query_lower:
-            situation_type = 'game_point'
-        elif 'set point' in query_lower:
-            situation_type = 'set_point'
-        elif 'match point' in query_lower:
-            situation_type = 'match_point'
-        elif 'deuce' in query_lower:
-            situation_type = 'deuce'
-        else:
-            situation_type = 'all'
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available for return depth analysis'}
-        
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        results = {
-            'player': player_mentioned or 'both players',
-            'situation': situation_type,
-            'depth_filter': depth_filter,
-            'total_situation_points': 0,
-            'returns_analyzed': 0,
-            'deep_returns': 0,
-            'shallow_returns': 0,
-            'very_deep_returns': 0,
-            'neutral_returns': 0,
-            # Outcome tracking per depth
-            'depth_outcomes': {
-                'very_deep': {'won': 0, 'lost': 0, 'examples': []},
-                'deep': {'won': 0, 'lost': 0, 'examples': []},
-                'shallow': {'won': 0, 'lost': 0, 'examples': []},
-                'neutral': {'won': 0, 'lost': 0, 'examples': []}
-            },
-            'return_examples': {
-                'deep': [],
-                'shallow': [],
-                'very_deep': []
-            }
-        }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # Check if this is the situation we're looking for - GENERIC using _check_situation
-            is_target_situation = False
-            if situation_type == 'all':
-                is_target_situation = True
-            elif situation_type:
-                is_target_situation = self._check_situation(situation_type, score)
-            else:
-                is_target_situation = True
-            
-            if not is_target_situation:
-                continue
-            
-            # Check player filter - returner must be the player
-            if player_mentioned:
-                if player_mentioned.lower() not in returner.lower():
-                    continue
-            
-            results['total_situation_points'] += 1
-            
-            # Parse rally to find the return shot (2nd shot in sequence)
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            
-            if len(rally_shots) >= 2:
-                # The return is the 2nd shot (index 1)
-                return_shot = rally_shots[1]
-                return_desc = return_shot.get('description', '').lower()
-                
-                results['returns_analyzed'] += 1
-                
-                # Categorize by depth
-                depth_category = 'neutral'
-                if 'very deep' in return_desc or 'baseline' in return_desc:
-                    depth_category = 'very_deep'
-                    results['very_deep_returns'] += 1
-                elif 'deep' in return_desc:
-                    depth_category = 'deep'
-                    results['deep_returns'] += 1
-                elif 'shallow' in return_desc or 'short' in return_desc:
-                    depth_category = 'shallow'
-                    results['shallow_returns'] += 1
-                else:
-                    results['neutral_returns'] += 1
-                
-                # Determine who won the point (returner wins or loses)
-                returner_won = self._did_returner_win_point(rally_shots, returner)
-                
-                # Track outcome for this depth category
-                if returner_won:
-                    results['depth_outcomes'][depth_category]['won'] += 1
-                else:
-                    results['depth_outcomes'][depth_category]['lost'] += 1
-                
-                # Store examples (limit to 5 per category)
-                example_data = {
-                    'point': point_num,
-                    'server': server,
-                    'returner': returner,
-                    'score': score,
-                    'return_description': return_shot.get('description', ''),
-                    'outcome': 'WON' if returner_won else 'LOST',
-                    'full_point': point_text.strip()
-                }
-                
-                if depth_category != 'neutral' and len(results['return_examples'][depth_category]) < 5:
-                    results['return_examples'][depth_category].append(example_data)
-                
-                if len(results['depth_outcomes'][depth_category]['examples']) < 5:
-                    results['depth_outcomes'][depth_category]['examples'].append(example_data)
-        
-        # Calculate percentages
-        if results['returns_analyzed'] > 0:
-            results['deep_percentage'] = round(100 * (results['deep_returns'] + results['very_deep_returns']) / results['returns_analyzed'], 1)
-            results['shallow_percentage'] = round(100 * results['shallow_returns'] / results['returns_analyzed'], 1)
-        else:
-            results['deep_percentage'] = 0
-            results['shallow_percentage'] = 0
-        
-        return results
-    
-    def _format_return_depth_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format return depth situational analysis into readable response."""
-        if 'error' in analysis:
-            return f"Unable to perform return depth analysis: {analysis['error']}"
-        
-        situation_name = analysis['situation'].replace('_', ' ').title() if analysis['situation'] != 'all' else 'All Points'
-        
-        response = f"**Return Depth Analysis: {situation_name}**\n\n"
-        response += f"**Player:** {analysis['player']}\n\n"
-        
-        response += f"**Results:**\n"
-        response += f"- Total {situation_name.lower()} situations: **{analysis['total_situation_points']}**\n"
-        response += f"- Returns analyzed: **{analysis['returns_analyzed']}**\n\n"
-        
-        if analysis['returns_analyzed'] > 0:
-            response += f"**Depth Breakdown:**\n"
-            response += f"| Depth | Count | Percentage |\n"
-            response += f"|-------|-------|------------|\n"
-            response += f"| Very Deep | {analysis['very_deep_returns']} | {round(100 * analysis['very_deep_returns'] / analysis['returns_analyzed'], 1)}% |\n"
-            response += f"| Deep | {analysis['deep_returns']} | {round(100 * analysis['deep_returns'] / analysis['returns_analyzed'], 1)}% |\n"
-            response += f"| Shallow/Short | {analysis['shallow_returns']} | {analysis['shallow_percentage']}% |\n"
-            response += f"| Neutral/Unmarked | {analysis['neutral_returns']} | {round(100 * analysis['neutral_returns'] / analysis['returns_analyzed'], 1)}% |\n"
-            
-            response += f"\n**Summary:** On {situation_name.lower()}, **{analysis['deep_percentage']}%** of {analysis['player']}'s returns were deep or very deep.\n"
-            
-            # Show win percentages by depth
-            depth_outcomes = analysis.get('depth_outcomes', {})
-            if depth_outcomes:
-                response += f"\n**Win Percentage by Return Depth:**\n"
-                response += f"| Depth | Points Won | Points Lost | Win % |\n"
-                response += f"|-------|------------|-------------|-------|\n"
-                
-                for depth_type in ['very_deep', 'deep', 'shallow', 'neutral']:
-                    outcomes = depth_outcomes.get(depth_type, {'won': 0, 'lost': 0})
-                    total = outcomes['won'] + outcomes['lost']
-                    if total > 0:
-                        win_pct = round(100 * outcomes['won'] / total, 1)
-                        depth_label = depth_type.replace('_', ' ').title()
-                        response += f"| {depth_label} | {outcomes['won']} | {outcomes['lost']} | **{win_pct}%** |\n"
-                
-                # If there's a depth filter, highlight that specific answer
-                depth_filter = analysis.get('depth_filter')
-                if depth_filter and depth_filter in depth_outcomes:
-                    outcomes = depth_outcomes[depth_filter]
-                    total = outcomes['won'] + outcomes['lost']
-                    if total > 0:
-                        win_pct = round(100 * outcomes['won'] / total, 1)
-                        depth_label = depth_filter.replace('_', ' ')
-                        response += f"\n**Answer:** {analysis['player']}'s win percentage on points where the return was **{depth_label}** was **{win_pct}%** ({outcomes['won']} won, {outcomes['lost']} lost out of {total} points).\n"
-            
-            # Show examples with outcomes
-            for depth_type in ['very_deep', 'deep', 'shallow']:
-                examples = analysis['return_examples'].get(depth_type, [])
-                if examples:
-                    response += f"\n**{depth_type.replace('_', ' ').title()} Return Examples:**\n"
-                    for ex in examples[:3]:
-                        outcome_str = f"[{ex.get('outcome', 'N/A')}]" if 'outcome' in ex else ""
-                        response += f"- Point {ex['point']} {outcome_str} (Score: {ex['score']}): {ex['return_description']}\n"
-        else:
-            response += f"\n*Note: No return depth data could be extracted from point-by-point descriptions.*\n"
-            response += f"\nThis may be because the point-by-point data doesn't include explicit depth markers "
-            response += f"like 'deep', 'shallow', or 'short' in return descriptions.\n"
-        
-        return response
-    
-    def _is_game_outcome_after_event_query(self, query: str) -> bool:
-        """
-        Detect if query asks about game outcomes after specific events.
-        
-        Example queries that return True:
-        - "How many times did a player double fault and then lose that game?"
-        - "After hitting an ace, did the server go on to hold?"
-        - "Double fault and then got broken"
-        """
-        query_lower = query.lower()
-        
-        # Event keywords
-        event_keywords = ['double fault', 'ace', 'break point', 'deuce']
-        
-        # Outcome tracking keywords
-        outcome_keywords = [
-            'lose that', 'lost that', 'lose the game', 'lost the game',
-            'win that', 'won that', 'hold', 'held', 'break', 'broken',
-            'go on to', 'went on to', 'then lose', 'then win', 'then hold'
-        ]
-        
-        has_event = any(kw in query_lower for kw in event_keywords)
-        has_outcome = any(kw in query_lower for kw in outcome_keywords)
-        
-        return has_event and has_outcome
-    
-    def _analyze_game_outcome_after_event(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze game outcomes after specific events occur.
-        
-        Handles queries like:
-        - "Double fault and then lost that service game"
-        - "Ace and then held serve"
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect which player is being asked about
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # Detect the event type
-        event_type = None
-        if 'double fault' in query_lower:
-            event_type = 'double_fault'
-        elif 'ace' in query_lower:
-            event_type = 'ace'
-        elif 'break point' in query_lower:
-            event_type = 'break_point'
-        
-        # Detect the desired outcome
-        outcome_filter = None
-        if any(kw in query_lower for kw in ['lose', 'lost', 'broken', 'break']):
-            outcome_filter = 'lost_game'
-        elif any(kw in query_lower for kw in ['win', 'won', 'hold', 'held']):
-            outcome_filter = 'won_game'
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available for game outcome analysis'}
-        
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        # Track events by game (set-game combination)
-        events_by_game = {}  # key: "set_score-game_score-server", value: list of events
-        game_outcomes = {}   # key: same, value: 'held' or 'broken'
-        
-        results = {
-            'player': player_mentioned or 'all players',
-            'event_type': event_type,
-            'outcome_filter': outcome_filter,
-            'total_events': 0,
-            'events_followed_by_loss': 0,
-            'events_followed_by_win': 0,
-            'matching_instances': []
-        }
-        
-        # First pass: collect all events and track game boundaries
-        current_game_key = None
-        current_game_server = None
-        current_game_events = []
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # Parse score to get set-game-point scores
-            # Handle formats like "Djokovic 0-0 1-2" or "0-0 1-2 15-30"
-            score_components = self._parse_score_components(score)
-            if not score_components:
-                continue
-            set_score = score_components['set']
-            game_score = score_components['game']
-            point_score = score_components.get('point', '0-0')
-            
-            # Create game key
-            game_key = f"{set_score}-{game_score}-{server}"
-            
-            # Check if we've moved to a new game
-            if game_key != current_game_key:
-                # Save previous game's events if any
-                if current_game_key and current_game_events:
-                    events_by_game[current_game_key] = current_game_events
-                
-                current_game_key = game_key
-                current_game_server = server
-                current_game_events = []
-            
-            # Check for the event in this point - GENERIC using event_type as keyword
-            point_lower = point_text.lower()
-            event_found = False
-            
-            # Convert event_type to keyword (e.g., 'double_fault' -> 'double fault')
-            event_keyword = event_type.replace('_', ' ').lower() if event_type else ''
-            if event_keyword and event_keyword in point_lower:
-                    event_found = True
-            
-            if event_found:
-                # Check player filter
-                if player_mentioned:
-                    # For double faults/aces, the server hits them
-                    if player_mentioned.lower() not in server.lower():
-                        continue
-                
-                results['total_events'] += 1
-                current_game_events.append({
-                    'point': point_num,
-                    'server': server,
-                    'returner': returner,
-                    'score': score,
-                    'point_text': point_text.strip()
-                })
-            
-            # Check if this point ended the game (detect game-ending scores)
-            # Game ends when someone reaches game point and wins
-            if self._is_game_ending_point(point_score, point_text):
-                # Determine who won the game
-                game_won_by_server = self._did_server_win_point(point_text)
-                
-                if current_game_key:
-                    game_outcomes[current_game_key] = 'held' if game_won_by_server else 'broken'
-        
-        # Don't forget the last game
-        if current_game_key and current_game_events:
-            events_by_game[current_game_key] = current_game_events
-        
-        # Second pass: match events with game outcomes
-        for game_key, events in events_by_game.items():
-            outcome = game_outcomes.get(game_key)
-            
-            if not outcome:
-                continue
-            
-            for event in events:
-                if outcome == 'broken':
-                    results['events_followed_by_loss'] += 1
-                    if outcome_filter == 'lost_game' or outcome_filter is None:
-                        results['matching_instances'].append({
-                            **event,
-                            'game_outcome': 'Server LOST (broken)',
-                            'game_key': game_key
-                        })
-                else:
-                    results['events_followed_by_win'] += 1
-                    if outcome_filter == 'won_game' or outcome_filter is None:
-                        results['matching_instances'].append({
-                            **event,
-                            'game_outcome': 'Server HELD',
-                            'game_key': game_key
-                        })
-        
-        return results
-    
-    def _is_game_ending_point(self, point_score: str, point_text: str) -> bool:
-        """Check if a point score represents game point that was converted."""
-        # Game-ending scores for server: 40-0, 40-15, 40-30, Ad-40
-        # Game-ending scores for returner: 0-40, 15-40, 30-40, 40-Ad
-        point_lower = point_text.lower()
-        
-        # Check for explicit game/set indicators
-        if 'game' in point_lower or 'break' in point_lower:
-            return True
-        
-        # Check for winning shots that would end the game
-        if any(outcome in point_lower for outcome in ['winner', 'ace', 'double fault', 'error']):
-            # Check if score was at game point
-            game_point_scores = ['40-0', '40-15', '40-30', '0-40', '15-40', '30-40', 'ad-40', '40-ad']
-            return any(gp in point_score.lower() for gp in game_point_scores)
-        
-        return False
-    
-    def _did_server_win_point(self, point_text: str, server: str = '', returner: str = '') -> bool:
-        """Determine if the server won the point using parsed metadata."""
-        # Use metadata for robust determination
-        point_data = {'point_text': point_text, 'server': server, 'returner': returner}
-        meta = self._get_point_metadata(point_data)
-        
-        point_winner = meta.get('point_winner')
-        if point_winner and server:
-            return self._names_match_robust(server, point_winner)
-        
-        # Fallback: ace or service winner always goes to server
-        winning_shot = meta.get('winning_shot', {})
-        outcome = (winning_shot.get('outcome') or '').upper()
-        if outcome in ['ACE', 'SERVICE_WINNER']:
-            return True
-        
-        # Legacy fallback
-        rally_parts = point_text.split(';')
-        if rally_parts:
-            last_shot = rally_parts[-1].lower()
-            shot_index = len(rally_parts)
-            is_server_shot = (shot_index % 2 == 1)  # Odd shots are server's
-            
-            if 'winner' in last_shot:
-                return is_server_shot
-            elif 'error' in last_shot or 'double fault' in last_shot:
-                return not is_server_shot
-        
-        return False
-    
-    def _did_returner_win_point(self, rally_shots: list, returner: str) -> bool:
-        """Determine if the returner won the point based on parsed rally data - GENERIC."""
-        if not rally_shots:
-            return False
-        
-        last_shot = rally_shots[-1]
-        outcome = last_shot.get('outcome', '')
-        last_shot_player = last_shot.get('player', '')
-        
-        # GENERIC outcome handling using OUTCOME_CONFIG
-        outcome_config = self._get_outcome_config(outcome)
-        winning_shot_type = outcome_config.get('winning_shot_type', '')
-        player_attribution = outcome_config.get('player_attribution', '')
-        is_positive = outcome_config.get('is_positive', True)
-        
-        # Determine who wins based on outcome config
-        if player_attribution == 'server':
-            # Server-attributed outcome (ace, double fault, service winner)
-            return not is_positive  # Returner wins if it's negative for server (e.g., double fault)
-        elif player_attribution == 'winner':
-            # Winner-attributed outcome - check who hit the shot
-            return returner.lower() in last_shot_player.lower() if last_shot_player else False
-        elif player_attribution == 'error':
-            # Error-attributed outcome - error player loses
-            is_returner_error = returner.lower() in last_shot_player.lower() if last_shot_player else False
-            return not is_returner_error  # Returner wins if server made error
-        
-        # Fallback - legacy handling for any unhandled outcomes
-        if 'error' in winning_shot_type:
-            return True
-        
-        # Fallback: check description
-        desc = last_shot.get('description', '').lower()
-        if 'winner' in desc:
-            return returner.lower() in last_shot_player.lower()
-        elif 'error' in desc:
-            return returner.lower() not in last_shot_player.lower()
-        
-        return False
-    
-    def _format_game_outcome_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format game outcome after event analysis into readable response."""
-        if 'error' in analysis:
-            return f"Unable to perform game outcome analysis: {analysis['error']}"
-        
-        event_name = (analysis['event_type'] or 'event').replace('_', ' ').title()
-        
-        response = f"**Game Outcome Analysis: After {event_name}**\n\n"
-        response += f"**Player Filter:** {analysis['player']}\n\n"
-        
-        response += f"**Results:**\n"
-        response += f"- Total {event_name}s found: **{analysis['total_events']}**\n"
-        response += f"- Server went on to LOSE the game: **{analysis['events_followed_by_loss']}**\n"
-        response += f"- Server went on to HOLD: **{analysis['events_followed_by_win']}**\n\n"
-        
-        if analysis['total_events'] > 0:
-            loss_rate = round(100 * analysis['events_followed_by_loss'] / analysis['total_events'], 1)
-            response += f"**Answer:** After a {event_name.lower()}, the server lost the game **{analysis['events_followed_by_loss']}** times "
-            response += f"({loss_rate}% of {event_name.lower()}s led to a break).\n"
-        
-        # Show matching instances
-        if analysis['matching_instances']:
-            shown = min(10, len(analysis['matching_instances']))
-            response += f"\n**{shown} Example Instances:**\n"
-            response += "-" * 50 + "\n"
-            
-            for i, inst in enumerate(analysis['matching_instances'][:10], 1):
-                response += f"\n**{i}. Point {inst['point']}** - {inst['game_outcome']}\n"
-                response += f"   Score: {inst['score']}\n"
-                response += f"   Server: {inst['server']}\n"
-                response += f"   Point: {inst['point_text']}...\n"
-                response += "-" * 50 + "\n"
-            
-            if len(analysis['matching_instances']) > 10:
-                response += f"\n*...and {len(analysis['matching_instances']) - 10} more instances*\n"
-        
-        if analysis['total_events'] == 0:
-            response += f"\n*Note: No {event_name.lower()}s were found in this match.*"
-        
-        return response
-    
-    def _is_rally_length_query(self, query: str) -> bool:
-        """
-        Detect if query asks about points based on rally length.
-        
-        Example queries that return True:
-        - "Who won more points that lasted longer than 15 shots?"
-        - "How many rallies went over 10 shots?"
-        - "Win percentage on long rallies (7+ shots)"
-        """
-        rally_keywords = [
-            'rally', 'rallies', 'shots long', 'shot rally',
-            'longer than', 'more than', 'over.*shots', 'shots or more',
-            '+ shots', 'long rally', 'long rallies', 'short rally', 'short rallies',
-            'lasted.*shots', 'went.*shots'
-        ]
-        import re
-        query_lower = query.lower()
-        return any(re.search(kw, query_lower) for kw in rally_keywords)
-    
-    def _analyze_rally_length(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze points based on rally length.
-        
-        Handles queries like:
-        - "Who won more points longer than 15 shots?"
-        - "Win percentage on 10+ shot rallies"
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Extract rally length threshold
-        length_threshold = None
-        # Look for patterns like "15 shots", "longer than 10", "10+ shots", "over 7 shots"
-        patterns = [
-            r'longer than (\d+)',
-            r'more than (\d+)',
-            r'over (\d+)',
-            r'(\d+)\+',
-            r'(\d+) shots or more',
-            r'(\d+)-shot',
-            r'(\d+) shot',
-            r'at least (\d+)'
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, query_lower)
-            if match:
-                length_threshold = int(match.group(1))
-                break
-        
-        if length_threshold is None:
-            # Default thresholds for "long" vs "short"
-            if 'long' in query_lower:
-                length_threshold = 9  # 9+ shots = long rally
-            elif 'short' in query_lower:
-                length_threshold = 4  # 4 or fewer = short
-            else:
-                length_threshold = 10  # default
-        
-        is_greater_than = 'short' not in query_lower
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available for rally length analysis'}
-        
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        # Get player names
-        player1 = self.player1
-        player2 = self.player2
-        
-        results = {
-            'length_threshold': length_threshold,
-            'is_greater_than': is_greater_than,
-            'total_qualifying_points': 0,
-            'player1': player1,
-            'player2': player2,
-            'player1_wins': 0,
-            'player2_wins': 0,
-            'matching_points': []
-        }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # Use existing _parse_rally_sequence for consistent shot counting
-            # This properly handles serve faults, double faults, lets, etc.
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            
-            # Count only actual rally shots (exclude faults that don't start rallies)
-            # Filter out FAULT outcomes as they don't count toward rally length
-            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
-            rally_length = len(actual_shots)
-            
-            # Check if rally matches our criteria
-            if is_greater_than:
-                if rally_length <= length_threshold:
-                    continue
-            else:
-                if rally_length > length_threshold:
-                    continue
-            
-            results['total_qualifying_points'] += 1
-            
-            # UNIFIED: Use _determine_point_winner
-            point_winner = self._determine_point_winner(actual_shots, server, returner)
-            
-            if point_winner:
-                # Match winner to player1 or player2
-                if player1 and player1.lower() in point_winner.lower():
-                    results['player1_wins'] += 1
-                elif player2 and player2.lower() in point_winner.lower():
-                    results['player2_wins'] += 1
-                
-                results['matching_points'].append({
-                    'point': point_num,
-                    'server': server,
-                    'returner': returner,
-                    'score': score,
-                    'rally_length': rally_length,
-                    'winner': point_winner,
-                    'full_rally': point_text.strip()
-                })
-        
-        # Calculate percentages
-        if results['total_qualifying_points'] > 0:
-            results['player1_percentage'] = round(100 * results['player1_wins'] / results['total_qualifying_points'], 1)
-            results['player2_percentage'] = round(100 * results['player2_wins'] / results['total_qualifying_points'], 1)
-        else:
-            results['player1_percentage'] = 0
-            results['player2_percentage'] = 0
-        
-        return results
-    
-    def _is_rally_category_breakdown_query(self, query: str) -> bool:
-        """Detect if query asks for breakdown by rally length categories."""
-        query_lower = query.lower()
-        
-        # Keywords indicating category breakdown needed
-        breakdown_indicators = [
-            'category', 'categories',
-            'breakdown', 'break down',
-            'by rally length', 'by length',
-            '1-3', '4-6', '7-9', '10+',
-            'short rallies', 'medium rallies', 'long rallies',
-            'highest win percentage',
-            'best rally length',
-            'which rally length',
-            'find the exact'
-        ]
-        
-        return any(kw in query_lower for kw in breakdown_indicators)
-    
-    def _analyze_rally_length_by_category(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze win percentages by rally length categories.
-        
-        Categories: 1-3 (short), 4-6 (medium), 7-9 (extended), 10+ (long)
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect if looking for a specific player's best category
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # Define categories
-        categories = {
-            '1-3': {'min': 1, 'max': 3, 'label': 'Short (1-3 shots)'},
-            '4-6': {'min': 4, 'max': 6, 'label': 'Medium (4-6 shots)'},
-            '7-9': {'min': 7, 'max': 9, 'label': 'Extended (7-9 shots)'},
-            '10+': {'min': 10, 'max': 999, 'label': 'Long (10+ shots)'}
-        }
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available'}
-        
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        # Get player names
-        player1 = self.player1
-        player2 = self.player2
-        
-        results = {
-            'player1': player1,
-            'player2': player2,
-            'player_mentioned': player_mentioned,
-            'categories': {},
-            'total_points': 0,
-            'best_category_for_player': None
-        }
-        
-        # Initialize category stats
-        for cat_key, cat_info in categories.items():
-            results['categories'][cat_key] = {
-                'label': cat_info['label'],
-                'total': 0,
-                'player1_wins': 0,
-                'player2_wins': 0,
-                'examples': []
-            }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # Parse rally
-            rally_shots = self._parse_rally_sequence(point_text, server, returner)
-            actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
-            rally_length = len(actual_shots)
-            
-            if rally_length == 0:
-                continue
-            
-            results['total_points'] += 1
-            
-            # Determine category
-            cat_key = None
-            for key, info in categories.items():
-                if info['min'] <= rally_length <= info['max']:
-                    cat_key = key
-                    break
-            
-            if not cat_key:
-                continue
-            
-            results['categories'][cat_key]['total'] += 1
-            
-            # UNIFIED: Use _determine_point_winner
-            point_winner = self._determine_point_winner(actual_shots, server, returner)
-            
-            if point_winner:
-                if player1 and player1.lower() in point_winner.lower():
-                    results['categories'][cat_key]['player1_wins'] += 1
-                elif player2 and player2.lower() in point_winner.lower():
-                    results['categories'][cat_key]['player2_wins'] += 1
-                
-                # Store example
-                if len(results['categories'][cat_key]['examples']) < 3:
-                    results['categories'][cat_key]['examples'].append({
-                        'point': point_num,
-                        'length': rally_length,
-                        'winner': point_winner,
-                        'score': score
-                    })
-        
-        # Calculate percentages and find best category
-        best_cat = None
-        best_pct = -1
-        
-        for cat_key, cat_data in results['categories'].items():
-            if cat_data['total'] > 0:
-                cat_data['player1_pct'] = round(100 * cat_data['player1_wins'] / cat_data['total'], 1)
-                cat_data['player2_pct'] = round(100 * cat_data['player2_wins'] / cat_data['total'], 1)
-                
-                # Check if this is the best category for the mentioned player
-                if player_mentioned:
-                    if player1 and player_mentioned.lower() in player1.lower():
-                        if cat_data['player1_pct'] > best_pct:
-                            best_pct = cat_data['player1_pct']
-                            best_cat = cat_key
-                    elif player2 and player_mentioned.lower() in player2.lower():
-                        if cat_data['player2_pct'] > best_pct:
-                            best_pct = cat_data['player2_pct']
-                            best_cat = cat_key
-            else:
-                cat_data['player1_pct'] = 0
-                cat_data['player2_pct'] = 0
-        
-        if best_cat:
-            results['best_category_for_player'] = {
-                'category': best_cat,
-                'label': categories[best_cat]['label'],
-                'win_percentage': best_pct,
-                'player': player_mentioned
-            }
-        
-        return results
-    
-    def _format_rally_category_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format rally length category analysis."""
-        if 'error' in analysis:
-            return f"Unable to perform rally category analysis: {analysis['error']}"
-        
-        player1 = analysis['player1']
-        player2 = analysis['player2']
-        
-        response = f"**Rally Length Category Analysis**\n\n"
-        response += f"**Players:** {player1} vs {player2}\n"
-        response += f"**Total Points Analyzed:** {analysis['total_points']}\n\n"
-        
-        response += f"**Win Percentage by Rally Length Category:**\n\n"
-        response += f"| Category | Total | {player1} Wins | {player1} % | {player2} Wins | {player2} % |\n"
-        response += f"|----------|-------|--------------|------------|--------------|------------|\n"
-        
-        for cat_key in ['1-3', '4-6', '7-9', '10+']:
-            cat_data = analysis['categories'][cat_key]
-            response += f"| **{cat_data['label']}** | {cat_data['total']} | "
-            response += f"{cat_data['player1_wins']} | **{cat_data['player1_pct']}%** | "
-            response += f"{cat_data['player2_wins']} | **{cat_data['player2_pct']}%** |\n"
-        
-        # Highlight best category for mentioned player
-        if analysis['best_category_for_player']:
-            best = analysis['best_category_for_player']
-            response += f"\n**Answer:** {best['player']}'s highest win percentage was in **{best['label']}** "
-            response += f"with **{best['win_percentage']}%**\n"
-        
-        return response
-    
-    def _format_rally_length_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format rally length analysis results into a readable response."""
-        if 'error' in analysis:
-            return f"Unable to perform rally length analysis: {analysis['error']}"
-        
-        threshold = analysis['length_threshold']
-        comparison = "longer than" if analysis['is_greater_than'] else "shorter than or equal to"
-        
-        response = f"**Rally Length Analysis**\n\n"
-        response += f"**Criteria:** Points {comparison} **{threshold} shots**\n\n"
-        
-        response += f"**Results:**\n"
-        response += f"- Total qualifying points: **{analysis['total_qualifying_points']}**\n\n"
-        
-        if analysis['total_qualifying_points'] > 0:
-            p1 = analysis['player1'] or 'Player 1'
-            p2 = analysis['player2'] or 'Player 2'
-            
-            response += f"**Winner Breakdown:**\n"
-            response += f"| Player | Points Won | Percentage |\n"
-            response += f"|--------|-----------|------------|\n"
-            response += f"| **{p1}** | {analysis['player1_wins']} | {analysis['player1_percentage']}% |\n"
-            response += f"| **{p2}** | {analysis['player2_wins']} | {analysis['player2_percentage']}% |\n"
-            
-            # Determine who won more
-            if analysis['player1_wins'] > analysis['player2_wins']:
-                diff = analysis['player1_wins'] - analysis['player2_wins']
-                response += f"\n**Answer:** **{p1}** won more points on rallies {comparison} {threshold} shots "
-                response += f"({analysis['player1_wins']} vs {analysis['player2_wins']}, +{diff})\n"
-            elif analysis['player2_wins'] > analysis['player1_wins']:
-                diff = analysis['player2_wins'] - analysis['player1_wins']
-                response += f"\n**Answer:** **{p2}** won more points on rallies {comparison} {threshold} shots "
-                response += f"({analysis['player2_wins']} vs {analysis['player1_wins']}, +{diff})\n"
-            else:
-                response += f"\n**Answer:** Both players won equal points on rallies {comparison} {threshold} shots "
-                response += f"({analysis['player1_wins']} each)\n"
-        
-        # Show sample of matching points (limit to 10)
-        if analysis['matching_points']:
-            shown = min(10, len(analysis['matching_points']))
-            response += f"\n**Sample of {shown} Matching Points (of {len(analysis['matching_points'])} total):**\n"
-            response += "-" * 50 + "\n"
-            
-            for i, p in enumerate(analysis['matching_points'], 1):  # Show ALL points
-                response += f"\n**{i}. Point {p['point']}** ({p['rally_length']} shots) - Won by **{p['winner']}**\n"
-                response += f"   Score: {p['score']}\n"
-                response += f"   Rally: {p['full_rally']}\n"
-                response += "-" * 50 + "\n"
-        
-        if analysis['total_qualifying_points'] == 0:
-            response += f"\n*Note: No rallies {comparison} {threshold} shots were found in this match.*"
-        
-        return response
-    
-    def _is_shot_outcome_query(self, query: str) -> bool:
-        """
-        Detect if query asks about shots that resulted in specific outcomes.
-        
-        Example queries that return True:
-        - "How many backhand slices did Alcaraz hit that resulted in an error from Djokovic?"
-        - "What shots induced forced errors?"
-        - "How many forehand winners did Nadal hit?"
-        - "Which shots caused unforced errors?"
-        """
-        outcome_keywords = [
-            'resulted in', 'caused', 'induced', 'led to', 'forcing',
-            'forced error', 'unforced error', 'winner', 'error from',
-            'made.*error', 'hit.*winner', 'produced'
-        ]
-        shot_keywords = [
-            'backhand', 'forehand', 'slice', 'drop shot', 'volley',
-            'approach', 'lob', 'shot', 'groundstroke'
-        ]
-        query_lower = query.lower()
-        
-        import re
-        has_outcome = any(re.search(kw, query_lower) for kw in outcome_keywords)
-        has_shot = any(kw in query_lower for kw in shot_keywords)
-        return has_outcome and has_shot
-    
-    def _analyze_shot_outcomes(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze shots that resulted in specific outcomes (forced errors, winners, etc.).
-        
-        FIXES APPLIED:
-        1. Set filter - Only include points from specified set
-        2. Shot number filter - "second shot" or "return" = only shot_idx == 1
-        3. Correct outcome detection - "Unforced Error" checked BEFORE "forced error"
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect which player hit the shot
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # Use shared shot detection helper
-        shot_info = self._detect_shot_from_query(query)
-        shot_base = shot_info['shot_base']
-        shot_modifier = shot_info['shot_modifier']
-        shot_type = shot_info['shot_type']
-        
-        # FIX #1: Detect set filter
-        set_filter = None
-        set_patterns = [
-            (r'in set 1|set 1\b|first set|1st set', 1),
-            (r'in set 2|set 2\b|second set|2nd set', 2),
-            (r'in set 3|set 3\b|third set|3rd set', 3),
-            (r'in set 4|set 4\b|fourth set|4th set', 4),
-            (r'in set 5|set 5\b|fifth set|5th set', 5),
-        ]
-        for pattern, set_num in set_patterns:
-            if re.search(pattern, query_lower):
-                set_filter = set_num
-                break
-        
-        # FIX #2: Detect shot number filter
-        shot_number_filter = None
-        if 'second shot' in query_lower or 'as his return' in query_lower or 'as her return' in query_lower:
-            shot_number_filter = 2  # Return = shot #2 (index 1)
-        elif 'the return' in query_lower and ('as' in query_lower or 'on' in query_lower):
-            shot_number_filter = 2
-        elif 'first shot' in query_lower or 'as his serve' in query_lower:
-            shot_number_filter = 1  # Serve = shot #1 (index 0)
-        elif 'third shot' in query_lower or 'third ball' in query_lower or 'serve+1' in query_lower:
-            shot_number_filter = 3  # Serve+1 = shot #3 (index 2)
-        elif 'fourth shot' in query_lower:
-            shot_number_filter = 4
-        
-        # FIX #3: Detect desired outcome - Check UNFORCED before FORCED
-        outcome_type = None
-        if 'unforced error' in query_lower:
-            outcome_type = 'unforced_error'
-        elif 'forced error' in query_lower:
-            outcome_type = 'forced_error'
-        elif 'directly led to' in query_lower or 'led to' in query_lower:
-            # "led to an error" - check what kind
-            if 'unforced' in query_lower:
-                outcome_type = 'unforced_error'
-            else:
-                outcome_type = 'induced_error'  # Shot was so good opponent erred
-        elif 'error from' in query_lower:
-            outcome_type = 'induced_error'  # Player A's shot caused Player B's error
-        elif 'winner' in query_lower:
-            outcome_type = 'winner'
-        elif 'error' in query_lower:
-            outcome_type = 'any_error'
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available for shot outcome analysis'}
-        
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        results = {
-            'player': player_mentioned or 'both players',
-            'shot_type': shot_type,
-            'shot_number_filter': shot_number_filter,
-            'set_filter': set_filter,
-            'outcome_type': outcome_type,
-            'total_shots_found': 0,
-            'shots_with_outcome': 0,
-            'matching_points': []
-        }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # FIX #1: Apply set filter
-            # Score format can be: "Djokovic 0-0 1-2" (name + sets + games)
-            # or "0-0 1-2 15-30" (sets + games + points)
-            if set_filter:
-                current_set = self._extract_current_set(score)
-                if current_set and current_set != set_filter:
-                    continue
-            
-            # Split point into shots
-            shots = [s.strip() for s in point_text.split(';') if s.strip()]
-            
-            if len(shots) < 2:
-                continue
-            
-            # Determine which shots belong to which player
-            # Shot 1 = serve (server), Shot 2 = return (returner), Shot 3 = server, etc.
-            for shot_idx, shot in enumerate(shots):
-                shot_lower = shot.lower()
-                
-                # FIX #2: Apply shot number filter
-                human_shot_number = shot_idx + 1  # Convert to 1-indexed
-                if shot_number_filter and human_shot_number != shot_number_filter:
-                    continue
-                
-                # Determine who hit this shot
-                if shot_idx % 2 == 0:  # Even index = server's shot (0=serve, 2=3rd ball, etc.)
-                    shot_player = server
-                else:  # Odd index = returner's shot
-                    shot_player = returner
-                
-                # Check if this matches the player we're looking for
-                if player_mentioned:
-                    if player_mentioned.lower() not in shot_player.lower():
-                        continue
-                
-                # Check if shot matches the type we're looking for
-                shot_matches = False
-                if shot_type:
-                    # Build patterns to match
-                    if shot_base and shot_modifier:
-                        if shot_base in shot_lower and shot_modifier in shot_lower:
-                            shot_matches = True
-                        elif shot_base in shot_lower and 'chip' in shot_lower and shot_modifier == 'slice':
-                            shot_matches = True
-                    elif shot_base and shot_base in shot_lower:
-                        shot_matches = True
-                    elif shot_modifier and (shot_modifier in shot_lower or ('chip' in shot_lower and shot_modifier == 'slice')):
-                        shot_matches = True
-                else:
-                    shot_matches = True  # No filter, match all
-                
-                if not shot_matches:
-                    continue
-                
-                results['total_shots_found'] += 1
-                
-                # Now check if this shot resulted in the desired outcome
-                # The outcome appears on the NEXT shot (opponent's response)
-                next_shot_idx = shot_idx + 1
-                
-                outcome_matches = False
-                outcome_description = ""
-                
-                if next_shot_idx < len(shots):
-                    next_shot = shots[next_shot_idx].lower()
-                    
-                    # GENERIC outcome matching using outcome_type as keyword
-                    outcome_keyword = outcome_type.replace('_', ' ').lower() if outcome_type else ''
-                    
-                    # Handle special cases for error types (check unforced first)
-                    if outcome_keyword == 'unforced error' and 'unforced error' in next_shot:
-                            outcome_matches = True
-                            outcome_description = "led to unforced error by opponent"
-                    elif outcome_keyword == 'forced error' and 'forced error' in next_shot and 'unforced' not in next_shot:
-                            outcome_matches = True
-                            outcome_description = "forced error by opponent"
-                    elif outcome_keyword in ['induced error', 'any error'] and 'error' in next_shot:
-                            error_type = "unforced error" if 'unforced' in next_shot else "forced error"
-                            outcome_matches = True
-                            outcome_description = f"led to {error_type} by opponent"
-                    elif outcome_keyword == 'winner' and 'winner' in shot_lower:
-                        # Winner is on the player's OWN shot, not next shot
-                            outcome_matches = True
-                            outcome_description = "winner"
-                    elif outcome_keyword and outcome_keyword in next_shot:
-                        # Generic fallback for other outcome types
-                        outcome_matches = True
-                        outcome_description = outcome_type.replace('_', ' ')
-                elif outcome_type and outcome_type.replace('_', ' ').lower() == 'winner':
-                    # Check if current shot is a winner (last shot)
-                    if 'winner' in shot_lower:
-                        outcome_matches = True
-                        outcome_description = "winner"
-                
-                if outcome_matches:
-                    results['shots_with_outcome'] += 1
-                    results['matching_points'].append({
-                        'point': point_num,
-                        'server': server,
-                        'returner': returner,
-                        'score': score,
-                        'shot_player': shot_player,
-                        'shot': shot,
-                        'shot_index': shot_idx + 1,
-                        'outcome': outcome_description,
-                        'full_rally': point_text.strip()
-                    })
-        
-        return results
-    
-    def _format_shot_outcome_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format shot outcome analysis results into a readable response."""
-        if 'error' in analysis:
-            return f"Unable to perform shot outcome analysis: {analysis['error']}"
-        
-        shot_desc = analysis['shot_type'] or 'any shot'
-        outcome_desc = (analysis['outcome_type'] or 'any outcome').replace('_', ' ')
-        
-        # Build filters description
-        filters = []
-        if analysis.get('set_filter'):
-            filters.append(f"Set {analysis['set_filter']}")
-        if analysis.get('shot_number_filter'):
-            shot_names = {1: 'Serve', 2: 'Return', 3: 'Serve+1', 4: '4th Shot'}
-            filters.append(f"{shot_names.get(analysis['shot_number_filter'], f'Shot #{analysis['shot_number_filter']}')} only")
-        filter_desc = " | ".join(filters) if filters else "All Points"
-        
-        response = f"**Shot Outcome Analysis**\n\n"
-        response += f"**Player:** {analysis['player']}\n"
-        response += f"**Shot Type:** {shot_desc}\n"
-        response += f"**Filters:** {filter_desc}\n"
-        response += f"**Looking For:** {outcome_desc}\n\n"
-        
-        response += f"**Results:**\n"
-        response += f"- Total {shot_desc} shots found: **{analysis['total_shots_found']}**\n"
-        response += f"- Shots resulting in {outcome_desc}: **{analysis['shots_with_outcome']}**\n"
-        
-        if analysis['total_shots_found'] > 0:
-            percentage = round(100 * analysis['shots_with_outcome'] / analysis['total_shots_found'], 1)
-            response += f"- Percentage: **{percentage}%**\n"
-        
-        # Show all matching points
-        if analysis['matching_points']:
-            response += f"\n**All {len(analysis['matching_points'])} Matching Instances:**\n"
-            response += "-" * 50 + "\n"
-            
-            for i, p in enumerate(analysis['matching_points'], 1):
-                response += f"\n**{i}. Point {p['point']}**\n"
-                response += f"   **Score:** {p['score']}\n"
-                response += f"   **{p['shot_player']}'s Shot (#{p['shot_index']}):** {p['shot']}\n"
-                response += f"   **Outcome:** {p['outcome']}\n"
-                response += f"   **Full Rally:**\n   {p['full_rally']}\n"
-                response += "-" * 50 + "\n"
-        
-        if analysis['shots_with_outcome'] == 0:
-            response += f"\n*Note: No {shot_desc} shots by {analysis['player']} resulted in {outcome_desc}.*"
-        
-        return response
-    
-    def _analyze_serve_patterns(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze serve patterns with specific filters (set, tiebreak, court side).
-        
-        FIXES APPLIED:
-        1. 1st serve filter - Only counts 1st serve direction, excludes 2nd serve after fault
-        2. Court side comparison - Analyzes both Deuce AND Ad when comparison requested
-        3. Win percentage - Tracks points won/lost, not just serve counts
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect which player is being asked about
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # FIX #1: Detect 1st serve vs 2nd serve filter
-        serve_number_filter = None
-        if '1st serve' in query_lower or 'first serve' in query_lower:
-            serve_number_filter = 1
-        elif '2nd serve' in query_lower or 'second serve' in query_lower:
-            serve_number_filter = 2
-        
-        # Detect set filter
-        set_filter = None
-        set_patterns = [
-            (r'fifth set|5th set|set 5|set five', 5),
-            (r'fourth set|4th set|set 4|set four', 4),
-            (r'third set|3rd set|set 3|set three', 3),
-            (r'second set|2nd set|set 2|set two', 2),
-            (r'first set|1st set|set 1|set one', 1),
-        ]
-        for pattern, set_num in set_patterns:
-            if re.search(pattern, query_lower):
-                set_filter = set_num
-                break
-        
-        # Detect tiebreak filter
-        is_tiebreak_filter = 'tiebreak' in query_lower or 'tie-break' in query_lower or 'tie break' in query_lower
-        
-        # FIX #2: Detect if comparison between court sides is requested
-        is_court_comparison = 'compared to' in query_lower or ' vs ' in query_lower or 'versus' in query_lower
-        
-        # Detect court side filter OR comparison
-        court_side_filter = None
-        compare_deuce_ad = False
-        if is_court_comparison and ('deuce' in query_lower or 'ad' in query_lower):
-            compare_deuce_ad = True  # Will analyze both
-        elif 'deuce' in query_lower:
-            court_side_filter = 'deuce'
-        elif 'ad side' in query_lower or 'ad court' in query_lower or 'advantage' in query_lower:
-            court_side_filter = 'ad'
-        
-        # Detect specific direction filter (e.g., "to the T")
-        direction_filter = None
-        if "to the t" in query_lower or "down the t" in query_lower or "'t'" in query_lower:
-            direction_filter = 't'
-        elif 'wide' in query_lower:
-            direction_filter = 'wide'
-        elif 'body' in query_lower:
-            direction_filter = 'body'
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available for serve pattern analysis'}
-        
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        # Initialize results structure with win tracking
-        results = {
-            'player': player_mentioned or 'both players',
-            'analysis_type': 'serve_patterns',
-            'set_filter': set_filter,
-            'serve_number_filter': serve_number_filter,
-            'tiebreak_filter': is_tiebreak_filter,
-            'court_side_filter': court_side_filter,
-            'compare_deuce_ad': compare_deuce_ad,
-            'direction_filter': direction_filter,
-            'total_serves': 0,
-            # FIX #3: Track wins/losses by direction and court side
-            'by_direction': {
-                't': {'count': 0, 'won': 0, 'lost': 0, 'points': []},
-                'wide': {'count': 0, 'won': 0, 'lost': 0, 'points': []},
-                'body': {'count': 0, 'won': 0, 'lost': 0, 'points': []},
-                'other': {'count': 0, 'won': 0, 'lost': 0, 'points': []}
-            },
-            # For court comparison
-            'deuce_side': {
-                't': {'count': 0, 'won': 0, 'lost': 0},
-                'wide': {'count': 0, 'won': 0, 'lost': 0},
-                'body': {'count': 0, 'won': 0, 'lost': 0}
-            },
-            'ad_side': {
-                't': {'count': 0, 'won': 0, 'lost': 0},
-                'wide': {'count': 0, 'won': 0, 'lost': 0},
-                'body': {'count': 0, 'won': 0, 'lost': 0}
-            },
-            # Legacy fields for compatibility
-            'serves_to_t': 0, 'serves_wide': 0, 'serves_body': 0, 'serves_other': 0,
-            't_points': [], 'wide_points': [], 'body_points': [], 'matching_points': []
-        }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            point_lower = point_text.lower()
-            
-            # Check if the player of interest was serving
-            if player_mentioned:
-                if player_mentioned.lower() not in server.lower():
-                    continue
-            
-            # Parse score
-            score_parts = score.strip().split()
-            
-            # Check set filter - use robust extraction
-            if set_filter:
-                current_set = self._extract_current_set(score)
-                if current_set and current_set != set_filter:
-                    continue
-            
-            # Check tiebreak filter - look for 6-6, 7-6, or 6-7 in games score
-            if is_tiebreak_filter:
-                # Find games score (X-X pattern where X is typically 0-7)
-                games_patterns = re.findall(r'\b(\d+)-(\d+)\b', score)
-                is_tiebreak = False
-                for g1, g2 in games_patterns:
-                    g1_int, g2_int = int(g1), int(g2)
-                    # Games scores in tiebreak are 6-6, 7-6, or 6-7
-                    if (g1_int == 6 and g2_int == 6) or \
-                       (g1_int == 7 and g2_int == 6) or \
-                       (g1_int == 6 and g2_int == 7):
-                        is_tiebreak = True
-                        break
-                if not is_tiebreak:
-                    continue
-            
-            # Determine court side
-            point_score = score_parts[-1] if score_parts else ""
-            is_deuce_side = self._is_deuce_side_serve(point_score, is_tiebreak_filter, score_parts)
-            
-            # Apply court side filter (if not comparing) - GENERIC
-            if court_side_filter and not compare_deuce_ad:
-                # Check if court side matches filter
-                expected_deuce = (court_side_filter == 'deuce')
-                if expected_deuce != is_deuce_side:
-                    continue
-            
-            # FIX #1: Extract serve direction from ONLY the specified serve (1st or 2nd)
-            serve_direction = self._extract_serve_direction_filtered(point_lower, serve_number_filter)
-            
-            if serve_direction is None:
-                # If filtering for 1st serve and point was won on 2nd serve, skip
-                continue
-            
-            # Apply direction filter if specified
-            if direction_filter and serve_direction != direction_filter:
-                continue
-            
-            results['total_serves'] += 1
-            
-            # FIX #3: Determine if server won the point
-            server_won = self._did_server_win_point(point_text)
-            
-            # Track by direction
-            results['by_direction'][serve_direction]['count'] += 1
-            if server_won:
-                results['by_direction'][serve_direction]['won'] += 1
-            else:
-                results['by_direction'][serve_direction]['lost'] += 1
-            
-            # Track by court side (for comparison)
-            court_key = 'deuce_side' if is_deuce_side else 'ad_side'
-            if serve_direction in results[court_key]:
-                results[court_key][serve_direction]['count'] += 1
-                if server_won:
-                    results[court_key][serve_direction]['won'] += 1
-                else:
-                    results[court_key][serve_direction]['lost'] += 1
-            
-            # Store point data
-            point_data = {
-                'point': point_num,
-                'server': server,
-                'returner': returner,
-                'score': score,
-                'serve_direction': serve_direction,
-                'is_deuce_side': is_deuce_side,
-                'court_side': 'Deuce' if is_deuce_side else 'Ad',
-                'server_won': server_won,
-                'full_text': point_text.strip()
-            }
-            
-            if len(results['by_direction'][serve_direction]['points']) < 5:
-                results['by_direction'][serve_direction]['points'].append(point_data)
-            
-            # Legacy compatibility
-            if serve_direction == 't':
-                results['serves_to_t'] += 1
-                results['t_points'].append(point_data)
-            elif serve_direction == 'wide':
-                results['serves_wide'] += 1
-                results['wide_points'].append(point_data)
-            elif serve_direction == 'body':
-                results['serves_body'] += 1
-                results['body_points'].append(point_data)
-            else:
-                results['serves_other'] += 1
-            
-            results['matching_points'].append(point_data)
-        
-        # Calculate win percentages
-        for direction in ['t', 'wide', 'body']:
-            data = results['by_direction'][direction]
-            if data['count'] > 0:
-                data['win_pct'] = round(100 * data['won'] / data['count'], 1)
-            else:
-                data['win_pct'] = 0
-            
-            # Same for court sides
-            for court in ['deuce_side', 'ad_side']:
-                court_data = results[court][direction]
-                if court_data['count'] > 0:
-                    court_data['win_pct'] = round(100 * court_data['won'] / court_data['count'], 1)
-                else:
-                    court_data['win_pct'] = 0
-        
-        # Legacy percentages
-        if results['total_serves'] > 0:
-            results['t_percentage'] = round(100 * results['serves_to_t'] / results['total_serves'], 1)
-            results['wide_percentage'] = round(100 * results['serves_wide'] / results['total_serves'], 1)
-            results['body_percentage'] = round(100 * results['serves_body'] / results['total_serves'], 1)
-        else:
-            results['t_percentage'] = results['wide_percentage'] = results['body_percentage'] = 0
-        
-        return results
-    
     def _extract_current_set(self, score: str) -> int:
         """
         Extract current set number from score string.
         
         Handles multiple formats:
-        - "Djokovic 0-0 1-2" (name + sets + games) → Set 1
-        - "Djokovic 1-0 0-0" (name + sets + games) → Set 2
-        - "0-0 1-2 15-30" (sets + games + points) → Set 1
-        - "2-1 3-2 40-30" (sets + games + points) → Set 4
+        - "Djokovic 0-0 1-2" (name + sets + games) â†’ Set 1
+        - "Djokovic 1-0 0-0" (name + sets + games) â†’ Set 2
+        - "0-0 1-2 15-30" (sets + games + points) â†’ Set 1
+        - "2-1 3-2 40-30" (sets + games + points) â†’ Set 4
         """
         import re
         
@@ -15405,436 +13041,13 @@ Answer:"""
         for p1, p2 in patterns:
             p1_int, p2_int = int(p1), int(p2)
             # Set scores are typically 0-3 range, games can be 0-7+
-            # If both are ≤ 3, it's likely the set score
+            # If both are â‰¤ 3, it's likely the set score
             if p1_int <= 3 and p2_int <= 3:
                 return p1_int + p2_int + 1
         
         # Fallback: use first pattern (may be inaccurate for some formats)
         p1, p2 = patterns[0]
         return int(p1) + int(p2) + 1
-    
-    def _parse_score_components(self, score: str) -> dict:
-        """
-        Parse score string into components: set, game, point.
-        
-        Handles:
-        - "Djokovic 0-0 1-2" → {'set': '0-0', 'game': '1-2'}
-        - "Djokovic 0-0 1-2 15-30" → {'set': '0-0', 'game': '1-2', 'point': '15-30'}
-        - "0-0 1-2 15-30" → {'set': '0-0', 'game': '1-2', 'point': '15-30'}
-        """
-        import re
-        
-        # Find all X-X digit patterns for set and game
-        digit_patterns = re.findall(r'(\d+)-(\d+)', score)
-        
-        if len(digit_patterns) < 2:
-            return None
-        
-        set_score = None
-        game_score = None
-        point_score = None
-        
-        for i, (p1, p2) in enumerate(digit_patterns):
-            p1_int, p2_int = int(p1), int(p2)
-            
-            if set_score is None and p1_int <= 3 and p2_int <= 3:
-                set_score = f"{p1}-{p2}"
-            elif set_score is not None and game_score is None:
-                game_score = f"{p1}-{p2}"
-            elif set_score is not None and game_score is not None and point_score is None:
-                # This could be point score in tiebreak (e.g., "3-2")
-                point_score = f"{p1}-{p2}"
-        
-        # Also check for point patterns like "15-30", "40-AD", "AD-40"
-        point_pattern = re.search(r'(0|15|30|40|AD)-(0|15|30|40|AD)', score, re.IGNORECASE)
-        if point_pattern and not point_score:
-            point_score = point_pattern.group(0)
-        
-        if set_score and game_score:
-            return {
-                'set': set_score,
-                'game': game_score,
-                'point': point_score or '0-0'
-            }
-        
-        return None
-    
-    def _is_deuce_side_serve(self, point_score: str, is_tiebreak: bool, score_parts: list) -> bool:
-        """Determine if serve is from deuce side based on score."""
-        import re
-        # Tiebreak: even total points = deuce side
-        if is_tiebreak and len(score_parts) >= 3:
-            tb_score = score_parts[2]
-            tb_match = re.match(r'(\d+)-(\d+)', tb_score)
-            if tb_match:
-                total_points = int(tb_match.group(1)) + int(tb_match.group(2))
-                return (total_points % 2 == 0)
-        
-        # Regular game: count points to determine side
-        # 0-0, 15-15, 30-30 = deuce (0, 2, 4 points)
-        # 15-0, 0-15, 30-15, 15-30, etc. = ad (odd points)
-        point_values = {'0': 0, '15': 1, '30': 2, '40': 3, 'AD': 4}
-        parts = point_score.split('-')
-        if len(parts) == 2:
-            try:
-                p1 = point_values.get(parts[0], 0)
-                p2 = point_values.get(parts[1], 0)
-                total = p1 + p2
-                return (total % 2 == 0)
-            except:
-                pass
-        return True  # Default to deuce
-    
-    def _extract_serve_direction_filtered(self, point_lower: str, serve_number_filter: int) -> str:
-        """
-        Extract serve direction for ONLY the specified serve number.
-        
-        FIX: If 1st serve filter is set but point was won on 2nd serve after fault,
-        we should either: (a) skip the point, or (b) categorize by 1st serve direction.
-        
-        For simplicity, if 1st serve was a fault, we skip the point.
-        """
-        import re
-        
-        # Check for fault pattern: "1st serve [direction], fault"
-        first_serve_fault = bool(re.search(r'1st serve.*?fault', point_lower))
-        
-        if serve_number_filter == 1:
-            if first_serve_fault:
-                # 1st serve was a fault - skip this point for 1st serve analysis
-                return None
-            else:
-                # 1st serve went in - extract its direction
-                # Look for "1st serve [direction]" at the start
-                match = re.match(r'1st serve\s*(wide|down the t|to body|to the t|body)', point_lower)
-                if match:
-                    dir_text = match.group(1)
-                    if 'wide' in dir_text:
-                        return 'wide'
-                    elif 't' in dir_text:
-                        return 't'
-                    elif 'body' in dir_text:
-                        return 'body'
-                # Try broader patterns
-                if point_lower.startswith('1st serve wide') or 'wide;' in point_lower[:30]:
-                    return 'wide'
-                elif 'down the t' in point_lower[:40] or point_lower.startswith('1st serve down the t'):
-                    return 't'
-                elif point_lower.startswith('1st serve to body') or 'body;' in point_lower[:30]:
-                    return 'body'
-                return 'other'
-        
-        elif serve_number_filter == 2:
-            if not first_serve_fault:
-                # 1st serve went in, there was no 2nd serve - skip
-                return None
-            # Extract 2nd serve direction
-            match = re.search(r'2nd serve\s*(wide|down the t|to body|to the t|body)', point_lower)
-            if match:
-                dir_text = match.group(1)
-                if 'wide' in dir_text:
-                    return 'wide'
-                elif 't' in dir_text:
-                    return 't'
-                elif 'body' in dir_text:
-                    return 'body'
-            # Broader search after "2nd serve"
-            second_serve_idx = point_lower.find('2nd serve')
-            if second_serve_idx >= 0:
-                after_second = point_lower[second_serve_idx:second_serve_idx+40]
-                if 'wide' in after_second:
-                    return 'wide'
-                elif 'down the t' in after_second or 'to the t' in after_second:
-                    return 't'
-                elif 'body' in after_second:
-                    return 'body'
-            return 'other'
-        
-        else:
-            # No filter - use any serve direction (the one that was played)
-            if point_lower.startswith('1st serve') and 'fault' not in point_lower[:50]:
-                # 1st serve went in
-                if 'wide' in point_lower[:30]:
-                    return 'wide'
-                elif 'down the t' in point_lower[:40]:
-                    return 't'
-                elif 'body' in point_lower[:30]:
-                    return 'body'
-            else:
-                # Check 2nd serve
-                second_serve_idx = point_lower.find('2nd serve')
-                if second_serve_idx >= 0:
-                    after_second = point_lower[second_serve_idx:second_serve_idx+40]
-                    if 'wide' in after_second:
-                        return 'wide'
-                    elif 'down the t' in after_second or 'to the t' in after_second:
-                        return 't'
-                    elif 'body' in after_second:
-                        return 'body'
-            return 'other'
-    
-    def _format_serve_pattern_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format serve pattern analysis results with WIN PERCENTAGES and COURT COMPARISON."""
-        if 'error' in analysis:
-            return f"Unable to perform serve pattern analysis: {analysis['error']}"
-        
-        # Build filter description
-        filters = []
-        if analysis.get('serve_number_filter') == 1:
-            filters.append("1st Serve Only")
-        elif analysis.get('serve_number_filter') == 2:
-            filters.append("2nd Serve Only")
-        if analysis.get('set_filter'):
-            filters.append(f"Set {analysis['set_filter']}")
-        if analysis.get('tiebreak_filter'):
-            filters.append("Tiebreak")
-        if analysis.get('direction_filter'):
-            filters.append(f"To {analysis['direction_filter'].upper()}")
-        filter_desc = " | ".join(filters) if filters else "All Points"
-        
-        response = f"**Serve Pattern Analysis**\n\n"
-        response += f"**Player:** {analysis['player']}\n"
-        response += f"**Filters:** {filter_desc}\n"
-        response += f"**Total Serves Analyzed:** {analysis['total_serves']}\n\n"
-        
-        if analysis['total_serves'] == 0:
-            response += f"\n*Note: No serves matching the specified filters were found.*"
-            return response
-        
-        # Check if this is a court comparison query
-        if analysis.get('compare_deuce_ad') or (analysis.get('direction_filter') and not analysis.get('court_side_filter')):
-            # FIX #2: Show comparison between Deuce and Ad courts
-            direction = analysis.get('direction_filter') or 't'
-            classification = analysis.get('classification')
-            direction_label = self._get_display_label('serve_direction', direction, classification)
-            
-            deuce_data = analysis['deuce_side'].get(direction, {'count': 0, 'won': 0, 'lost': 0, 'win_pct': 0})
-            ad_data = analysis['ad_side'].get(direction, {'count': 0, 'won': 0, 'lost': 0, 'win_pct': 0})
-            
-            response += f"**Comparison: Serves to {direction_label}**\n\n"
-            response += f"| Court Side | Serves | Won | Lost | Win % |\n"
-            response += f"|------------|--------|-----|------|-------|\n"
-            response += f"| **Deuce Court** | {deuce_data['count']} | {deuce_data['won']} | {deuce_data['lost']} | **{deuce_data.get('win_pct', 0)}%** |\n"
-            response += f"| **Ad Court** | {ad_data['count']} | {ad_data['won']} | {ad_data['lost']} | **{ad_data.get('win_pct', 0)}%** |\n"
-            
-            # Answer the comparison
-            if deuce_data['count'] > 0 and ad_data['count'] > 0:
-                deuce_pct = deuce_data.get('win_pct', 0)
-                ad_pct = ad_data.get('win_pct', 0)
-                
-                response += f"\n**Answer:** {analysis['player']}'s win percentage when serving to the **{direction_label}**:\n"
-                response += f"- **Deuce Court:** {deuce_pct}% ({deuce_data['won']}/{deuce_data['count']})\n"
-                response += f"- **Ad Court:** {ad_pct}% ({ad_data['won']}/{ad_data['count']})\n"
-                
-                if deuce_pct > ad_pct:
-                    response += f"\n→ **{deuce_pct - ad_pct:.1f} percentage points better on Deuce Court**\n"
-                elif ad_pct > deuce_pct:
-                    response += f"\n→ **{ad_pct - deuce_pct:.1f} percentage points better on Ad Court**\n"
-                else:
-                    response += f"\n→ **Equal win percentage on both courts**\n"
-        else:
-            # Standard breakdown with win percentages
-            response += f"**Serve Direction Breakdown (with Win %):**\n"
-            response += f"| Direction | Count | Won | Lost | Win % |\n"
-            response += f"|-----------|-------|-----|------|-------|\n"
-            
-            classification = analysis.get('classification')
-            for direction in ['t', 'wide', 'body']:
-                data = analysis['by_direction'][direction]
-                if data['count'] > 0:
-                    label = self._get_display_label('serve_direction', direction, classification)
-                    response += f"| **{label}** | {data['count']} | {data['won']} | {data['lost']} | **{data['win_pct']}%** |\n"
-            
-            # Best direction
-            best_dir = max(['t', 'wide', 'body'], key=lambda d: analysis['by_direction'][d].get('win_pct', 0))
-            best_data = analysis['by_direction'][best_dir]
-            if best_data['count'] > 0:
-                best_label = self._get_display_label('serve_direction', best_dir, classification)
-                response += f"\n**Best Direction:** Serves to **{best_label}** ({best_data['win_pct']}% win rate)\n"
-        
-        # Show sample points
-        direction_filter = analysis.get('direction_filter')
-        if direction_filter:
-            points = analysis['by_direction'][direction_filter]['points']
-            if points:
-                response += f"\n**Sample Points ({len(points)}):**\n"
-                response += "-" * 40 + "\n"
-                for p in points[:5]:
-                    won_str = "[WON]" if p.get('server_won') else "[LOST]"
-                    response += f"Point {p['point']} {won_str} ({p['court_side']} side, Score: {p['score']})\n"
-                    response += f"  {p['full_text']}\n"
-        
-        return response
-    
-    def _analyze_rally_sequences(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze rally sequences - e.g., "first shot after serve was a forehand".
-        
-        This handles queries like:
-        - "Win percentage when first shot after serve was a forehand"
-        - "What happens when server's 3rd ball is a backhand?"
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect which player is being asked about
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # Use shared shot detection helper
-        shot_info = self._detect_shot_from_query(query)
-        shot_type = shot_info['shot_type']
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available for rally sequence analysis'}
-        
-        # Parse all points
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        
-        # Match point format
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        results = {
-            'player': player_mentioned or 'both players',
-            'analysis_type': 'first_shot_after_serve',
-            'shot_type': shot_type,
-            'total_serve_points': 0,
-            'points_with_matching_shot': 0,
-            'points_won': 0,
-            'points_lost': 0,
-            'win_percentage': 0,
-            'matching_points': []
-        }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # Check if the player of interest was serving
-            if player_mentioned:
-                player_is_server = player_mentioned.lower() in server.lower()
-                if not player_is_server:
-                    continue
-            
-            results['total_serve_points'] += 1
-            
-            # Parse the rally to find the server's first shot after the serve
-            # Rally format: "1st serve ...; [return]; [server's 3rd ball]; [returner's shot]; ..."
-            # Split by semicolons to get individual shots
-            shots = [s.strip() for s in point_text.split(';') if s.strip()]
-            
-            if len(shots) < 3:
-                # Not enough shots (ace, unreturned serve, or return error)
-                continue
-            
-            # shots[0] = serve (1st or 2nd)
-            # shots[1] = return
-            # shots[2] = server's first shot after serve (3rd ball)
-            third_ball = shots[2].lower() if len(shots) > 2 else ""
-            
-            # Check if the third ball matches the shot type
-            if shot_type:
-                if shot_type.lower() not in third_ball:
-                    continue
-            
-            results['points_with_matching_shot'] += 1
-            
-            # Determine if server won the point
-            # Look for outcome indicators at the end
-            point_won = False
-            point_text_lower = point_text.lower()
-            
-            # Server wins if: ace, winner by server, forced error by returner, unforced error by returner
-            # Need to check the LAST shot to determine winner
-            last_shot = shots[-1].lower() if shots else ""
-            
-            # Check for server winning patterns
-            if 'ace' in point_text_lower:
-                point_won = True
-            elif 'winner' in last_shot:
-                # Check if it's an odd-numbered shot (server's shot: 1, 3, 5, etc.)
-                shot_index = len(shots)
-                if shot_index % 2 == 1:  # Odd = server's shot (1=serve, 3=3rd ball, etc.)
-                    point_won = True
-            elif 'forced error' in last_shot or 'unforced error' in last_shot:
-                # Check if it's an even-numbered shot (returner's shot: 2, 4, 6, etc.)
-                shot_index = len(shots)
-                if shot_index % 2 == 0:  # Even = returner's shot
-                    point_won = True
-            elif ',winner' in point_text_lower:
-                # Alternative winner format - check position
-                winner_pos = point_text_lower.rfind(',winner')
-                text_before_winner = point_text_lower[:winner_pos]
-                shots_before = text_before_winner.count(';')
-                if shots_before % 2 == 0:  # Server's shot (0=serve, 2=3rd ball, etc. before semicolons)
-                    point_won = True
-            
-            if point_won:
-                results['points_won'] += 1
-            else:
-                results['points_lost'] += 1
-            
-            results['matching_points'].append({
-                'point': point_num,
-                'server': server,
-                'returner': returner,
-                'score': score,
-                'third_ball': shots[2] if len(shots) > 2 else "N/A",
-                'full_text': point_text.strip(),
-                'won': point_won
-            })
-        
-        # Calculate win percentage
-        if results['points_with_matching_shot'] > 0:
-            results['win_percentage'] = round(100 * results['points_won'] / results['points_with_matching_shot'], 1)
-        
-        return results
-    
-    def _format_rally_sequence_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format rally sequence analysis results into a readable response."""
-        if 'error' in analysis:
-            return f"Unable to perform rally sequence analysis: {analysis['error']}"
-        
-        shot_desc = analysis['shot_type'] or 'any shot'
-        
-        response = f"**Rally Sequence Analysis: First Shot After Serve**\n\n"
-        response += f"**Player:** {analysis['player']}\n"
-        response += f"**Shot Type Analyzed:** {shot_desc}\n\n"
-        
-        response += f"**Results:**\n"
-        response += f"- Total service points analyzed: **{analysis['total_serve_points']}**\n"
-        response += f"- Points where first shot after serve was {shot_desc}: **{analysis['points_with_matching_shot']}**\n"
-        response += f"- Points won: **{analysis['points_won']}**\n"
-        response += f"- Points lost: **{analysis['points_lost']}**\n"
-        response += f"- **Win Percentage: {analysis['win_percentage']}%**\n"
-        
-        # Show all matching points
-        if analysis['matching_points']:
-            response += f"\n**All {len(analysis['matching_points'])} Matching Points:**\n"
-            response += "-" * 50 + "\n"
-            
-            for i, p in enumerate(analysis['matching_points'], 1):
-                outcome = "WON" if p['won'] else "LOST"
-                response += f"\n**{i}. Point {p['point']}** [{outcome}]\n"
-                response += f"   **Score:** {p['score']}\n"
-                response += f"   **Server:** {p['server']} | **Returner:** {p['returner']}\n"
-                response += f"   **3rd Ball (First Shot After Serve):** {p['third_ball']}\n"
-                response += f"   **Full Rally:**\n   {p['full_text']}\n"
-                response += "-" * 50 + "\n"
-        
-        if analysis['points_with_matching_shot'] == 0:
-            if analysis['shot_type']:
-                response += f"\n*Note: No points found where {analysis['player']}'s first shot after serve was a {shot_desc}.*"
-            else:
-                response += f"\n*Note: No qualifying serve points found for {analysis['player']}.*"
-        
-        return response
     
     def _is_break_point_score(self, score_str: str) -> bool:
         """
@@ -16049,207 +13262,6 @@ Answer:"""
         
         return False
     
-    def _analyze_shots_in_situations(self, query: str) -> Dict[str, Any]:
-        """
-        Parse point-by-point data to analyze shots in specific situations.
-        Returns analysis data for queries like 'backhand DTL on break point'.
-        
-        Args:
-            query: User's question about situational shot selection
-            
-        Returns:
-            Dictionary with analysis results including counts and examples
-        """
-        import re
-        
-        query_lower = query.lower()
-        
-        # Detect which player is being asked about
-        player_mentioned = self._detect_player_mentioned(query)
-        
-        # Use shared shot detection helper
-        shot_info = self._detect_shot_from_query(query)
-        shot_base = shot_info['shot_base']
-        shot_modifier = shot_info['shot_modifier']
-        shot_type = shot_info['shot_type']
-        shot_direction = shot_info['shot_direction']
-        
-        # Detect situation type
-        situation_type = None
-        if 'break point' in query_lower:
-            situation_type = 'break_point'
-        elif 'game point' in query_lower:
-            situation_type = 'game_point'
-        elif 'deuce' in query_lower:
-            situation_type = 'deuce'
-        elif 'set point' in query_lower:
-            situation_type = 'set_point'
-        elif 'match point' in query_lower:
-            situation_type = 'match_point'
-        
-        # Find point-by-point chunks
-        pbp_chunks = [c for c in self.chunks if 'point-by-point' in c['metadata'].get('section', '').lower()]
-        
-        if not pbp_chunks:
-            return {'error': 'No point-by-point data available for situational analysis'}
-        
-        # Parse all points
-        all_text = '\n'.join([c['text'] for c in pbp_chunks])
-        
-        # Match point format: "Point X [Server: NAME | Returner: NAME | Score: X-X X-X X-X]: description"
-        point_pattern = r'Point (\d+) \[Server: ([^\|]+)\| Returner: ([^\|]+)\| Score: ([^\]]+)\]: (.+?)(?=Point \d+|\Z)'
-        
-        results = {
-            'player': player_mentioned or 'both players',
-            'total_situations': 0,
-            'total_shots_by_player': 0,
-            'shots_matching_criteria': 0,
-            'points_with_shot': [],
-            'shot_type': shot_type,
-            'shot_direction': shot_direction,
-            'situation': situation_type or 'all',
-            'all_situation_points': []
-        }
-        
-        for match in re.finditer(point_pattern, all_text, re.DOTALL):
-            point_num = match.group(1)
-            server = match.group(2).strip()
-            returner = match.group(3).strip()
-            score = match.group(4).strip()
-            point_text = match.group(5).strip()
-            
-            # Check if this point matches the situation - GENERIC using _check_situation
-            situation_matches = False
-            if situation_type is None:
-                situation_matches = True  # No specific situation filter
-            else:
-                situation_matches = self._check_situation(situation_type, score)
-            
-            if not situation_matches:
-                continue
-            
-            results['total_situations'] += 1
-            results['all_situation_points'].append({
-                'point': point_num,
-                'server': server,
-                'returner': returner,
-                'score': score
-            })
-            
-            # Determine if the player of interest was involved and had the shot
-            # Player could be server or returner
-            player_is_server = player_mentioned and player_mentioned.lower() in server.lower()
-            player_is_returner = player_mentioned and player_mentioned.lower() in returner.lower()
-            player_involved = player_is_server or player_is_returner or not player_mentioned
-            
-            if not player_involved:
-                continue
-            
-            # Build shot pattern to search for
-            # Point-by-point format: "[shot_base] [modifier] [direction]"
-            # e.g., "backhand slice crosscourt", "forehand drop shot down the line"
-            shot_patterns = []
-            
-            # Escape regex special characters to avoid errors
-            def safe_re(s):
-                return re.escape(s) if s else ''
-            
-            if shot_base and shot_modifier and shot_direction:
-                # Most specific: e.g., "backhand slice crosscourt"
-                shot_patterns.append(f'{safe_re(shot_base)}.*{safe_re(shot_modifier)}.*{safe_re(shot_direction)}')
-                shot_patterns.append(f'{safe_re(shot_base)} {safe_re(shot_modifier)}.*{safe_re(shot_direction)}')
-            elif shot_base and shot_modifier:
-                # e.g., "backhand slice" (any direction)
-                shot_patterns.append(f'{safe_re(shot_base)}.*{safe_re(shot_modifier)}')
-                shot_patterns.append(f'{safe_re(shot_base)} {safe_re(shot_modifier)}')
-                # Also try "chip/slice" format in data
-                if shot_modifier == 'slice':
-                    shot_patterns.append(f'{safe_re(shot_base)}.*chip')
-                    shot_patterns.append(f'{safe_re(shot_base)}.*slice')
-            elif shot_base and shot_direction:
-                # e.g., "backhand crosscourt" (any modifier)
-                shot_patterns.append(f'{safe_re(shot_base)}.*{safe_re(shot_direction)}')
-            elif shot_modifier and shot_direction:
-                # e.g., "slice crosscourt" (any base)
-                shot_patterns.append(f'{safe_re(shot_modifier)}.*{safe_re(shot_direction)}')
-            elif shot_type:
-                # Just the shot type - use simple string match, not regex
-                shot_patterns.append(safe_re(shot_type))
-                # Handle slice/chip variations
-                if 'slice' in (shot_type or '').lower():
-                    shot_patterns.append('chip')
-            elif shot_direction:
-                shot_patterns.append(safe_re(shot_direction))
-            
-            # Count shots by player in this point
-            if shot_patterns:
-                for pattern in shot_patterns:
-                    # Skip empty or invalid patterns
-                    if not pattern or pattern.strip() == '':
-                        continue
-                    try:
-                        if re.search(pattern, point_text, re.IGNORECASE):
-                            results['shots_matching_criteria'] += 1
-                            results['points_with_shot'].append({
-                                'point': point_num,
-                                'server': server,
-                                'returner': returner,
-                                'score': score,
-                                'full_text': point_text.strip(),  # Store full point description
-                                'excerpt': point_text.strip()
-                            })
-                            break  # Count each point only once
-                    except re.error as e:
-                        # Skip invalid regex patterns
-                        print(f"[WARN] Invalid regex pattern '{pattern}': {e}")
-                        continue
-        
-        # Calculate percentage
-        if results['total_situations'] > 0:
-            results['percentage'] = round(100 * results['shots_matching_criteria'] / results['total_situations'], 1)
-        else:
-            results['percentage'] = 0
-        
-        return results
-    
-    def _format_situational_analysis(self, analysis: Dict[str, Any]) -> str:
-        """Format the situational analysis results into a readable response."""
-        if 'error' in analysis:
-            return f"Unable to perform situational analysis: {analysis['error']}"
-        
-        situation_name = analysis['situation'].replace('_', ' ').title() if analysis['situation'] != 'all' else 'All Points'
-        shot_desc = f"{analysis['shot_type'] or ''} {analysis['shot_direction'] or ''}".strip() or 'any shot'
-        
-        response = f"**Situational Shot Analysis**\n\n"
-        response += f"**Player:** {analysis['player']}\n"
-        response += f"**Situation:** {situation_name}\n"
-        response += f"**Shot Analyzed:** {shot_desc}\n\n"
-        
-        response += f"**Results:**\n"
-        response += f"- Total {situation_name.lower()}s in match: **{analysis['total_situations']}**\n"
-        response += f"- Points containing {shot_desc}: **{analysis['shots_matching_criteria']}**\n"
-        
-        if analysis['total_situations'] > 0:
-            response += f"- Percentage: **{analysis['percentage']}%**\n"
-        
-        # Show ALL matching points with full descriptions
-        if analysis['points_with_shot']:
-            response += f"\n**All {len(analysis['points_with_shot'])} Matching Points:**\n"
-            response += "-" * 50 + "\n"
-            for i, p in enumerate(analysis['points_with_shot'], 1):
-                response += f"\n**{i}. Point {p['point']}**\n"
-                response += f"   **Score:** {p['score']}\n"
-                response += f"   **Server:** {p['server']} | **Returner:** {p['returner']}\n"
-                response += f"   **Full Rally:**\n   {p.get('full_text', p['excerpt'])}\n"
-                response += "-" * 50 + "\n"
-        
-        if analysis['total_situations'] == 0:
-            response += f"\n*Note: No {situation_name.lower()}s were found in this match.*"
-        elif analysis['shots_matching_criteria'] == 0:
-            response += f"\n*Note: No {shot_desc} shots were found during {situation_name.lower()}s in this match.*"
-        
-        return response
-    
     def _llm_parse_query(self, question: str) -> Dict[str, Any]:
         """
         Use LLM to parse query into structured classification.
@@ -16339,10 +13351,10 @@ COMPREHENSIVE ALIAS MAPPINGS (system auto-normalizes):
 - Modifiers: chip/underspin = slice, vb/vol = volley, ds/dropshot = drop_shot, app = approach, sv = swinging_volley, hv = half_volley
 - Depths: short = shallow
 - Outcomes: wnr/w = winner, ue/unforced = unforced_error, fe/forced = forced_error, df = double_fault
-- Serve Targets (CONTEXT: for serves only): "down the t"/"center"/"middle" → t, "out wide" → wide, "to body"/"at body"/"jam" → body
+- Serve Targets (CONTEXT: for serves only): "down the t"/"center"/"middle" â†’ t, "out wide" â†’ wide, "to body"/"at body"/"jam" â†’ body
 
 IMPORTANT CONTACT TYPE MAPPINGS:
-- "smash" / "smashes" / "overhead" → contact_type: "overhead" (NOT shot_type)
+- "smash" / "smashes" / "overhead" â†’ contact_type: "overhead" (NOT shot_type)
 - Overheads/smashes use shot_type: "forehand" or "backhand" (the stroke used), contact_type: "overhead"
 
 CRITICAL CONTEXT-DEPENDENT MAPPINGS:
@@ -16350,8 +13362,8 @@ CRITICAL CONTEXT-DEPENDENT MAPPINGS:
   1. For GROUNDSTROKES (direction): "down_the_middle" (rally shot direction)
   2. For SERVES (serve_target): "t" (serve to the T / center of service box)
   
-- When user asks about SERVES: "serves down the middle" / "serves to center" → serve_target: "t"
-- When user asks about RALLY SHOTS: "forehand down the middle" → direction: "down_the_middle"
+- When user asks about SERVES: "serves down the middle" / "serves to center" â†’ serve_target: "t"
+- When user asks about RALLY SHOTS: "forehand down the middle" â†’ direction: "down_the_middle"
 - Context is KEY - look at whether it's about serves or groundstrokes
 
 ALIAS MAPPING RULES:
@@ -16460,15 +13472,15 @@ CRITICAL RULES:
    - That dimension goes ONLY in group_by, NOT in filters
    - Leave the filter as null
    - Examples:
-   - "Ad Court compared to Deuce Court" → {{"group_by": "court_side", "court_side": null}}
-   - "T vs Wide vs Body" → {{"group_by": "serve_direction", "serve_target": null}}
-   - "Forehand vs Backhand winners" → {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-   - "Sinner's forehand vs backhand errors" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "errors"}}
-   - "Errors on forehand vs backhand" → {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
-   - "Crosscourt vs Down the Line" → {{"group_by": "shot_direction", "direction": null}}
-   - "1st serve vs 2nd serve" → {{"group_by": "serve_number", "serve_number": null}}
-   - "Shallow vs Deep returns" → {{"group_by": "return_depth", "depth": null}}
-   - "Short vs Long rallies" → {{"group_by": "rally_length_category"}}
+   - "Ad Court compared to Deuce Court" â†’ {{"group_by": "court_side", "court_side": null}}
+   - "T vs Wide vs Body" â†’ {{"group_by": "serve_direction", "serve_target": null}}
+   - "Forehand vs Backhand winners" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+   - "Sinner's forehand vs backhand errors" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+   - "Errors on forehand vs backhand" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+   - "Crosscourt vs Down the Line" â†’ {{"group_by": "shot_direction", "direction": null}}
+   - "1st serve vs 2nd serve" â†’ {{"group_by": "serve_number", "serve_number": null}}
+   - "Shallow vs Deep returns" â†’ {{"group_by": "return_depth", "depth": null}}
+   - "Short vs Long rallies" â†’ {{"group_by": "rally_length_category"}}
    - DO NOT use metrics_parsed for these - use group_by!
 5. For ratio questions (winners to errors), set analysis_type: "ratio"
 6. For trend questions (across sets), set analysis_type: "trend"
@@ -16480,54 +13492,54 @@ CRITICAL RULES:
    - player: "both"
    - group_by: "player"
    Examples:
-   - "How many winners did each player have?" → {{"player": "both", "group_by": "player", "metric": "winners"}}
-   - "How many winners did each have?" → {{"player": "both", "group_by": "player", "metric": "winners"}}
-   - "Compare aces for both players" → {{"player": "both", "group_by": "player", "metric": "aces"}}
-   - "Which player hit more forehand winners?" → {{"player": "both", "group_by": "player", "shot_type": "forehand", "metric": "winners"}}
-   - "Who had more break points saved?" → {{"player": "both", "group_by": "player", "situation": "break_point", "metric": "points_won"}}
-   - "Aces by player" → {{"player": "both", "group_by": "player", "metric": "aces"}}
+   - "How many winners did each player have?" â†’ {{"player": "both", "group_by": "player", "metric": "winners"}}
+   - "How many winners did each have?" â†’ {{"player": "both", "group_by": "player", "metric": "winners"}}
+   - "Compare aces for both players" â†’ {{"player": "both", "group_by": "player", "metric": "aces"}}
+   - "Which player hit more forehand winners?" â†’ {{"player": "both", "group_by": "player", "shot_type": "forehand", "metric": "winners"}}
+   - "Who had more break points saved?" â†’ {{"player": "both", "group_by": "player", "situation": "break_point", "metric": "points_won"}}
+   - "Aces by player" â†’ {{"player": "both", "group_by": "player", "metric": "aces"}}
 
 EXAMPLES BY ANALYSIS TYPE:
 
 COUNTING:
-- "How many aces?" → {{"metric": "aces", "analysis_type": "count"}}
-- "Forehand winners in Set 3" → {{"shot_type": "forehand", "metric": "winners", "set_filter": 3}}
+- "How many aces?" â†’ {{"metric": "aces", "analysis_type": "count"}}
+- "Forehand winners in Set 3" â†’ {{"shot_type": "forehand", "metric": "winners", "set_filter": 3}}
 
 GROUPING/COMPARISON (CRITICAL - dimension being compared goes in group_by, NOT filter):
-- "T vs Wide serves" → {{"group_by": "serve_direction", "serve_target": null}}
-- "T vs Wide vs Body" → {{"group_by": "serve_direction", "serve_target": null}}
-- "Forehand vs Backhand winners" → {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-- "Sinner's forehand vs backhand winners" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-- "How many forehand winners did Sinner hit compared to backhand winners?" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-- "How many unforced errors did Sinner make on forehand vs backhand?" → {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "unforced_errors"}}
-- "Forehand errors vs backhand errors" → {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
-- "Forced errors on forehand vs backhand" → {{"group_by": "shot_type", "shot_type": null, "metric": "forced_errors"}}
-- "Crosscourt vs Down the Line" → {{"group_by": "shot_direction", "direction": null}}
-- "1st serve vs 2nd serve win %" → {{"group_by": "serve_number", "serve_number": null, "metric": "win_percentage"}}
-- "Shallow vs Deep vs Very Deep returns" → {{"group_by": "return_depth", "depth": null}}
-- "Ad Court compared to Deuce Court" → {{"group_by": "court_side", "court_side": null}}
-- "Points by rally length" → {{"group_by": "rally_length_category"}}
-- "Stats in service games won vs lost" → {{"group_by": "game_outcome", "role": "server"}}
-- "Which player hit more aces?" → {{"player": "both", "group_by": "player", "metric": "aces"}}
-- "Who used body serves more?" → {{"player": "both", "group_by": "player", "serve_target": "body", "metric": "count"}}
+- "T vs Wide serves" â†’ {{"group_by": "serve_direction", "serve_target": null}}
+- "T vs Wide vs Body" â†’ {{"group_by": "serve_direction", "serve_target": null}}
+- "Forehand vs Backhand winners" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "Sinner's forehand vs backhand winners" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "How many forehand winners did Sinner hit compared to backhand winners?" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "How many unforced errors did Sinner make on forehand vs backhand?" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "unforced_errors"}}
+- "Forehand errors vs backhand errors" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+- "Forced errors on forehand vs backhand" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "forced_errors"}}
+- "Crosscourt vs Down the Line" â†’ {{"group_by": "shot_direction", "direction": null}}
+- "1st serve vs 2nd serve win %" â†’ {{"group_by": "serve_number", "serve_number": null, "metric": "win_percentage"}}
+- "Shallow vs Deep vs Very Deep returns" â†’ {{"group_by": "return_depth", "depth": null}}
+- "Ad Court compared to Deuce Court" â†’ {{"group_by": "court_side", "court_side": null}}
+- "Points by rally length" â†’ {{"group_by": "rally_length_category"}}
+- "Stats in service games won vs lost" â†’ {{"group_by": "game_outcome", "role": "server"}}
+- "Which player hit more aces?" â†’ {{"player": "both", "group_by": "player", "metric": "aces"}}
+- "Who used body serves more?" â†’ {{"player": "both", "group_by": "player", "serve_target": "body", "metric": "count"}}
 
 SET COMPARISON:
-- "Errors in Set 1 vs Set 3" → {{"set_comparison": {{"set_a": [1], "set_b": [3]}}}}
-- "In the sets X won vs the sets X lost" → Use the MATCH CONTEXT to determine which specific sets X won/lost, then set set_a and set_b accordingly
+- "Errors in Set 1 vs Set 3" â†’ {{"set_comparison": {{"set_a": [1], "set_b": [3]}}}}
+- "In the sets X won vs the sets X lost" â†’ Use the MATCH CONTEXT to determine which specific sets X won/lost, then set set_a and set_b accordingly
   Example: If Player A won sets [2, 3, 5] and lost sets [1, 4], then:
-  - "Player A's stats in sets he won vs sets he lost" → {{"player": "Player A", "set_comparison": {{"set_a": [2, 3, 5], "set_b": [1, 4]}}}}
+  - "Player A's stats in sets he won vs sets he lost" â†’ {{"player": "Player A", "set_comparison": {{"set_a": [2, 3, 5], "set_b": [1, 4]}}}}
 
 SITUATION COMPARISON:
-- "Net points in tiebreaks compared to rest of match" → {{"court_zone": "net", "metric": "net_points_won", "group_by": "situation", "situation_comparison": {{"situation_a": "tiebreak", "situation_b": "non_tiebreak"}}}}
-- "Break points vs non-break points" → {{"group_by": "situation", "situation_comparison": {{"situation_a": "break_point", "situation_b": "non_break_point"}}}}
+- "Net points in tiebreaks compared to rest of match" â†’ {{"court_zone": "net", "metric": "net_points_won", "group_by": "situation", "situation_comparison": {{"situation_a": "tiebreak", "situation_b": "non_tiebreak"}}}}
+- "Break points vs non-break points" â†’ {{"group_by": "situation", "situation_comparison": {{"situation_a": "break_point", "situation_b": "non_break_point"}}}}
 
 MULTI-METRIC QUERIES (N metrics in one question - GENERIC FOR ALL METRIC TYPES):
 **CRITICAL DISTINCTION:**
 - Use "metrics_parsed" for DIFFERENT metrics or UNRELATED filters (e.g., "aces AND double faults")
 - Use "group_by" for SAME metric with different values of ONE dimension (e.g., "forehand VS backhand winners")
-- Keywords: "vs"/"compared to"/"versus" → group_by | "and"/"plus"/"also" → metrics_parsed
+- Keywords: "vs"/"compared to"/"versus" â†’ group_by | "and"/"plus"/"also" â†’ metrics_parsed
 
-- "First serve % and first serve win %" → {{
+- "First serve % and first serve win %" â†’ {{
     "metrics_parsed": [
       {{"metric": "first_serve_pct", "filters": {{"role": "server"}}, "context": "serve"}},
       {{"metric": "first_serve_win_pct", "filters": {{"role": "server", "serve_number": 1}}, "context": "serve"}}
@@ -16538,31 +13550,31 @@ MULTI-METRIC QUERIES (N metrics in one question - GENERIC FOR ALL METRIC TYPES):
   - It needs ALL serves (both serve_number=1 AND serve_number=2) to calculate the denominator
   - DO NOT set serve_number filter for first_serve_pct - it must be null/omitted
   - first_serve_win_pct DOES need serve_number=1 because it's win % ON first serves that went in
-- "Aces and double faults" → {{
+- "Aces and double faults" â†’ {{
     "metrics_parsed": [
       {{"metric": "aces", "filters": {{"role": "server"}}, "context": "serve"}},
       {{"metric": "double_faults", "filters": {{"role": "server"}}, "context": "serve"}}
     ]
   }}
-- "Break point save % and conversion %" → {{
+- "Break point save % and conversion %" â†’ {{
     "metrics_parsed": [
       {{"metric": "win_percentage", "filters": {{"situation": "break_point", "role": "server"}}, "context": "situation"}},
       {{"metric": "win_percentage", "filters": {{"situation": "break_point", "role": "returner"}}, "context": "situation"}}
     ]
   }}
-- "Net points won and baseline winners" → {{
+- "Net points won and baseline winners" â†’ {{
     "metrics_parsed": [
       {{"metric": "points_won", "filters": {{"court_zone": "net"}}, "context": "net"}},
       {{"metric": "winners", "filters": {{"court_zone": "baseline"}}, "context": "rally"}}
     ]
   }}
-- "Set 1 aces plus Set 3 aces" → {{
+- "Set 1 aces plus Set 3 aces" â†’ {{
     "metrics_parsed": [
       {{"metric": "aces", "filters": {{"set": 1}}, "context": "serve"}},
       {{"metric": "aces", "filters": {{"set": 3}}, "context": "serve"}}
     ]
   }}
-- "Game point winners and break point winners" → {{
+- "Game point winners and break point winners" â†’ {{
     "metrics_parsed": [
       {{"metric": "winners", "filters": {{"situation": "game_point"}}, "context": "situation"}},
       {{"metric": "winners", "filters": {{"situation": "break_point"}}, "context": "situation"}}
@@ -16573,57 +13585,57 @@ MULTI-METRIC QUERIES (N metrics in one question - GENERIC FOR ALL METRIC TYPES):
 - Related metrics (same context) will be synthesized together in the answer
 
 RATIO ANALYSIS:
-- "Winners to errors ratio" → {{"metric": "winners", "secondary_metric": "errors", "analysis_type": "ratio"}}
-- "Winners to unforced errors ratio" → {{"metric": "winners", "secondary_metric": "unforced_errors", "analysis_type": "ratio"}}
+- "Winners to errors ratio" â†’ {{"metric": "winners", "secondary_metric": "errors", "analysis_type": "ratio"}}
+- "Winners to unforced errors ratio" â†’ {{"metric": "winners", "secondary_metric": "unforced_errors", "analysis_type": "ratio"}}
 
 TREND ANALYSIS:
-- "How did serve % change across sets?" → {{"metric": "first_serve_pct", "analysis_type": "trend"}}
+- "How did serve % change across sets?" â†’ {{"metric": "first_serve_pct", "analysis_type": "trend"}}
 
 2D CROSS-TAB:
-- "IO vs DTL ratio in sets won vs lost" → {{"group_by": "shot_direction", "secondary_group_by": "set_groups", "analysis_type": "2d_cross_tab"}}
+- "IO vs DTL ratio in sets won vs lost" â†’ {{"group_by": "shot_direction", "secondary_group_by": "set_groups", "analysis_type": "2d_cross_tab"}}
 
 ROLE-BASED:
-- "When serving, break point saves" → {{"role": "server", "situation": "break_point"}}
-- "As returner, deep returns" → {{"role": "returner", "group_by": "return_depth"}}
+- "When serving, break point saves" â†’ {{"role": "server", "situation": "break_point"}}
+- "As returner, deep returns" â†’ {{"role": "returner", "group_by": "return_depth"}}
 - **CRITICAL - SERVE EFFECTIVENESS vs SERVE SHOTS:**
-  - "Serve effectiveness" / "serve win %" / "points won on serve" → {{"role": "server", "metric": "win_percentage"}} (NO shot_type!)
-  - "How many aces?" → {{"metric": "aces"}} (NO shot_type needed - aces are detected by outcome)
-  - "Forehand winners" → {{"shot_type": "forehand", "metric": "winners"}} (shot_type IS the winning shot)
+  - "Serve effectiveness" / "serve win %" / "points won on serve" â†’ {{"role": "server", "metric": "win_percentage"}} (NO shot_type!)
+  - "How many aces?" â†’ {{"metric": "aces"}} (NO shot_type needed - aces are detected by outcome)
+  - "Forehand winners" â†’ {{"shot_type": "forehand", "metric": "winners"}} (shot_type IS the winning shot)
   - Do NOT set shot_type: "serve" for serve effectiveness - that filters to only aces/double faults!
   
 - **CRITICAL - SERVE TARGET FILTER (DO NOT HALLUCINATE):**
-  - "First serve percentage" / "Second serve won percentage" → {{"serve_target": null}} (NO serve_target filter!)
-  - "Serve effectiveness" / "Serve win %" → {{"serve_target": null}} (NO serve_target filter!)
+  - "First serve percentage" / "Second serve won percentage" â†’ {{"serve_target": null}} (NO serve_target filter!)
+  - "Serve effectiveness" / "Serve win %" â†’ {{"serve_target": null}} (NO serve_target filter!)
   - ONLY set serve_target if question EXPLICITLY mentions: "wide", "body", "to T", "down the T", "to the middle"
   - Examples that SHOULD have serve_target:
-    * "First serve percentage to T" → {{"serve_target": "t"}}
-    * "Wide serve win percentage" → {{"serve_target": "wide"}}
+    * "First serve percentage to T" â†’ {{"serve_target": "t"}}
+    * "Wide serve win percentage" â†’ {{"serve_target": "wide"}}
   - Examples that should NOT have serve_target:
-    * "First serve percentage" → {{"serve_target": null}}
-    * "Second serve won percentage" → {{"serve_target": null}}
-    * "Serve effectiveness" → {{"serve_target": null}}
+    * "First serve percentage" â†’ {{"serve_target": null}}
+    * "Second serve won percentage" â†’ {{"serve_target": null}}
+    * "Serve effectiveness" â†’ {{"serve_target": null}}
   - DO NOT add serve_target for general serve questions! The system will block it anyway, but don't waste tokens.
 
-CHAIN LOGIC (A → B):
-- "Backhand slice led to unforced error" → {{"chain_logic": {{"shot_a": "backhand slice", "shot_b": "unforced error"}}, "analysis_type": "chain"}}
-- "Approach shot followed by winner" → {{"chain_logic": {{"shot_a": "approach shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
-- "Drop shot directly led to winner" → {{"chain_logic": {{"shot_a": "drop shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
+CHAIN LOGIC (A â†’ B):
+- "Backhand slice led to unforced error" â†’ {{"chain_logic": {{"shot_a": "backhand slice", "shot_b": "unforced error"}}, "analysis_type": "chain"}}
+- "Approach shot followed by winner" â†’ {{"chain_logic": {{"shot_a": "approach shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
+- "Drop shot directly led to winner" â†’ {{"chain_logic": {{"shot_a": "drop shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
 
 NEW TAXONOMY EXAMPLES:
-- "Forehand slice winners" → {{"shot_type": "forehand", "spin": "slice", "metric": "winners"}}
-- "Volley winners at net" → {{"contact_type": "volley", "location": "net", "metric": "winners"}}
-- "Approach shot effectiveness" → {{"intent": "approach", "metric": "win_percentage"}}
-- "Drop shot winners" → {{"intent": "drop_shot", "metric": "winners"}}
-- "Passing shot success rate" → {{"intent": "passing_shot", "metric": "win_percentage"}}
-- "Topspin forehand crosscourt" → {{"shot_type": "forehand", "spin": "topspin", "direction": "crosscourt"}}
-- "Slice backhand down the line" → {{"shot_type": "backhand", "spin": "slice", "direction": "down_the_line"}}
-- "Net play by contact type" → {{"location": "net", "group_by": "contact_type"}}
-- "Groundstroke vs volley winners" → {{"group_by": "contact_type", "metric": "winners"}}
+- "Forehand slice winners" â†’ {{"shot_type": "forehand", "spin": "slice", "metric": "winners"}}
+- "Volley winners at net" â†’ {{"contact_type": "volley", "location": "net", "metric": "winners"}}
+- "Approach shot effectiveness" â†’ {{"intent": "approach", "metric": "win_percentage"}}
+- "Drop shot winners" â†’ {{"intent": "drop_shot", "metric": "winners"}}
+- "Passing shot success rate" â†’ {{"intent": "passing_shot", "metric": "win_percentage"}}
+- "Topspin forehand crosscourt" â†’ {{"shot_type": "forehand", "spin": "topspin", "direction": "crosscourt"}}
+- "Slice backhand down the line" â†’ {{"shot_type": "backhand", "spin": "slice", "direction": "down_the_line"}}
+- "Net play by contact type" â†’ {{"location": "net", "group_by": "contact_type"}}
+- "Groundstroke vs volley winners" â†’ {{"group_by": "contact_type", "metric": "winners"}}
 
 MOMENTUM ANALYSIS:
-- "Momentum after break points" → {{"analysis_type": "momentum", "situation": "break_point"}}
-- "Did aggression increase after breaks?" → {{"analysis_type": "momentum"}}
-- "Carry-over effect after winning break" → {{"analysis_type": "momentum"}}
+- "Momentum after break points" â†’ {{"analysis_type": "momentum", "situation": "break_point"}}
+- "Did aggression increase after breaks?" â†’ {{"analysis_type": "momentum"}}
+- "Carry-over effect after winning break" â†’ {{"analysis_type": "momentum"}}
 
 QUERY_TYPE CLASSIFICATION:
 - **analytical**: Questions asking for specific counts, percentages, or metrics that can be directly calculated
@@ -16644,19 +13656,19 @@ QUERY_TYPE CLASSIFICATION:
   - "Performance on break points" (vague: performance = win %? aggression? shot selection?)
   
 KEY DISTINCTION:
-- **Clear, calculable metric** → analytical (e.g., "ace count", "first serve %", "winner count")
-- **Vague concept or strategic question** → narrative (e.g., "aggression", "momentum", "effectiveness", "performance")
-- When in doubt: if the metric isn't a direct count/percentage → narrative
+- **Clear, calculable metric** â†’ analytical (e.g., "ace count", "first serve %", "winner count")
+- **Vague concept or strategic question** â†’ narrative (e.g., "aggression", "momentum", "effectiveness", "performance")
+- When in doubt: if the metric isn't a direct count/percentage â†’ narrative
 
 METRIC CLARITY CHECK:
 - **clear_metric**: The question specifies EXACTLY what to count/measure
   Examples: "first serve win %", "ace count", "break point conversion", "forehand winners"
 - **vague_metric**: The question asks about something but doesn't specify what metric
   Examples: "How did first serves change?", "Did serving improve?", "Forehand effectiveness", "Performance on break points"
-  → If vague_metric → default to query_type: "narrative"
+  â†’ If vague_metric â†’ default to query_type: "narrative"
 
 N-DIMENSIONAL (complex multi-filter + multi-group):
-- "On break points, serving to T, Ad court, in sets won - 1st vs 2nd serve win %" → {{
+- "On break points, serving to T, Ad court, in sets won - 1st vs 2nd serve win %" â†’ {{
     "situation": "break_point",
     "serve_target": "t", 
     "court_side": "ad",
@@ -16664,26 +13676,26 @@ N-DIMENSIONAL (complex multi-filter + multi-group):
     "group_by": "serve_number",
     "n_dimensional": true
   }}
-- "In tiebreaks, on 2nd serves, compare forehand vs backhand return effectiveness by court side" → {{
+- "In tiebreaks, on 2nd serves, compare forehand vs backhand return effectiveness by court side" â†’ {{
     "situation": "tiebreak",
     "serve_number": 2,
     "group_by": "shot_type",
     "secondary_group_by": "court_side",
     "n_dimensional": true
   }}
-- "How many net points in tiebreaks compared to rest of match?" → {{
+- "How many net points in tiebreaks compared to rest of match?" â†’ {{
     "player": "Roger Federer",
     "court_zone": "net",
     "metric": "net_points_won",
     "group_by": "situation",
     "situation_comparison": {{"situation_a": "tiebreak", "situation_b": "non_tiebreak"}}
   }}
-- "On break points, T vs Wide vs Body" → {{
+- "On break points, T vs Wide vs Body" â†’ {{
     "situation": "break_point",
     "group_by": "serve_direction",
     "serve_target": null
   }}
-- "In Set 5, Ad Court vs Deuce Court win %" → {{
+- "In Set 5, Ad Court vs Deuce Court win %" â†’ {{
     "set_filter": 5,
     "group_by": "court_side",
     "court_side": null,
@@ -16870,7 +13882,7 @@ Return ONLY the JSON:"""
                 
                 # CRITICAL: Map invalid metric names to correct base metrics FIRST
                 # LLM might return "ace_percentage" instead of "aces", etc.
-                # ALSO map "shots" → "shot_count" (shots = individual shots in rallies, not points)
+                # ALSO map "shots" â†’ "shot_count" (shots = individual shots in rallies, not points)
                 metric_name_map = {
                     'shots': 'shot_count',  # CRITICAL: "shots" means count individual shots, not points
                     'shots_hit': 'shot_count',  # LLM sometimes returns this variant
@@ -17057,7 +14069,7 @@ Return ONLY the JSON:"""
             
             if has_action_verb:
                 # GENERIC: Map error metrics to their induced counterparts
-                # The pattern: X_errors → induced_X_errors (player caused opponent's error)
+                # The pattern: X_errors â†’ induced_X_errors (player caused opponent's error)
                 metric_transforms = {
                     'forced_errors': 'induced_forced_errors',
                     # Add more transforms as needed (e.g., if we track 'induced_unforced_errors' someday)
@@ -17159,10 +14171,10 @@ Return ONLY the JSON:"""
                 print(f"[LLM-PARSE] Situation '{situation}' with BOTH defensive and offensive keywords - leaving role=None (will show both perspectives)")
             elif has_defensive_kw:
                 classification['filters']['role'] = 'server'
-                print(f"[LLM-PARSE] Situation '{situation}' with defensive keywords → role='server'")
+                print(f"[LLM-PARSE] Situation '{situation}' with defensive keywords â†’ role='server'")
             elif has_offensive_kw:
                 classification['filters']['role'] = 'returner'
-                print(f"[LLM-PARSE] Situation '{situation}' with offensive keywords → role='returner'")
+                print(f"[LLM-PARSE] Situation '{situation}' with offensive keywords â†’ role='returner'")
             else:
                 # No specific keywords - leave role unset (will show the situation regardless of role)
                 print(f"[LLM-PARSE] Situation '{situation}' without role keywords - leaving role=None")
@@ -17452,12 +14464,12 @@ Return ONLY the JSON:"""
         Main method to ask a question and get an answer.
         
         INTELLIGENT ROUTING:
-        1. LLM parses query → structured understanding
+        1. LLM parses query â†’ structured understanding
         2. Classification uses LLM output + keyword detection
         3. Route by category:
-           - 'analytical' → Taxonomy/PBP parsing
-           - 'comparative' → Taxonomy + LLM synthesis
-           - 'narrative' → NL retrieval + LLM
+           - 'analytical' â†’ Taxonomy/PBP parsing
+           - 'comparative' â†’ Taxonomy + LLM synthesis
+           - 'narrative' â†’ NL retrieval + LLM
         """
         print(f"Processing question: {question}")
         
@@ -17486,7 +14498,7 @@ Return ONLY the JSON:"""
         #   - Parse score from each point header (set-game-point)
         #   - Add 'game_number' and 'set_number' to point metadata
         #   - Track unique (set, game) tuples won by each player during tree traversal
-        #   - Aggregate games → sets → match naturally through the tree
+        #   - Aggregate games â†’ sets â†’ match naturally through the tree
         # For now, games_won metric temporarily falls back to game_winners dict
         
         # STEP 3.5: CLASSIFY QUERY COMPLEXITY FOR MODEL SELECTION
@@ -17525,13 +14537,13 @@ Return ONLY the JSON:"""
         # INTELLIGENT ROUTING (Two-Level System)
         # =====================================================================
         # LEVEL 1: Query Type Detection
-        #   - SHOT-LEVEL: direction, shot_type filters → Embeddings (pre-computed)
-        #   - POINT-LEVEL: situation, serve, role filters → Tree (point aggregation)
+        #   - SHOT-LEVEL: direction, shot_type filters â†’ Embeddings (pre-computed)
+        #   - POINT-LEVEL: situation, serve, role filters â†’ Tree (point aggregation)
         #
         # LEVEL 2: Within Point-Level
-        #   1. NARRATIVE → LLM identified descriptive/strategic
-        #   2. CHAIN LOGIC → Shot A → Shot B patterns
-        #   3. ANALYTICAL → Taxonomy/tree analysis
+        #   1. NARRATIVE â†’ LLM identified descriptive/strategic
+        #   2. CHAIN LOGIC â†’ Shot A â†’ Shot B patterns
+        #   3. ANALYTICAL â†’ Taxonomy/tree analysis
         # =====================================================================
         
         question_lower = question.lower()
@@ -17546,7 +14558,7 @@ Return ONLY the JSON:"""
             return answer
         
         # === LEVEL 2: POINT-LEVEL ROUTING ===
-        # === 0. NARRATIVE ROUTE → LLM identified as narrative ===
+        # === 0. NARRATIVE ROUTE â†’ LLM identified as narrative ===
         # Questions about strategy, momentum, patterns, "did X change?", etc.
         # Narrative has access to BOTH NL file AND point-by-point data
         if query_category == 'narrative':
@@ -17556,7 +14568,7 @@ Return ONLY the JSON:"""
             self.last_analysis = None  # Narrative queries don't have structured analysis
             return answer
         
-        # === 0.5. GAME QUERY ROUTE → "How many games won?" ===
+        # === 0.5. GAME QUERY ROUTE â†’ "How many games won?" ===
         # Games are aggregated from score transitions, not point counts
         # Route game queries to narrative instead of dedicated game handler
         if self._is_game_query(question):
@@ -17566,11 +14578,11 @@ Return ONLY the JSON:"""
             self.last_analysis = None  # Narrative queries don't have structured analysis
             return answer
         
-        # === 1. CHAIN LOGIC ANALYSIS → Shot A → Shot B patterns ===
+        # === 1. CHAIN LOGIC ANALYSIS â†’ Shot A â†’ Shot B patterns ===
         # CRITICAL: Chain logic is conceptually shot-level (requires full shot sequences)
         # But we distinguish between:
-        #   - Shot-to-shot chains (Shot A with shot filters) → Embeddings (default)
-        #   - Point-level event chains (serve → return → outcome) → Tree
+        #   - Shot-to-shot chains (Shot A with shot filters) â†’ Embeddings (default)
+        #   - Point-level event chains (serve â†’ return â†’ outcome) â†’ Tree
         is_chain_query = analysis_type == 'chain' or filters.get('chain_logic') or 'led to' in question_lower or 'lead to' in question_lower or 'followed by' in question_lower
         
         if is_chain_query:
@@ -17613,14 +14625,14 @@ Return ONLY the JSON:"""
                 has_shot_attributes_in_chain = shot_keywords_in_question and not is_serve_return_only
             
             if has_shot_attributes_in_chain:
-                # Shot-to-shot chain → Embeddings (requires full rally shot sequences)
+                # Shot-to-shot chain â†’ Embeddings (requires full rally shot sequences)
                 print("[CHAIN] Shot-to-shot chain detected (requires shot sequences) -> Routing to embeddings")
                 answer = self._handle_narrative_query(question, classification, top_k)
                 self.last_answer = answer
                 self.last_analysis = None
                 return answer
             else:
-                # Point-level event chain (serve → return → outcome) → Tree
+                # Point-level event chain (serve â†’ return â†’ outcome) â†’ Tree
                 print("[CHAIN] Point-level event chain detected (serve/return events) -> Routing to tree analysis")
                 try:
                     analysis = self._analyze_chain_logic(classification)
@@ -17638,7 +14650,7 @@ Return ONLY the JSON:"""
                 except Exception as e:
                     print(f"[CHAIN] Exception: {e}, falling through to taxonomy")
         
-        # === 2. UNIFIED TREE ANALYZER → ALL analytical queries ===
+        # === 2. UNIFIED TREE ANALYZER â†’ ALL analytical queries ===
         # ONE PATH for all queries - complexity just affects tree depth
         # Simple query = shallow tree (0-1 filters), Complex = deep tree (3+ filters)
         # NOTE: "TAXONOMY" and "N-DIM" are the SAME system - just different log labels
@@ -17659,7 +14671,7 @@ Return ONLY the JSON:"""
             print(f"[TAXONOMY] Exception: {e}")
             traceback.print_exc()
         
-        # === 3. NARRATIVE FALLBACK → Pure summary/story questions ===
+        # === 3. NARRATIVE FALLBACK â†’ Pure summary/story questions ===
         # Also handles any queries that taxonomy couldn't process
         print("[NARRATIVE] Routing to NL retrieval + LLM for narrative synthesis")
         answer = self._handle_narrative_query(question, classification, top_k)
