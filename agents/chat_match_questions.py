@@ -579,222 +579,370 @@ class TennisChatAgentEmbeddingQALocal:
     
     # ══════════════════════════════════════════════════════════════════════════════
     # METRIC CONFIGURATION - SINGLE SOURCE OF TRUTH
-    # Defines how each metric behaves: whose metric, what counts toward denominator/numerator
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 
+    # This config defines EVERYTHING about how metrics behave:
+    #   - player_role: whose metric (server/returner/winner/error/both/performer)
+    #   - total_filter: what counts toward denominator
+    #   - count_filter: what counts toward numerator  
+    #   - display_type: how to format in output
+    #       - 'per_player_pct': Show each player's X% (count/total) separately
+    #       - 'aggregate_pct': Show combined X% (count/total)
+    #       - 'count': Show raw count
+    #       - 'points_won': Show win/loss distribution
+    #   - keywords: for keyword-based counting (on_match filter)
+    #
+    # The tree handles ALL filtering (situation, set, role, point_score).
+    # METRIC_CONFIG ONLY defines what counts for numerator/denominator.
     # ══════════════════════════════════════════════════════════════════════════════
     METRIC_CONFIG = {
-        # Serve percentage metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # SERVE PERCENTAGE METRICS - Per-player percentages (each player's own stats)
+        # ═══════════════════════════════════════════════════════════════════════════
         'first_serve_pct': {
             'player_role': 'server',
-            'total_filter': 'always',
-            'count_filter': 'first_serve_in'
+            'total_filter': 'always',       # Denominator: all serve attempts by this player
+            'count_filter': 'first_serve_in',  # Numerator: first serves in
+            'display_type': 'per_player_pct',
+            'label': 'First Serve %'
         },
         'first_serve_win_pct': {
             'player_role': 'server',
-            'total_filter': 'first_serve',
-            'count_filter': 'won'
+            'total_filter': 'first_serve',   # Denominator: first serves only
+            'count_filter': 'won',           # Numerator: points won on first serve
+            'display_type': 'per_player_pct',
+            'label': 'First Serve Win %'
         },
         'second_serve_pct': {
             'player_role': 'server',
             'total_filter': 'second_serve',
-            'count_filter': 'second_serve_in'
+            'count_filter': 'second_serve_in',
+            'display_type': 'per_player_pct',
+            'label': 'Second Serve %'
         },
         'second_serve_win_pct': {
             'player_role': 'server',
             'total_filter': 'second_serve',
-            'count_filter': 'won'
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Second Serve Win %'
         },
         
-        # Point outcome metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # POINT OUTCOME METRICS - Shows who won how many points
+        # ═══════════════════════════════════════════════════════════════════════════
         'points_won': {
             'player_role': 'both',
             'total_filter': 'always',
-            'count_filter': 'won'
+            'count_filter': 'won',
+            'display_type': 'points_won',
+            'label': 'Points Won'
         },
         'win_percentage': {
             'player_role': 'both',
             'total_filter': 'always',
-            'count_filter': 'won'
+            'count_filter': 'won',
+            'display_type': 'points_won',
+            'label': 'Win Percentage'
         },
+        
+        # ═══════════════════════════════════════════════════════════════════════════
+        # COUNT METRICS - Raw counts per player
+        # ═══════════════════════════════════════════════════════════════════════════
         'winners': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['winner']
+            'keywords': ['winner'],
+            'display_type': 'count',
+            'label': 'Winners'
         },
         'aces': {
             'player_role': 'server',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['ace']
+            'keywords': ['ace'],
+            'display_type': 'count',
+            'label': 'Aces'
         },
         'double_faults': {
             'player_role': 'server',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['double fault']
+            'keywords': ['double fault'],
+            'display_type': 'count',
+            'label': 'Double Faults'
         },
         'forced_errors': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['forced error']
+            'keywords': ['forced error'],
+            'display_type': 'count',
+            'label': 'Forced Errors (Induced)'
         },
         'unforced_errors': {
             'player_role': 'error',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['unforced error']
+            'keywords': ['unforced error'],
+            'display_type': 'count',
+            'label': 'Unforced Errors'
         },
         
-        # Net play metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # NET PLAY METRICS
+        # ═══════════════════════════════════════════════════════════════════════════
         'net_points_won': {
             'player_role': 'performer',
             'total_filter': 'on_match',
             'count_filter': 'won',
-            'keywords': ['volley', 'at net', 'approach']
+            'keywords': ['volley', 'at net', 'approach'],
+            'display_type': 'per_player_pct',
+            'label': 'Net Points Won %'
         },
         'net_approaches': {
             'player_role': 'performer',
             'total_filter': 'on_match',
             'count_filter': 'always',
-            'keywords': ['approach', 'net approach']
+            'keywords': ['approach', 'net approach'],
+            'display_type': 'count',
+            'label': 'Net Approaches'
         },
         
-        # Return metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # RETURN METRICS
+        # ═══════════════════════════════════════════════════════════════════════════
         'return_winners': {
             'player_role': 'returner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['return', 'winner']
+            'keywords': ['return', 'winner'],
+            'display_type': 'count',
+            'label': 'Return Winners'
         },
         'return_errors': {
             'player_role': 'returner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['return', 'error']
+            'keywords': ['return', 'error'],
+            'display_type': 'count',
+            'label': 'Return Errors'
         },
         'returns_in_play': {
             'player_role': 'returner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['return']
+            'keywords': ['return'],
+            'display_type': 'count',
+            'label': 'Returns In Play'
+        },
+        'return_points_won_pct': {
+            'player_role': 'returner',
+            'total_filter': 'always',
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Return Points Won %'
         },
         
-        # Shot-based outcome metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # SHOT-BASED OUTCOME METRICS
+        # ═══════════════════════════════════════════════════════════════════════════
         'forehand_winners': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['forehand', 'winner']
+            'keywords': ['forehand', 'winner'],
+            'display_type': 'count',
+            'label': 'Forehand Winners'
         },
         'backhand_winners': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['backhand', 'winner']
+            'keywords': ['backhand', 'winner'],
+            'display_type': 'count',
+            'label': 'Backhand Winners'
         },
         'forehand_errors': {
             'player_role': 'error',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['forehand', 'error']
+            'keywords': ['forehand', 'error'],
+            'display_type': 'count',
+            'label': 'Forehand Errors'
         },
         'backhand_errors': {
             'player_role': 'error',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['backhand', 'error']
+            'keywords': ['backhand', 'error'],
+            'display_type': 'count',
+            'label': 'Backhand Errors'
         },
         
-        # Rally-based metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # RALLY-BASED METRICS
+        # ═══════════════════════════════════════════════════════════════════════════
         'rally_winners': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
             'keywords': ['winner'],
-            'min_rally_length': 2  # Must be a rally, not serve
+            'min_rally_length': 2,
+            'display_type': 'count',
+            'label': 'Rally Winners'
         },
         'groundstroke_winners': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
             'keywords': ['winner'],
-            'min_rally_length': 2
+            'min_rally_length': 2,
+            'display_type': 'count',
+            'label': 'Groundstroke Winners'
         },
         'baseline_winners': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
             'keywords': ['winner'],
-            'exclude_modifiers': ['volley', 'overhead']
+            'exclude_modifiers': ['volley', 'overhead'],
+            'display_type': 'count',
+            'label': 'Baseline Winners'
         },
         
-        # Service-based metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # SERVICE-BASED METRICS
+        # ═══════════════════════════════════════════════════════════════════════════
         'service_winners': {
             'player_role': 'server',
             'total_filter': 'always',
             'count_filter': 'on_match',
             'keywords': ['winner'],
-            'max_rally_length': 1  # Must be service point
+            'max_rally_length': 1,
+            'display_type': 'count',
+            'label': 'Service Winners'
         },
         'first_serve_in': {
             'player_role': 'server',
             'total_filter': 'always',
-            'count_filter': 'first_serve_in'
+            'count_filter': 'first_serve_in',
+            'display_type': 'count',
+            'label': 'First Serves In'
         },
         
-        # Generic outcome metrics
+        # ═══════════════════════════════════════════════════════════════════════════
+        # GENERIC OUTCOME METRICS
+        # ═══════════════════════════════════════════════════════════════════════════
         'errors': {
             'player_role': 'error',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['error']  # Matches both forced and unforced
+            'keywords': ['error'],
+            'display_type': 'count',
+            'label': 'Errors'
         },
         'points_lost': {
             'player_role': 'loser',
             'total_filter': 'always',
-            'count_filter': 'lost'
+            'count_filter': 'lost',
+            'display_type': 'count',
+            'label': 'Points Lost'
         },
         'induced_forced_errors': {
             'player_role': 'winner',
             'total_filter': 'always',
             'count_filter': 'on_match',
-            'keywords': ['forced error'],  # Must match 'forced error' specifically, not 'unforced error'
-            'exclude_keywords': ['unforced']  # Exclude unforced errors
+            'keywords': ['forced error'],
+            'exclude_keywords': ['unforced'],
+            'display_type': 'count',
+            'label': 'Induced Forced Errors'
         },
         
-        # Game-level metrics (aggregated from points)
+        # ═══════════════════════════════════════════════════════════════════════════
+        # BREAK POINT METRICS - Per-player percentages
+        # ═══════════════════════════════════════════════════════════════════════════
+        'break_point_conversion': {
+            'player_role': 'returner',
+            'total_filter': 'always',  # Tree already filters to break points
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Break Point Conversion %'
+        },
+        'break_point_saves': {
+            'player_role': 'server',
+            'total_filter': 'always',  # Tree already filters to break points
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Break Points Saved %'
+        },
+        
+        # ═══════════════════════════════════════════════════════════════════════════
+        # GAME-LEVEL METRICS (aggregated from points)
+        # ═══════════════════════════════════════════════════════════════════════════
         'games_won': {
             'player_role': 'game_winner',
             'total_filter': 'games',
             'count_filter': 'game_won',
-            'aggregate_level': 'game'
+            'aggregate_level': 'game',
+            'display_type': 'count',
+            'label': 'Games Won'
         },
         'games_lost': {
             'player_role': 'game_loser',
             'total_filter': 'games',
             'count_filter': 'game_lost',
-            'aggregate_level': 'game'
+            'aggregate_level': 'game',
+            'display_type': 'count',
+            'label': 'Games Lost'
         },
         'service_games_held': {
             'player_role': 'server',
             'total_filter': 'service_games',
             'count_filter': 'game_won',
-            'aggregate_level': 'game'
+            'aggregate_level': 'game',
+            'display_type': 'per_player_pct',
+            'label': 'Service Games Held %'
         },
         'breaks': {
             'player_role': 'returner',
             'total_filter': 'return_games',
             'count_filter': 'game_won',
-            'aggregate_level': 'game'
+            'aggregate_level': 'game',
+            'display_type': 'count',
+            'label': 'Breaks'
         },
         'sets_won': {
             'player_role': 'set_winner',
             'total_filter': 'sets',
             'count_filter': 'set_won',
-            'aggregate_level': 'set'
+            'aggregate_level': 'set',
+            'display_type': 'count',
+            'label': 'Sets Won'
         },
     }
+    
+    # ══════════════════════════════════════════════════════════════════════════════
+    # DISPLAY TYPE REFERENCE (for understanding the config above)
+    # ══════════════════════════════════════════════════════════════════════════════
+    # 
+    # 'per_player_pct': Each player gets their own percentage
+    #   → "Sinner: 58% (7/12), Medvedev: 33% (3/9)"
+    #   Used for: first_serve_pct, serve_win_pct, return_pct, net_points_won
+    #
+    # 'aggregate_pct': Combined percentage across both players
+    #   → "Overall: 47% (10/21)"
+    #   Used for: rare, mostly when explicitly combining
+    #
+    # 'count': Raw count per player
+    #   → "Sinner: 15, Medvedev: 12"
+    #   Used for: aces, winners, errors, double_faults
+    #
+    # 'points_won': Win/loss distribution with percentages
+    #   → "Sinner: 142 (50%), Medvedev: 141 (50%)"
+    #   Used for: points_won, win_percentage
+    # ══════════════════════════════════════════════════════════════════════════════
     
     def __init__(self, llm_provider: str = "gemini", api_key: str = None, model: str = None):
         """
@@ -11449,6 +11597,105 @@ Answer:"""
         
         return response
     
+    # ══════════════════════════════════════════════════════════════════════════════
+    # UNIFIED METRIC FORMATTING - Uses METRIC_CONFIG.display_type
+    # ══════════════════════════════════════════════════════════════════════════════
+    def _format_metric_for_display(self, metric_name: str, results: Dict, 
+                                    player1: str, player2: str, player_filter: str = None) -> str:
+        """
+        Format a single metric using METRIC_CONFIG.display_type.
+        
+        This is the SINGLE SOURCE OF TRUTH for metric formatting.
+        All formatting code should call this instead of duplicating logic.
+        
+        Args:
+            metric_name: Name of the metric (e.g., 'first_serve_pct', 'winners')
+            results: Leaf node results containing per_player_metrics and metrics
+            player1, player2: Player names
+            player_filter: If set, only show this player's data
+            
+        Returns:
+            Formatted string for display
+        """
+        config = self.METRIC_CONFIG.get(metric_name, {})
+        display_type = config.get('display_type', 'count')
+        label = config.get('label', metric_name.replace('_', ' ').title())
+        
+        per_player = results.get('per_player_metrics', {}).get(metric_name, {})
+        metrics_data = results.get('metrics', {}).get(metric_name, {})
+        
+        p1_data = per_player.get('player1', {})
+        p2_data = per_player.get('player2', {})
+        
+        # Handle player filter - only show requested player
+        if player_filter and player_filter.lower() not in ('both', 'all'):
+            is_p1 = player1 and self._names_match_robust(player_filter, player1)
+            player_data = p1_data if is_p1 else p2_data
+            player_name = player1 if is_p1 else player2
+            
+            if display_type == 'per_player_pct':
+                if player_data.get('total', 0) > 0:
+                    return f"**{label}:** {player_data.get('pct', 0)}% ({player_data.get('count', 0)} of {player_data.get('total', 0)})"
+                return f"**{label}:** No data"
+            elif display_type == 'count':
+                return f"**{label}:** {player_data.get('count', 0)}"
+            elif display_type == 'points_won':
+                total = results.get('total_points', 0)
+                pct = player_data.get('pct', 0)
+                return f"**{label}:** {player_data.get('count', 0)} ({pct}% of {total})"
+            else:
+                return f"**{label}:** {player_data.get('count', 0)}"
+        
+        # Both players - format depends on display_type
+        if display_type == 'per_player_pct':
+            # Each player gets their own percentage line
+            lines = [f"**{label}:**"]
+            if p1_data.get('total', 0) > 0:
+                lines.append(f"  - {player1}: {p1_data.get('pct', 0)}% ({p1_data.get('count', 0)} of {p1_data.get('total', 0)})")
+            else:
+                lines.append(f"  - {player1}: No data (0 attempts)")
+            if p2_data.get('total', 0) > 0:
+                lines.append(f"  - {player2}: {p2_data.get('pct', 0)}% ({p2_data.get('count', 0)} of {p2_data.get('total', 0)})")
+            else:
+                lines.append(f"  - {player2}: No data (0 attempts)")
+            return "\n".join(lines)
+            
+        elif display_type == 'aggregate_pct':
+            # Combined percentage
+            total_count = metrics_data.get('count', 0)
+            total_total = metrics_data.get('total', 0)
+            if total_total > 0:
+                pct = round(100 * total_count / total_total, 1)
+                return f"**{label}:** {pct}% ({total_count} of {total_total})"
+            return f"**{label}:** 0% (no data)"
+            
+        elif display_type == 'count':
+            # Raw counts per player
+            return f"**{label}:** {player1}: {p1_data.get('count', 0)}, {player2}: {p2_data.get('count', 0)}"
+            
+        elif display_type == 'points_won':
+            # Win/loss distribution
+            total = results.get('total_points', 0)
+            p1_wins = results.get('player1_wins', 0)
+            p2_wins = results.get('player2_wins', 0)
+            p1_pct = results.get('player1_pct', 0)
+            p2_pct = results.get('player2_pct', 0)
+            return f"**{label}:** {player1}: {p1_wins} ({p1_pct}%), {player2}: {p2_wins} ({p2_pct}%)"
+            
+        else:
+            # Fallback
+            return f"**{label}:** {metrics_data.get('count', 0)}"
+    
+    def _get_metric_display_type(self, metric_name: str) -> str:
+        """Get the display type for a metric from METRIC_CONFIG."""
+        config = self.METRIC_CONFIG.get(metric_name, {})
+        return config.get('display_type', 'count')
+    
+    def _get_metric_label(self, metric_name: str) -> str:
+        """Get the human-readable label for a metric from METRIC_CONFIG."""
+        config = self.METRIC_CONFIG.get(metric_name, {})
+        return config.get('label', metric_name.replace('_', ' ').title())
+    
     def _format_tree_results(self, results: Dict, groups: list, metrics: list,
                              player1: str, player2: str, player_filter: str, depth: int = 0, classification: Dict = None) -> str:
         """Recursively format tree results."""
@@ -11674,152 +11921,79 @@ Answer:"""
             response += f"\n**Results:**\n"
             response += f"- Total Points: {results['total_points']}\n"
             
-            # Get all metric counts
+            # ═══════════════════════════════════════════════════════════════════════════
+            # UNIFIED METRIC FORMATTING using METRIC_CONFIG.display_type
+            # ═══════════════════════════════════════════════════════════════════════════
             metrics_results = results.get('metrics', {})
             per_player = results.get('per_player_metrics', {})
-            total_shots = metrics_results.get('total_shots', {}).get('count', 0)
             
-            # Game-level metrics get special formatting
-            game_metrics = {'games_won', 'service_games_held', 'breaks', 'sets_won'}
-            
-            # Percentage metrics that need PER-PLAYER breakdown (not just aggregate)
-            # These metrics have different denominators per player (e.g., each player's own serve attempts)
-            per_player_pct_metrics = {'first_serve_pct', 'first_serve_win_pct', 'second_serve_pct', 'second_serve_win_pct'}
-            
-            # Check if we have a per-player percentage metric that should show individual breakdowns
-            primary_metric = metrics[0] if metrics else None
-            if primary_metric in per_player_pct_metrics and per_player and primary_metric in per_player:
-                # Show EACH PLAYER'S individual percentage (not aggregated)
-                metric_label = primary_metric.replace('_', ' ').title()
-                p1_data = per_player[primary_metric].get('player1', {})
-                p2_data = per_player[primary_metric].get('player2', {})
-                
-                response += f"\n**{metric_label} (Per Player):**\n"
-                if p1_data.get('total', 0) > 0:
-                    response += f"- {player1}: {p1_data.get('pct', 0)}% ({p1_data.get('count', 0)} of {p1_data.get('total', 0)})\n"
-                else:
-                    response += f"- {player1}: No data (0 attempts)\n"
-                if p2_data.get('total', 0) > 0:
-                    response += f"- {player2}: {p2_data.get('pct', 0)}% ({p2_data.get('count', 0)} of {p2_data.get('total', 0)})\n"
-                else:
-                    response += f"- {player2}: No data (0 attempts)\n"
-            else:
-                # Default: show point wins (for points_won, win_percentage, etc.)
-                response += f"- {player1}: {results.get('player1_wins', 0)} ({results.get('player1_pct', 0)}%)\n"
-                response += f"- {player2}: {results.get('player2_wins', 0)} ({results.get('player2_pct', 0)}%)\n"
-            
-            # Percentage metrics - show as X% (count of total)
-            pct_metrics = {'first_serve_pct', 'first_serve_win_pct', 'second_serve_pct', 'second_serve_win_pct',
-                          'win_percentage', 'points_won'}
-            
-            # SHOT-LEVEL PERCENTAGE: Detect cross-metric percentage (e.g., winners / shot_count)
-            # When we have TWO metrics and one is shot_count, calculate percentage across metrics
-            metrics_list = list(metrics_results.keys())
-            shot_count_metrics = [m for m in metrics_list if m.startswith('shot_count') or m.startswith('shots_count') or m in ['shots', 'shot']]
-            non_shot_metrics = [m for m in metrics_list if m not in shot_count_metrics]
-            
-            is_shot_percentage = (len(metrics_list) == 2 and 
-                                 len(shot_count_metrics) == 1 and 
-                                 len(non_shot_metrics) == 1)
-            
-            print(f"[FORMAT-DEBUG] metrics_list={metrics_list}, shot_count_metrics={shot_count_metrics}, non_shot_metrics={non_shot_metrics}, is_shot_percentage={is_shot_percentage}")
-            
-            if is_shot_percentage:
-                # CROSS-METRIC PERCENTAGE: Calculate percentage of first metric relative to shot_count
-                numerator_metric = non_shot_metrics[0]
-                denominator_metric = shot_count_metrics[0]
-                
-                # Try both 'count' and 'total' for shot_count (it might be stored as total)
-                numerator_count = metrics_results.get(numerator_metric, {}).get('count', 0)
-                denominator_data = metrics_results.get(denominator_metric, {})
-                denominator_count = denominator_data.get('count', 0) or denominator_data.get('total', 0)
-                
-                # If shot_count is not in metrics_results (due to player filter), check per_player_metrics
-                # shot_count might be stored per-player or as a total
-                if denominator_count == 0 and per_player and denominator_metric in per_player:
-                    # Try to get total from per_player_metrics (sum of both players)
-                    p1_data = per_player.get(denominator_metric, {}).get('player1', {})
-                    p2_data = per_player.get(denominator_metric, {}).get('player2', {})
-                    p1_total = p1_data.get('count', 0) or p1_data.get('total', 0)
-                    p2_total = p2_data.get('count', 0) or p2_data.get('total', 0)
-                    denominator_count = p1_total + p2_total
-                    print(f"[FORMAT-DEBUG] Got shot_count from per_player_metrics: p1={p1_total}, p2={p2_total}, total={denominator_count}")
-                
-                # If still 0, shot_count might be stored directly in results (not in metrics dict)
-                # Check if there's a 'shot_count' or 'total_shots' field in results
-                if denominator_count == 0:
-                    # shot_count might be computed but not stored in metrics - check debug output from traversal
-                    # For now, try to compute from matching_points if available
-                    # But actually, we should trust the metric count - if it's 0, there might be a bug
-                    print(f"[FORMAT-DEBUG] WARNING: shot_count is 0 in metrics_results and per_player_metrics")
-                
-                print(f"[FORMAT-DEBUG] Inside is_shot_percentage block: numerator={numerator_metric} ({numerator_count}), denominator={denominator_metric} (count={denominator_data.get('count', 0)}, total={denominator_data.get('total', 0)}, final={denominator_count})")
-                
-                # Build descriptive label with filters
-                metric_label = numerator_metric.replace('_', ' ').title()
-                metric_filters_map = classification.get('metric_filters', {}) if classification else {}
-                if numerator_metric in metric_filters_map:
-                    filters = metric_filters_map[numerator_metric].get('filters', {})
-                    filter_parts = []
-                    if filters.get('direction'):
-                        filter_parts.append(filters['direction'].replace('_', '-').title())
-                    if filters.get('shot_type'):
-                        filter_parts.append(filters['shot_type'].title())
-                    if filter_parts:
-                        metric_label = ' '.join(filter_parts) + ' ' + metric_label
-                
-                if denominator_count > 0:
-                    pct = round(100 * numerator_count / denominator_count, 1)
-                    response += f"- {metric_label}: {pct}% ({numerator_count} of {denominator_count} shots)\n"
-                    print(f"[FORMAT] Shot-level percentage: {numerator_metric} = {numerator_count}/{denominator_count} shots = {pct}%")
-                else:
-                    print(f"[FORMAT-DEBUG] denominator_count is 0 or None, using fallback message")
-                    response += f"- {metric_label}: 0% (no shots)\n"
-                
-                # Skip iterating over individual metrics since we handled the calculation
-                print(f"[FORMAT-DEBUG] Skipping standard metric iteration, response so far: {response[:200]}")
-            else:
-                # STANDARD METRIC ITERATION: Process each metric independently
-                for m, m_data in metrics_results.items():
-                    count = m_data.get('count', 0)
-                    total = m_data.get('total', 0) or m_data.get('_serve_total', 0)  # Unified: use total
+            # Format each metric using config-driven display
+            for m in metrics:
+                if m not in metrics_results and m not in per_player:
+                    continue
                     
-                    # Build descriptive label with filters
-                    metric_label = m.replace('_', ' ').title()
-                    metric_filters_map = classification.get('metric_filters', {}) if classification else {}
-                    if m in metric_filters_map:
-                        filters = metric_filters_map[m].get('filters', {})
-                        filter_parts = []
-                        if filters.get('direction'):
-                            filter_parts.append(filters['direction'].replace('_', '-').title())
-                        if filters.get('shot_type'):
-                            filter_parts.append(filters['shot_type'].title())
-                        if filter_parts:
-                            metric_label = ' '.join(filter_parts) + ' ' + metric_label
+                display_type = self._get_metric_display_type(m)
+                metric_label = self._get_metric_label(m)
+                
+                # Get data
+                m_data = metrics_results.get(m, {})
+                p1_data = per_player.get(m, {}).get('player1', {})
+                p2_data = per_player.get(m, {}).get('player2', {})
+                
+                # Handle player filter
+                if player_filter and player_filter.lower() not in ('both', 'all'):
+                    is_p1 = player1 and self._names_match_robust(player_filter, player1)
+                    player_data = p1_data if is_p1 else p2_data
                     
-                    if m in game_metrics and m in per_player:
-                        # Format game-level metrics with per-player breakdown
-                        p1_data = per_player.get(m, {}).get('player1', {})
-                        p2_data = per_player.get(m, {}).get('player2', {})
-                        response += f"\n**{metric_label}:**\n"
-                        response += f"  - {player1}: {p1_data.get('count', 0)}\n"
-                        response += f"  - {player2}: {p2_data.get('count', 0)}\n"
-                    elif m in pct_metrics or total > 0:
-                        # UNIFIED: All metrics with a total get percentage display
-                        if total > 0:
-                            pct = round(100 * count / total, 1)
-                            response += f"- {metric_label}: {pct}% ({count} of {total})\n"
+                    if display_type == 'per_player_pct':
+                        if player_data.get('total', 0) > 0:
+                            response += f"- {metric_label}: {player_data.get('pct', 0)}% ({player_data.get('count', 0)} of {player_data.get('total', 0)})\n"
                         else:
-                            response += f"- {metric_label}: 0% (no data)\n"
+                            response += f"- {metric_label}: No data\n"
                     else:
-                        response += f"- {metric_label}: {count}"
+                        response += f"- {metric_label}: {player_data.get('count', 0)}\n"
+                    continue
+                
+                # Both players - format based on display_type
+                if display_type == 'per_player_pct':
+                    # Each player gets their own percentage
+                    response += f"\n**{metric_label}:**\n"
+                    if p1_data.get('total', 0) > 0:
+                        response += f"- {player1}: {p1_data.get('pct', 0)}% ({p1_data.get('count', 0)} of {p1_data.get('total', 0)})\n"
+                    else:
+                        response += f"- {player1}: No data (0 attempts)\n"
+                    if p2_data.get('total', 0) > 0:
+                        response += f"- {player2}: {p2_data.get('pct', 0)}% ({p2_data.get('count', 0)} of {p2_data.get('total', 0)})\n"
+                    else:
+                        response += f"- {player2}: No data (0 attempts)\n"
                         
-                        # Calculate percentage of shots if we have total_shots
-                        if total_shots > 0 and m != 'total_shots':
-                            pct = round(100 * count / total_shots, 1)
-                            response += f" ({pct}% of total shots)"
+                elif display_type == 'aggregate_pct':
+                    # Combined percentage
+                    count = m_data.get('count', 0)
+                    total = m_data.get('total', 0)
+                    if total > 0:
+                        pct = round(100 * count / total, 1)
+                        response += f"- {metric_label}: {pct}% ({count} of {total})\n"
+                    else:
+                        response += f"- {metric_label}: 0% (no data)\n"
                         
-                        response += "\n"
+                elif display_type == 'count':
+                    # Raw counts per player
+                    response += f"- {metric_label}: {player1}: {p1_data.get('count', 0)}, {player2}: {p2_data.get('count', 0)}\n"
+                    
+                elif display_type == 'points_won':
+                    # Win/loss distribution - show who won more
+                    p1_wins = results.get('player1_wins', 0)
+                    p2_wins = results.get('player2_wins', 0)
+                    p1_pct = results.get('player1_pct', 0)
+                    p2_pct = results.get('player2_pct', 0)
+                    response += f"\n**{metric_label}:**\n"
+                    response += f"- {player1}: {p1_wins} ({p1_pct}%)\n"
+                    response += f"- {player2}: {p2_wins} ({p2_pct}%)\n"
+                    
+                else:
+                    # Fallback
+                    response += f"- {metric_label}: {m_data.get('count', 0)}\n"
         
         return response
     
