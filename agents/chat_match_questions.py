@@ -15,7 +15,7 @@ class TennisChatAgentEmbeddingQALocal:
     """
     Tennis Chat Agent using LOCAL embedding model (sentence-transformers) and LLM for answering.
     Uses FREE local embeddings with sophisticated retrieval logic.
-    Supports Claude, Gemini, and OpenAI for answering questions.
+    Supports Gemini for answering questions.
     """
     
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -205,6 +205,243 @@ class TennisChatAgentEmbeddingQALocal:
     }
     
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # TREE-LEVEL DIMENSIONS - Filters handled by tree (point-level metadata)
+    # Used for: tree traversal, hybrid routing detection, filter promotion
+    # Add new dimensions here to automatically support them throughout
+    TREE_LEVEL_DIMENSIONS = {
+        'situation',      # break_point, game_point, deuce, etc.
+        'set',            # set number
+        'point_score',    # 30-30, 15-40, etc.
+        'serve_number',   # 1st or 2nd serve
+        'serve_target',   # wide, body, T
+        'court_side',     # deuce, ad
+        'court_zone',     # net, baseline
+        'rally_length',   # number of shots in rally
+        'prev_rally_length',  # rally length of PREVIOUS point (for "after X" queries)
+        'role',           # server, returner
+        'game_number',    # game number overall
+        'game_number_in_set',  # game number within set
+        'point_number_range',  # (min, max) tuple for temporal/segment analysis
+    }
+    
+    # TREE-SUPPORTED METRICS - What the tree can compute
+    # Planner should only route to tree for these metrics
+    TREE_SUPPORTED_METRICS = {
+        # Basic point outcomes
+        'points_won',
+        'win_percentage',
+        # Serve metrics
+        'first_serve_pct',
+        'first_serve_win_pct', 
+        'second_serve_win_pct',
+        'aces',
+        'double_faults',
+        # Return metrics
+        'return_points_won',
+        'return_win_pct',
+        # Situation metrics
+        'break_points_won',
+        'break_points_saved',
+        'break_point_conversion',
+        # Shot outcomes (point-ending)
+        'winners',
+        'unforced_errors',
+        'forced_errors',
+    }
+    
+    # REQUIRED_POINT_FIELDS - Fields that MUST be stored on each point during enrichment
+    # These enable Query Plan to work WITHOUT re-parsing point text every time
+    # If a field is missing, filtering/counting will fail silently (return 0)
+    REQUIRED_POINT_FIELDS = {
+        # Identity
+        'point_number',         # Unique point identifier
+        'server',               # Who served
+        'returner',             # Who returned
+        # Result
+        'point_winner',         # Who won the point (CRITICAL for points_won metric)
+        'error_player',         # Who made the error (for error metrics)
+        # Game context
+        'score',                # Point score (e.g., "1-0 3-2 30-15")
+        'set_number',           # Current set number
+        'game_number_in_set',   # Game number within current set
+        # Serve info
+        'serve_number',         # 1 or 2 (CRITICAL for 2nd serve queries)
+        # Rally info  
+        'rally_length',         # Number of shots in rally (excluding serve)
+        # Winning shot info (stored as dict)
+        'winning_shot',         # {shot_type, direction, outcome, at_net, shot_modifier}
+    }
+    
+    # OPERATION TYPES - For planner to specify precise intent
+    OPERATION_TYPES = {
+        # Tree operations
+        'tree_filter_only',      # Just filter points, return subset
+        'tree_aggregate',        # Filter + compute metrics
+        'tree_compare',          # Compare two filtered subsets
+        # Narrative operations  
+        'narrative_describe',    # Describe tactics/patterns
+        'narrative_explain',     # Explain "why" something happened
+        'narrative_timeline',    # Describe flow/momentum shifts
+        # Meta operations
+        'clarify',               # Ask user for clarification
+        'combine_results',       # Synthesize multiple operation results
+    }
+    
+    # DEBUG MODE - Toggle point details in output
+    # Set to False for production/public output
+    DEBUG_SHOW_POINTS = True
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TERM MAPPINGS - Normalize user language to tree filters
+    # ═══════════════════════════════════════════════════════════════════════════
+    # These map common user terms to actual filter values
+    # Used by LLM parse to expand/normalize user queries
+    TERM_MAPPINGS = {
+        # Rally length shortcuts
+        'short rally': {'rally_length': '<=3'},
+        'short rallies': {'rally_length': '<=3'},
+        'long rally': {'rally_length': '>=7'},
+        'long rallies': {'rally_length': '>=7'},
+        'extended rally': {'rally_length': '>=10'},
+        'extended rallies': {'rally_length': '>=10'},
+        # Match phase shortcuts
+        'late match': {'set': [3, 4, 5]},
+        'early match': {'set': [1, 2]},
+        # NOTE: "late" and "early" alone are too ambiguous - removed
+        # NOTE: serve_number handled by LLM parse, not TERM_MAPPINGS
+        # "first serve" could mean serve_number=1 OR the serve shot itself
+    }
+    
+    # Situation synonyms - map user terms to situation filter values
+    # These expand to multiple situations when user asks about "pressure" etc
+    SITUATION_SYNONYMS = {
+        'clutch': ['break_point', 'deuce', 'set_point', 'match_point'],
+        'clutch points': ['break_point', 'deuce', 'set_point', 'match_point'],
+        'pressure': ['break_point', 'game_point', 'set_point', 'match_point'],
+        'pressure points': ['break_point', 'game_point', 'set_point', 'match_point'],
+        'high leverage': ['break_point', 'set_point', 'match_point'],
+        'big points': ['break_point', 'game_point', 'set_point', 'match_point'],
+    }
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # METRIC REQUIREMENTS CONTRACT
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Each metric specifies what point-level data it requires
+    # If requirements aren't met: downgrade confidence or route to narrative
+    METRIC_REQUIREMENTS = {
+        'points_won': {
+            'required_fields': ['point_winner'],
+            'numerator': 'point_winner == player',
+            'denominator': 'all_points',
+            'perspective': 'both',  # Can be computed for either player
+        },
+        'win_percentage': {
+            'required_fields': ['point_winner'],
+            'numerator': 'point_winner == player',
+            'denominator': 'all_points_in_filter',
+            'perspective': 'both',
+        },
+        'first_serve_pct': {
+            'required_fields': ['serve_number', 'server'],
+            'numerator': 'serve_number == 1 AND serve_in',  # First serves that went in
+            'denominator': 'all_first_serve_attempts',  # Total first serves (in + fault)
+            'perspective': 'server',
+        },
+        'first_serve_win_pct': {
+            'required_fields': ['serve_number', 'point_winner', 'server'],
+            'numerator': 'serve_number == 1 AND point_winner == server',
+            'denominator': 'first_serves_in_play',  # NOT total service points!
+            'perspective': 'server',
+        },
+        'second_serve_win_pct': {
+            'required_fields': ['serve_number', 'point_winner', 'server'],
+            'numerator': 'serve_number == 2 AND point_winner == server',
+            'denominator': 'second_serves_in_play',
+            'perspective': 'server',
+        },
+        'aces': {
+            'required_fields': ['winning_shot', 'server'],
+            'numerator': 'winning_shot == ace OR outcome contains ace',
+            'denominator': None,  # Count metric, no denominator
+            'perspective': 'server',
+        },
+        'double_faults': {
+            'required_fields': ['outcome', 'server'],
+            'numerator': 'outcome == double_fault',
+            'denominator': None,  # Count metric
+            'perspective': 'server',
+        },
+        'return_points_won': {
+            'required_fields': ['point_winner', 'returner'],
+            'numerator': 'point_winner == returner',
+            'denominator': 'all_return_points',
+            'perspective': 'returner',
+        },
+        'return_win_pct': {
+            'required_fields': ['point_winner', 'returner'],
+            'numerator': 'point_winner == returner',
+            'denominator': 'all_return_points',
+            'perspective': 'returner',
+        },
+        'break_points_won': {
+            'required_fields': ['situation', 'point_winner', 'returner'],
+            'numerator': 'situation == break_point AND point_winner == returner',
+            'denominator': 'all_break_points',
+            'perspective': 'returner',  # Returner wins break points
+        },
+        'break_points_saved': {
+            'required_fields': ['situation', 'point_winner', 'server'],
+            'numerator': 'situation == break_point AND point_winner == server',
+            'denominator': 'all_break_points',
+            'perspective': 'server',  # Server saves break points
+        },
+        'break_point_conversion': {
+            'required_fields': ['situation', 'point_winner', 'returner'],
+            'numerator': 'situation == break_point AND point_winner == returner',
+            'denominator': 'break_points_faced',  # NOT return points!
+            'perspective': 'returner',
+        },
+        'winners': {
+            'required_fields': ['outcome', 'point_winner'],
+            'numerator': 'outcome == winner',
+            'denominator': None,  # Count metric
+            'perspective': 'point_winner',
+            'fallback': 'narrative',  # Route to narrative if not reliably tracked
+        },
+        'unforced_errors': {
+            'required_fields': ['outcome', 'error_player'],
+            'numerator': 'outcome == unforced_error',
+            'denominator': None,
+            'perspective': 'error_player',
+            'fallback': 'narrative',
+        },
+        'forced_errors': {
+            'required_fields': ['outcome'],
+            'numerator': 'outcome == forced_error',
+            'denominator': None,
+            'perspective': 'point_winner',  # Winner forced the error
+            'fallback': 'narrative',
+        },
+    }
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # SMALL-N THRESHOLDS
+    # ═══════════════════════════════════════════════════════════════════════════
+    # Confidence thresholds based on sample size
+    SAMPLE_SIZE_THRESHOLDS = {
+        'high_confidence': 15,    # >= 15 points for high confidence
+        'medium_confidence': 5,   # >= 5 points for medium confidence  
+        'low_confidence': 1,      # >= 1 point for low confidence
+        'no_tactical_claims': 7,  # Don't make tactical claims below this
+        'suggest_widening': 3,    # Suggest widening scope below this
+    }
+    
+    # NOTE: Synonym/alias handling already exists in:
+    # - TERM_NORMALIZATION (vague terms like "effective" -> "effectiveness")
+    # - POINT_SCORE_CONFIG['aliases'] (DEUCE -> 40-40)
+    # - COURT_SIDE_CONFIG['aliases'] (ad court -> ad)
+    # - GROUP_CONFIG['aliases'] for each dimension
+    
     # SITUATION CONFIGURATION - Maps situations to their detection logic
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     SITUATION_CONFIG = {
@@ -255,14 +492,15 @@ class TennisChatAgentEmbeddingQALocal:
         },
         'patterns': {
             # Regex patterns for detecting point scores in queries
-            'standard': r'(?:at\s+|when\s+)?(\d{1,2})[\-â€“](\d{1,2}|AD|all)',
-            'with_context': r'(?:at\s+|when\s+)?(\d{1,2})[\-â€“](\d{1,2}|AD|all)(?:\s+(?:points?|score))?',
+            # Use \u2013 for en dash to support both hyphen and en dash in user input
+            'standard': r'(?:at\s+|when\s+)?(\d{1,2})[-\u2013](\d{1,2}|AD|all)',
+            'with_context': r'(?:at\s+|when\s+)?(\d{1,2})[-\u2013](\d{1,2}|AD|all)(?:\s+(?:points?|score))?',
         },
         'normalization_rules': {
             # How to normalize point scores for comparison
             'uppercase': True,
             'deuce_to_40_40': True,
-            'handle_en_dash': True,  # Convert en dash (â€“) to hyphen (-)
+            'handle_en_dash': True,  # Convert en dash to hyphen (-)
         }
     }
     
@@ -678,6 +916,7 @@ class TennisChatAgentEmbeddingQALocal:
             'total_filter': 'always',
             'count_filter': 'on_match',
             'keywords': ['forced error'],
+            'exclude_keywords': ['unforced'],  # CRITICAL: Don't match "unforced error"!
             'display_type': 'count',
             'label': 'Forced Errors (Induced)'
         },
@@ -961,6 +1200,7 @@ class TennisChatAgentEmbeddingQALocal:
         self.match_id = "match_data"  # Generic default, overwritten when loading match
         self.player1 = None
         self.player2 = None
+        self.tournament = None  # Tournament name (for Grand Slam detection)
         self.point_by_point = []  # Structured point-by-point data for analysis
         
         # === MATCH FILTER INVENTORY ===
@@ -1029,7 +1269,7 @@ class TennisChatAgentEmbeddingQALocal:
         Examples:
             "30-30" -> "30-30"
             "DEUCE" -> "40-40"
-            "30â€“30" (en dash) -> "30-30"
+            "30-30" (en dash) -> "30-30"
             "40-AD" -> "40-AD"
         """
         if not point_score:
@@ -1038,9 +1278,9 @@ class TennisChatAgentEmbeddingQALocal:
         # Apply normalization rules from config
         normalized = str(point_score)
         
-        # Handle en dash -> hyphen
+        # Handle en dash -> hyphen (en dash is U+2013)
         if self.POINT_SCORE_CONFIG['normalization_rules']['handle_en_dash']:
-            normalized = normalized.replace('â€“', '-')
+            normalized = normalized.replace('\u2013', '-')
         
         # Uppercase
         if self.POINT_SCORE_CONFIG['normalization_rules']['uppercase']:
@@ -1081,6 +1321,63 @@ class TennisChatAgentEmbeddingQALocal:
     def _get_role_config(self, role: str) -> Dict:
         """Get config for a role - NEVER hardcode role checks!"""
         return self.ROLE_CONFIG.get(role.lower() if role else '', {})
+    
+    def _filter_matches(self, actual_value, filter_value) -> bool:
+        """
+        UNIVERSAL filter matching - handles single values, lists, tuples, and ranges.
+        
+        Use this EVERYWHERE instead of direct equality checks!
+        
+        Args:
+            actual_value: The actual value from the point data (e.g., set_number=1)
+            filter_value: The filter to match against (e.g., 1, [1,2], (1,2), ">=5")
+            
+        Returns:
+            True if actual_value matches filter_value
+        """
+        if filter_value is None:
+            return True  # No filter = all pass
+            
+        # Handle list/tuple: check if actual is IN the collection
+        if isinstance(filter_value, (list, tuple)):
+            # If it's a 2-element numeric collection, could be a range
+            if len(filter_value) == 2:
+                try:
+                    min_val, max_val = filter_value
+                    if isinstance(min_val, (int, float)) and isinstance(max_val, (int, float)):
+                        # Looks like a range - but only if actual is numeric too
+                        if isinstance(actual_value, (int, float)):
+                            # Ambiguous: could be range (min, max) or list [val1, val2]
+                            # Use heuristic: if actual_value is in the list, it's a list match
+                            if actual_value in filter_value:
+                                return True
+                            # Otherwise treat as range
+                            return min_val <= actual_value <= max_val
+                except (TypeError, ValueError):
+                    pass
+            # Default list behavior: check membership
+            return actual_value in filter_value
+            
+        # Handle string comparisons: ">=5", "<=3", ">7", "<10"
+        if isinstance(filter_value, str):
+            try:
+                if filter_value.startswith('>='):
+                    return actual_value >= int(filter_value[2:])
+                elif filter_value.startswith('<='):
+                    return actual_value <= int(filter_value[2:])
+                elif filter_value.startswith('>'):
+                    return actual_value > int(filter_value[1:])
+                elif filter_value.startswith('<'):
+                    return actual_value < int(filter_value[1:])
+                elif filter_value.isdigit():
+                    return actual_value == int(filter_value)
+            except (TypeError, ValueError):
+                pass
+            # Fall back to string equality
+            return str(actual_value).lower() == filter_value.lower()
+        
+        # Default: exact match
+        return actual_value == filter_value
     
     def _get_player_for_role(self, role: str, server: str, returner: str,
                               point_winner: str = '', error_player: str = '') -> str:
@@ -1266,9 +1563,14 @@ class TennisChatAgentEmbeddingQALocal:
         metric_config = self.METRIC_CONFIG.get(current_metric, {}) if current_metric else {}
         player_role = metric_config.get('player_role', 'server')  # Default to server
         
-        # Get player field from ROLE_CONFIG
-        role_config = self.ROLE_CONFIG.get(player_role, {})
-        player_field = role_config.get('player_field', 'server')
+        # CRITICAL: For 'both' role (like points_won), group by POINT_WINNER not server
+        # This ensures "who won more points at X" groups by who WON, not who served
+        if player_role == 'both':
+            player_field = 'point_winner'
+        else:
+            # Get player field from ROLE_CONFIG
+            role_config = self.ROLE_CONFIG.get(player_role, {})
+            player_field = role_config.get('player_field', 'server')
         
         # Map to filter/metadata keys
         field_to_key = {
@@ -1831,8 +2133,8 @@ class TennisChatAgentEmbeddingQALocal:
         if secondary_group_by or analysis_type in ['comparison', 'ratio', 'trend']:
             return 2
         
-        # Comparing across sets, situations, or players
-        if group_by in ['sets', 'set_groups', 'player', 'situation', 'rally_length_category']:
+        # Comparing across dimensions (grouping requires coordination)
+        if group_by:  # Any grouping adds complexity
             return 2
         
         # Multiple filters (needs coordination)
@@ -1914,6 +2216,7 @@ class TennisChatAgentEmbeddingQALocal:
         self.match_winner = None
         self.match_loser = None
         self.game_winners = {}  # Maps (set_num, game_num) -> winner (player1 or player2)
+        self.game_servers = {}  # Maps (set_num, game_num) -> server (player1 or player2)
         
         # Find the Final Score line
         score_match = re.search(r'Final Score:\s*(.+?)(?:\n|$)', content)
@@ -2235,8 +2538,10 @@ class TennisChatAgentEmbeddingQALocal:
             'KEY POINTS STATISTICS (RETURNS):': 'medium',
             'SHOTS1 STATISTICS:': 'large',
             'SHOTS2 STATISTICS:': 'large',
-            'SHOTDIR1 STATISTICS:': 'large',
-            'SHOTDIR2 STATISTICS:': 'large',
+            # CRITICAL: SHOTDIR sections must NOT be split - they contain win percentages
+            # in the "DETAILED BREAKDOWN" subsection that must stay with the totals
+            'SHOTDIR1 STATISTICS:': 'medium',
+            'SHOTDIR2 STATISTICS:': 'medium',
             'EXPLICIT TOTALS FOR SHOT DIRECTION + OUTCOME COMBINATIONS:': 'small',
             'NETPTS1 STATISTICS:': 'small',
             'NETPTS2 STATISTICS:': 'small',
@@ -2753,6 +3058,14 @@ class TennisChatAgentEmbeddingQALocal:
                 self.player2 = players_match.group(2).strip()
                 print(f"[EXTRACT] Found players: {self.player1} vs {self.player2}")
         
+        # Extract tournament info for Grand Slam detection
+        if not self.tournament:
+            import re
+            tournament_match = re.search(r'at the (.+?) tournament', content, re.IGNORECASE)
+            if tournament_match:
+                self.tournament = tournament_match.group(1).strip()
+                print(f"[EXTRACT] Found tournament: {self.tournament}")
+        
         # Parse match score for set mapping
         self._parse_match_score(content)
         
@@ -2814,15 +3127,18 @@ class TennisChatAgentEmbeddingQALocal:
         """
         Parse point-by-point data to determine which player won each game.
         Populates self.game_winners with mapping of (set_num, game_num) -> winner.
+        Also populates self.game_servers with mapping of (set_num, game_num) -> server.
         """
         if not self.point_by_point:
             return
         
         self.game_winners = {}
+        self.game_servers = {}
         prev_games = None
         current_set = 1
         current_game = 0  # Current game number (0 = not started, 1 = first game, etc.)
         prev_set = 1
+        current_game_server = None  # Track who's serving the current game
         
         for point_data in self.point_by_point:
             score = point_data.get('score', '')
@@ -2880,11 +3196,20 @@ class TennisChatAgentEmbeddingQALocal:
                                     self.game_winners[(current_set, 1)] = 'player1'
                                 elif p2_games > p1_games:
                                     self.game_winners[(current_set, 1)] = 'player2'
+                                # Can't determine server for completed game 1, skip
                                 # Move to next game since game 1 is complete
                                 current_game = 2
+                                # Record server for game 2 (current point's server)
+                                server_key = 'player1' if server == self.player1 else 'player2'
+                                self.game_servers[(current_set, current_game)] = server_key
+                                current_game_server = server_key
                             else:
                                 # Starting at 0-0, we're in game 1 (not completed yet)
                                 current_game = 1
+                                # Record server for game 1
+                                server_key = 'player1' if server == self.player1 else 'player2'
+                                self.game_servers[(current_set, current_game)] = server_key
+                                current_game_server = server_key
                     else:
                         # A game was just completed - determine who won the game that just ended
                         if '-' in games_score and '-' in prev_games:
@@ -2909,6 +3234,10 @@ class TennisChatAgentEmbeddingQALocal:
                             
                             # Move to next game AFTER recording the winner
                             current_game += 1
+                            # Record server for the new game (current point's server)
+                            server_key = 'player1' if server == self.player1 else 'player2'
+                            self.game_servers[(current_set, current_game)] = server_key
+                            current_game_server = server_key
                         else:
                             # Games score changed but not in expected format, increment anyway
                             if current_game == 0:
@@ -3280,8 +3609,11 @@ class TennisChatAgentEmbeddingQALocal:
         # Get games won
         games_won = []
         for (set_num, game_num), winner in self.game_winners.items():
-            if set_filter and set_num != set_filter:
-                continue
+            if set_filter:
+                if isinstance(set_filter, (list, tuple)) and set_num not in set_filter:
+                    continue
+                elif not isinstance(set_filter, (list, tuple)) and set_num != set_filter:
+                    continue
             
             if (is_player1 and winner == 'player1') or (is_player2 and winner == 'player2'):
                 # TODO: Add role filtering if needed (requires tracking server per game)
@@ -3319,8 +3651,11 @@ class TennisChatAgentEmbeddingQALocal:
         
         games_result = []
         for (set_num, game_num), winner in self.game_winners.items():
-            if set_filter and set_num != set_filter:
-                continue
+            if set_filter:
+                if isinstance(set_filter, (list, tuple)) and set_num not in set_filter:
+                    continue
+                elif not isinstance(set_filter, (list, tuple)) and set_num != set_filter:
+                    continue
             
             server = self.game_servers.get((set_num, game_num), '')
             server_is_player1 = server and player1_normalized in server.lower()
@@ -3734,6 +4069,56 @@ class TennisChatAgentEmbeddingQALocal:
             'raw': shot_description
         }
     
+    def _calculate_rally_length(self, rally_shots: List[Dict], point_text: str = '') -> int:
+        """
+        SINGLE SOURCE OF TRUTH for rally length calculation.
+        
+        Tennis convention: Rally starts at the RETURN, not the serve.
+        - Ace (unreturned serve) = 0-shot rally
+        - Serve + Return = 1-shot rally
+        - Serve + Return + Groundstroke = 2-shot rally
+        
+        CRITICAL: Source data only annotates LONGER rallies (4+ shots).
+        For short rallies, no annotation exists, so we must calculate.
+        - If annotated "(X-shot rally)" exists → TRUST IT (it's correct)
+        - If NOT annotated (short rallies) → CALCULATE from shots
+        """
+        import re
+        
+        # SPECIAL CASE: Aces are 0-shot rallies
+        # Check for ace in point text OR in shot outcomes
+        if 'ace' in point_text.lower():
+            return 0
+        
+        # Exclude faults and lets
+        actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
+        
+        # Check for ace in shot outcomes
+        if any(s.get('outcome') == 'ace' for s in actual_shots):
+            return 0
+        
+        # PREFER the annotated rally count "(X-shot rally)" if it exists (LONGER rallies)
+        # The annotation is CORRECT and already excludes serves
+        annotated_rally_match = (
+            re.search(r'\((\d+)\s*-\s*shot\s+rally\)', point_text, re.IGNORECASE) or
+            re.search(r'\((\d+)\s*shot\s+rally\)', point_text, re.IGNORECASE) or
+            re.search(r'\((\d+)\s*-\s*shot\)', point_text, re.IGNORECASE)
+        )
+        if annotated_rally_match:
+            return int(annotated_rally_match.group(1))
+        
+        # FALLBACK: Calculate for SHORT rallies (not annotated in source)
+        # Count rally shots: EXCLUDE serves (rally starts at return)
+        # In tennis, rallies start at the return (shot 2), not the serve (shot 1)
+        # Serve + Return = 1 shot, Serve + Return + Groundstroke = 2 shots, etc.
+        rally_length = len([
+            s for s in actual_shots 
+            if not (s.get('shot_type') or '').lower().startswith('serve') 
+            and s.get('shot_number') != 1
+        ])
+        
+        return rally_length
+    
     # =========================================================================
     # SHOT NORMALIZATION SYSTEM
     # =========================================================================
@@ -3985,27 +4370,8 @@ class TennisChatAgentEmbeddingQALocal:
         rally_shots = self._parse_rally_sequence(point_text, server, returner)
         actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
         
-        # PREFER the annotated rally count "(X-shot rally)" if it exists
-        # CRITICAL: In tennis terminology, rallies START AT THE RETURN (shot 1), NOT the serve.
-        # The annotated count correctly excludes serves, counting from return onwards.
-        # Example: Serve â†’ Return â†’ Groundstroke â†’ Groundstroke = 3-shot rally
-        # Try multiple patterns to match annotated rally count
-        annotated_rally_match = (
-            re.search(r'\((\d+)\s*-\s*shot\s*rally\)', point_text, re.IGNORECASE) or
-            re.search(r'\((\d+)\s*shot\s*rally\)', point_text, re.IGNORECASE) or
-            re.search(r'\((\d+)\s*-\s*shot\)', point_text, re.IGNORECASE)
-        )
-        if annotated_rally_match:
-            rally_length = int(annotated_rally_match.group(1))
-        else:
-            # Fallback: exclude serve shots from count
-            # In tennis, rallies start at the return (shot 2), not the serve (shot 1)
-            # Exclude shots where: shot_type starts with 'serve' OR shot_number is 1 (serve is always shot 1)
-            rally_length = len([
-                s for s in actual_shots 
-                if not (s.get('shot_type') or '').lower().startswith('serve') 
-                and s.get('shot_number') != 1
-            ])
+        # Use centralized rally length calculation (single source of truth)
+        rally_length = self._calculate_rally_length(rally_shots, point_text)
         
         # Rally category
         if rally_length <= 3:
@@ -4740,9 +5106,12 @@ class TennisChatAgentEmbeddingQALocal:
         for game_key, game_data in self._game_aggregation.items():
             set_num, game_num = game_key
             
-            # Apply set filter
-            if set_filter and set_num != set_filter:
-                continue
+            # Apply set filter (supports both single value and list)
+            if set_filter:
+                if isinstance(set_filter, (list, tuple)) and set_num not in set_filter:
+                    continue
+                elif not isinstance(set_filter, (list, tuple)) and set_num != set_filter:
+                    continue
             
             winner = game_data.get('winner', '')
             server = game_data.get('server', '')
@@ -4887,9 +5256,13 @@ class TennisChatAgentEmbeddingQALocal:
             game_score = meta.get('game_score', '0-0')
             point_set_num = meta.get('set_number', 1)
             
-            # Apply set filter
-            if set_filter and point_set_num != set_filter:
-                continue
+            # Apply set filter (supports both single value and list)
+            if set_filter:
+                if isinstance(set_filter, (list, tuple)):
+                    if point_set_num not in set_filter:
+                        continue
+                elif point_set_num != set_filter:
+                    continue
             
             # Detect set change using normalized scores
             curr_normalized = normalize_set_score(set_score, server)
@@ -5050,9 +5423,13 @@ class TennisChatAgentEmbeddingQALocal:
         if result['total_games'] == 0 and hasattr(self, 'game_winners') and self.game_winners:
             for game_key, winner in self.game_winners.items():
                 if set_filter:
-                    # Filter by set if specified
+                    # Filter by set if specified (supports both single value and list)
                     if isinstance(game_key, tuple) and len(game_key) >= 1:
-                        if game_key[0] != set_filter:
+                        set_num = game_key[0]
+                        if isinstance(set_filter, (list, tuple)):
+                            if set_num not in set_filter:
+                                continue
+                        elif set_num != set_filter:
                             continue
                 
                 result['total_games'] += 1
@@ -5693,6 +6070,8 @@ class TennisChatAgentEmbeddingQALocal:
             "changed shot direction",
             # Sequential momentum analysis (specific patterns, not common words)
             "consecutive", "streak", "run of", "string of",
+            "stretch", "hot streak", "get hot", "got hot", "went on a run",
+            "x/y points", "x of y points", "12/14", "10/12",  # Pattern like "12/14 points"
             # Rally length and patterns
             "long rallies", "short rallies", "rally length",
             "extended rallies", "quick points",
@@ -5785,14 +6164,22 @@ class TennisChatAgentEmbeddingQALocal:
         # Simple specific questions
         return 5  # Default for simple questions
 
-    def retrieve_relevant_chunks(self, query: str, top_k: int = None) -> List[Dict]:
+    def retrieve_relevant_chunks(self, query: str, top_k: int = None, filters: Dict = None) -> List[Dict]:
         """
         Retrieve the most relevant chunks for a given query with enhanced filtering.
         Uses adaptive chunk count based on question complexity.
+        
+        Args:
+            query: The query string
+            top_k: Number of chunks to retrieve
+            filters: Optional filters dict (e.g., {'set': 3, 'situation': 'break_point'})
         """
         # Determine optimal chunk count based on question complexity
         if top_k is None:
             top_k = self._determine_optimal_chunk_count(query)
+        
+        # Extract set filter if provided
+        set_filter = filters.get('set') if filters else None
         
         # BOOST chunk count for multi-set comparisons (need data from multiple sets)
         multiple_sets = self._detect_multiple_set_references(query)
@@ -5825,6 +6212,49 @@ class TennisChatAgentEmbeddingQALocal:
         
         # Apply intelligent filtering based on query content
         filtered_chunks = self._filter_chunks_by_query(query, candidates)
+        
+        # CRITICAL FIX: De-prioritize match-wide summary chunks when filters are active
+        # When asking "forehand winners in Set 3", we don't want the match-total SHOTS1 table
+        # We want Set 3-specific point descriptions or at least acknowledge the limitation
+        if filters:
+            # Identify match-wide summary sections that should be de-prioritized
+            summary_sections = [
+                'overview_statistics',
+                'shots1_statistics',
+                'shots2_statistics', 
+                # Note: SHOTDIR is okay because it has detailed breakdowns
+                # Note: serve/return stats are okay because they're detailed
+            ]
+            
+            # Separate summary chunks from specific chunks
+            summary_chunks = []
+            specific_chunks = []
+            
+            for chunk in filtered_chunks:
+                section = chunk.get('metadata', {}).get('section', '').lower()
+                if any(summary in section for summary in summary_sections):
+                    summary_chunks.append(chunk)
+                else:
+                    specific_chunks.append(chunk)
+            
+            # If we have filters, prioritize specific chunks and add summaries at the end with warning
+            if specific_chunks:
+                # Add summaries at the end with reduced priority
+                for summary_chunk in summary_chunks[:2]:  # Only keep 2 summary chunks max
+                    # Add warning to metadata
+                    if 'metadata' not in summary_chunk:
+                        summary_chunk['metadata'] = {}
+                    summary_chunk['metadata']['warning'] = 'Match-wide totals (not filtered to specific set/situation)'
+                
+                filtered_chunks = specific_chunks + summary_chunks[:2]
+                print(f"[CHUNK-FILTER] De-prioritized {len(summary_chunks)} match-wide summary chunks due to filters: {filters}")
+            else:
+                # No specific chunks found, keep summaries but warn
+                for summary_chunk in summary_chunks:
+                    if 'metadata' not in summary_chunk:
+                        summary_chunk['metadata'] = {}
+                    summary_chunk['metadata']['warning'] = f"Match-wide totals only (no {filters}-specific breakdown available)"
+                print(f"[CHUNK-FILTER] WARNING: Only match-wide summaries found for filtered query: {filters}")
         
         # CRITICAL FIX: For specific point number questions, force include the chunk containing that point
         import re
@@ -5945,7 +6375,7 @@ class TennisChatAgentEmbeddingQALocal:
                 "forced error": ["forced error", "forced errors", "induced"],
                 "unforced error": ["unforced error", "unforced errors"],
                 "pt ending": ["pt ending", "point ending", "ended", "end points"],
-                "pts won": ["pts won", "points won", "ptswon"],
+                "pts won": ["pts won", "points won", "ptswon", "successful", "success", "win rate", "win percentage", "win %", "win%", "best", "most effective", "effective"],
                 "pts lost": ["pts lost", "points lost", "ptslost"]
             }
             
@@ -5961,7 +6391,7 @@ class TennisChatAgentEmbeddingQALocal:
             for outcome, outcome_keywords_list in outcome_keywords.items():
                 if any(keyword in query.lower() for keyword in outcome_keywords_list):
                     detected_outcome = outcome
-                    break
+            
             
             if detected_direction and detected_outcome:
                 # Determine which player is being asked about
@@ -5978,80 +6408,129 @@ class TennisChatAgentEmbeddingQALocal:
                     target_chunk_name = None
                 
                 if player_mentioned == "both":
-                    # Force include both players' shot direction chunks for "each player" questions
-                    chunk_names = ["shotdir1_statistics", "shotdir2_statistics"]
-                    chunk1_found = None
-                    chunk2_found = None
+                    # Force include ALL parts of both players' shot direction chunks
+                    # CRITICAL: Get ALL chunk parts to include win percentages from DETAILED BREAKDOWN
+                    chunks1_found = []
+                    chunks2_found = []
                     explicit_totals_found = None
                     
-                    # Find both chunks and explicit totals chunk
                     for chunk in self.chunks:
                         if "shotdir1_statistics" in chunk['metadata']['section']:
-                            chunk1_found = {
+                            chunks1_found.append({
                                 "text": chunk['text'],
                                 "metadata": chunk['metadata'],
-                                "distance": 0.0,  # Perfect match
-                                "relevance_score": 9.5  # Very high score for specific direction/outcome queries
-                            }
+                                "distance": 0.0,
+                                "relevance_score": 9.5
+                            })
                         elif "shotdir2_statistics" in chunk['metadata']['section']:
-                            chunk2_found = {
+                            chunks2_found.append({
                                 "text": chunk['text'],
                                 "metadata": chunk['metadata'],
-                                "distance": 0.0,  # Perfect match
-                                "relevance_score": 9.5  # Very high score for specific direction/outcome queries
-                            }
+                                "distance": 0.0,
+                                "relevance_score": 9.5
+                            })
                         elif "explicit_totals_for_shot_direction_+_outcome_combinations" in chunk['metadata']['section']:
                             explicit_totals_found = {
                                 "text": chunk['text'],
                                 "metadata": chunk['metadata'],
-                                "distance": 0.0,  # Perfect match
-                                "relevance_score": 10.0  # Highest score for explicit totals
+                                "distance": 0.0,
+                                "relevance_score": 10.0
                             }
                     
                     # Add explicit totals chunk first (highest priority)
                     if explicit_totals_found:
-                        # Remove any existing explicit totals chunk first
                         filtered_chunks = [chunk for chunk in filtered_chunks if "explicit_totals_for_shot_direction_+_outcome_combinations" not in chunk['metadata']['section']]
-                        # Insert at the very beginning
                         filtered_chunks.insert(0, explicit_totals_found)
                     
-                    # Add chunks if not already in results
-                    if chunk1_found and not any("shotdir1_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
-                        filtered_chunks.insert(0, chunk1_found)
-                    
-                    if chunk2_found and not any("shotdir2_statistics" in chunk['metadata']['section'] for chunk in filtered_chunks):
-                        filtered_chunks.insert(0, chunk2_found)
+                    # Add ALL matching chunks (all parts) to get win percentages
+                    for chunk_found in chunks1_found + chunks2_found:
+                        chunk_section = chunk_found['metadata']['section']
+                        if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
+                            filtered_chunks.insert(0, chunk_found)
                 else:
-                    # Force include only the specific player's shot direction chunk and explicit totals
-                    target_chunk = None
+                    # Force include ALL parts of specific player's shot direction chunk and explicit totals
+                    # CRITICAL: Get ALL chunk parts to include win percentages from DETAILED BREAKDOWN
+                    target_chunks = []
                     explicit_totals_found = None
                     
                     for chunk in self.chunks:
-                        if target_chunk_name in chunk['metadata']['section']:
-                            target_chunk = {
-                                "text": chunk['text'],
-                                "metadata": chunk['metadata'],
-                                "distance": 0.0,  # Perfect match
-                                "relevance_score": 9.5  # Very high score for specific direction/outcome queries
-                            }
-                        elif "explicit_totals_for_shot_direction_+_outcome_combinations" in chunk['metadata']['section']:
+                        chunk_section = chunk.get('metadata', {}).get('section', '')
+                        if target_chunk_name in chunk_section:
+                            target_chunks.append({
+                                "text": chunk.get('text', ''),
+                                "metadata": chunk.get('metadata', {}),
+                                "distance": 0.0,
+                                "relevance_score": 9.5
+                            })
+                        elif "explicit_totals_for_shot_direction_+_outcome_combinations" in chunk_section:
                             explicit_totals_found = {
-                                "text": chunk['text'],
-                                "metadata": chunk['metadata'],
-                                "distance": 0.0,  # Perfect match
-                                "relevance_score": 10.0  # Highest score for explicit totals
+                                "text": chunk.get('text', ''),
+                                "metadata": chunk.get('metadata', {}),
+                                "distance": 0.0,
+                                "relevance_score": 10.0
                             }
                     
                     # Add explicit totals chunk first (highest priority)
                     if explicit_totals_found:
-                        # Remove any existing explicit totals chunk first
                         filtered_chunks = [chunk for chunk in filtered_chunks if "explicit_totals_for_shot_direction_+_outcome_combinations" not in chunk['metadata']['section']]
-                        # Insert at the very beginning
                         filtered_chunks.insert(0, explicit_totals_found)
                     
-                    # Add chunk if not already in results
-                    if target_chunk and not any(target_chunk_name in chunk['metadata']['section'] for chunk in filtered_chunks):
+                    # Add ALL matching chunks (all parts) to get win percentages
+                    for target_chunk in target_chunks:
+                        chunk_section = target_chunk['metadata']['section']
+                        if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
                         filtered_chunks.insert(0, target_chunk)
+                
+                direction_outcome_fix_applied = True
+            
+            # DIRECTION-ONLY FIX: If direction keywords mentioned but no explicit outcome,
+            # still include SHOTDIR chunks for pattern comparison questions (e.g., "most successful forehand pattern")
+            if detected_direction and not detected_outcome:
+                # Check if this is a comparison/pattern question about shot directions
+                pattern_comparison_keywords = ["pattern", "patterns", "compare", "comparison", "which", "best", "most", "successful", "effective", "win"]
+                is_pattern_question = any(kw in query.lower() for kw in pattern_comparison_keywords)
+                
+                if is_pattern_question:
+                    # Determine which player
+                    player_mentioned = None
+                    if self.player1 and (self.player1.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player1.lower().split())):
+                        player_mentioned = self.player1
+                        target_chunk_name = "shotdir1_statistics"
+                    elif self.player2 and (self.player2.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player2.lower().split())):
+                        player_mentioned = self.player2
+                        target_chunk_name = "shotdir2_statistics"
+                    else:
+                        player_mentioned = "both"
+                        target_chunk_name = None
+                    
+                    if player_mentioned == "both":
+                        # Include ALL parts of both players' SHOTDIR chunks (they may be split!)
+                        shotdir1_chunks = []
+                        shotdir2_chunks = []
+                        for chunk in self.chunks:
+                            if "shotdir1_statistics" in chunk['metadata']['section']:
+                                shotdir1_chunks.append({"text": chunk['text'], "metadata": chunk['metadata'], "distance": 0.0, "relevance_score": 9.5})
+                            elif "shotdir2_statistics" in chunk['metadata']['section']:
+                                shotdir2_chunks.append({"text": chunk['text'], "metadata": chunk['metadata'], "distance": 0.0, "relevance_score": 9.5})
+                        
+                        # Add all SHOTDIR chunks (all parts) to get complete data including win percentages
+                        for shotdir_chunk in shotdir1_chunks + shotdir2_chunks:
+                            chunk_section = shotdir_chunk['metadata']['section']
+                            if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
+                                filtered_chunks.insert(0, shotdir_chunk)
+                    else:
+                        # Include ALL parts of specific player's SHOTDIR chunk (it may be split!)
+                        # CRITICAL: Don't break after first match - get ALL parts to include win percentages
+                        shotdir_chunks_found = []
+                        for chunk in self.chunks:
+                            if target_chunk_name in chunk['metadata']['section']:
+                                shotdir_chunks_found.append({"text": chunk['text'], "metadata": chunk['metadata'], "distance": 0.0, "relevance_score": 9.5})
+                        
+                        # Add all SHOTDIR chunks (all parts) to get complete data including win percentages
+                        for shotdir_chunk in shotdir_chunks_found:
+                            chunk_section = shotdir_chunk['metadata']['section']
+                            if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
+                                filtered_chunks.insert(0, shotdir_chunk)
                 
                 direction_outcome_fix_applied = True
             
@@ -6175,17 +6654,26 @@ class TennisChatAgentEmbeddingQALocal:
                                             break
                         
                         # If no key points chunk found, fall back to regular statistics
+                        # CRITICAL: Get ALL parts of split sections (return_statistics is 'large' = split)
                         if not target_chunk:
+                            target_chunks_list = []
                             for chunk in self.chunks:
                                 # Handle split return statistics chunks (e.g., return2_statistics_detailed_part_1)
                                 if target_section in chunk['metadata']['section'] or (target_section.replace('_statistics', '') in chunk['metadata']['section'] and 'return' in chunk['metadata']['section']):
-                                    target_chunk = {
+                                    target_chunks_list.append({
                                         "text": chunk['text'],
                                         "metadata": chunk['metadata'],
-                                        "distance": 0.0,  # Perfect match
-                                        "relevance_score": 9.0  # High score for BP/GP questions
-                                    }
-                                    break
+                                        "distance": 0.0,
+                                        "relevance_score": 9.0
+                                    })
+                            # Use the first chunk as target_chunk for backwards compatibility
+                            if target_chunks_list:
+                                target_chunk = target_chunks_list[0]
+                                # Add ALL parts to filtered_chunks
+                                for tc in target_chunks_list[1:]:
+                                    chunk_section = tc['metadata']['section']
+                                    if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
+                                        filtered_chunks.insert(0, tc)
                         
                         # Add the chunk if not already in results
                         if target_chunk:
@@ -6210,58 +6698,53 @@ class TennisChatAgentEmbeddingQALocal:
                         serve_section = "serve1_statistics_summary" if (self.player1 and (self.player1.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player1.lower().split()))) else "serve2_statistics_summary"
                         return_section = "return1_statistics_detailed" if (self.player1 and (self.player1.lower() in query.lower() or any(word.lower() in query.lower() for word in self.player1.lower().split()))) else "return2_statistics_detailed"
                         
-                        # Add both chunks
+                        # Add ALL parts of both sections (return_statistics is 'large' = split)
                         for section in [serve_section, return_section]:
-                            target_chunk = None
+                            section_chunks = []
                             for chunk in self.chunks:
                                 if section in chunk['metadata']['section']:
-                                    target_chunk = {
+                                    section_chunks.append({
                                         "text": chunk['text'],
                                         "metadata": chunk['metadata'],
                                         "distance": 0.0,
                                         "relevance_score": 9.0
-                                    }
-                                    break
+                                    })
                             
-                            if target_chunk and not any(section in chunk['metadata']['section'] for chunk in filtered_chunks):
-                                filtered_chunks.insert(0, target_chunk)
+                            # Add ALL matching chunks (all parts)
+                            for sc in section_chunks:
+                                chunk_section = sc['metadata']['section']
+                                if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
+                                    filtered_chunks.insert(0, sc)
                                 bp_gp_fix_applied = True
             
             # DIRECTION TOTALS FIX: For questions asking about shot direction totals (e.g., "how many crosscourt shots")
             if any(direction in query.lower() for direction in ["crosscourt", "down the line", "down the middle", "inside-out", "inside-in"]) and not any(outcome in query.lower() for outcome in ["winner", "winners", "unforced error", "unforced errors", "forced error", "forced errors", "error", "errors"]):
-                # Force include both shotdir chunks for comprehensive direction totals
-                shotdir1_chunk = None
-                shotdir2_chunk = None
+                # Force include ALL parts of both shotdir chunks (may be split in old pickles)
+                shotdir1_chunks = []
+                shotdir2_chunks = []
                 
-                # Find shotdir1_statistics chunk
+                # Find ALL shotdir1_statistics chunks (all parts)
                 for chunk in self.chunks:
                     if 'shotdir1_statistics' in chunk['metadata']['section']:
-                        shotdir1_chunk = {
+                        shotdir1_chunks.append({
                             "text": chunk['text'],
                             "metadata": chunk['metadata'],
-                            "distance": 0.0,  # Perfect match
-                            "relevance_score": 8.0  # High score
-                        }
-                        break
-                
-                # Find shotdir2_statistics chunk
-                for chunk in self.chunks:
-                    if 'shotdir2_statistics' in chunk['metadata']['section']:
-                        shotdir2_chunk = {
+                            "distance": 0.0,
+                            "relevance_score": 8.0
+                        })
+                    elif 'shotdir2_statistics' in chunk['metadata']['section']:
+                        shotdir2_chunks.append({
                             "text": chunk['text'],
                             "metadata": chunk['metadata'],
-                            "distance": 0.0,  # Perfect match
-                            "relevance_score": 8.0  # High score
-                        }
-                        break
+                            "distance": 0.0,
+                            "relevance_score": 8.0
+                        })
                 
-                # Add shotdir1 chunk if not already in results
-                if shotdir1_chunk and not any('shotdir1_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                    filtered_chunks.insert(0, shotdir1_chunk)
-                
-                # Add shotdir2 chunk if not already in results
-                if shotdir2_chunk and not any('shotdir2_statistics' in chunk['metadata']['section'] for chunk in filtered_chunks):
-                    filtered_chunks.insert(0, shotdir2_chunk)
+                # Add ALL shotdir chunks if not already in results
+                for sc in shotdir1_chunks + shotdir2_chunks:
+                    chunk_section = sc['metadata']['section']
+                    if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
+                        filtered_chunks.insert(0, sc)
             
             # UNIVERSAL FIX: For "each player" or "both players" questions, force include both players' chunks
             detected_stat_type = None  # Initialize outside the if block
@@ -6609,8 +7092,9 @@ class TennisChatAgentEmbeddingQALocal:
                 
         
         # CRITICAL FIX: For set-specific questions (single set only)
+        # Check both query text AND explicit set_filter parameter
         elif not multiple_sets:  # Only run single-set logic if NOT a multi-set comparison
-            set_number = self._detect_set_reference(query)
+            set_number = set_filter or self._detect_set_reference(query)
             if set_number and hasattr(self, 'set_mapping') and set_number in self.set_mapping:
                 target_set_score = self.set_mapping[set_number]
                 
@@ -7768,10 +8252,43 @@ Answer:"""
         # Examples that can stay analytical:
         #   - "how many forehand winners" (counts only winning shots)
         #   - "unforced errors" (counts point outcomes)
+        #   - "rally was 0-4 shots" (rally length filter, not shot counting)
         if ' shot' in query_lower or query_lower.startswith('shot'):
-            # Allow analytical path if specifically asking about winners/errors (point outcomes)
-            if not any(kw in query_lower for kw in ['winner', 'winners', 'error', 'errors', 'winning shot']):
-                return 'narrative'
+            # EXCEPTION: Rally length patterns (e.g., "0-4 shots", "5+ shots", "rally was 3 shots")
+            # These refer to rally LENGTH metadata (tree-based), not counting individual shots
+            import re
+            rally_length_patterns = [
+                r'\d+[-–]\d+\s*shots',  # "0-4 shots", "5-10 shots"
+                r'\d+\+?\s*shots?\s*(?:rally|rallies)',  # "5+ shot rally", "10 shot rallies"
+                r'rally\s+(?:was|were|of|with)\s+\d+',  # "rally was 5 shots", "rally of 10 shots"
+                r'when\s+(?:the\s+)?rally\s+(?:was|is)\s+\d+',  # "when the rally was 4 shots"
+            ]
+            is_rally_length_reference = any(re.search(pattern, query_lower) for pattern in rally_length_patterns)
+            
+            if not is_rally_length_reference:
+                # Allow analytical path if specifically asking about winners/errors (point outcomes)
+                if not any(kw in query_lower for kw in ['winner', 'winners', 'error', 'errors', 'winning shot']):
+                    return 'narrative'
+        
+        # GAME-STATE CHAIN QUERIES - require game-by-game analysis, route to narrative
+        # These track game progression (0-15, 15-0, etc.) which requires sequential analysis
+        # Examples:
+        #   - "after losing the first point of the game" (need to find 0-15 games, track subsequent points)
+        #   - "after winning the first two points" (need to find 30-0 games, track subsequent points)
+        #   - "after going up/down 0-30, 40-0, etc."
+        import re
+        game_state_patterns = [
+            r'after\s+(?:losing|winning)\s+(?:the\s+)?(?:first|second|third|opening)\s+point',
+            r'after\s+(?:losing|winning)\s+(?:the\s+)?first\s+\d+\s+points?',
+            r'after\s+(?:going|falling|getting)\s+(?:up|down|behind|ahead)\s*(?:\d+-\d+)?',
+            r'after\s+(?:starting|beginning)\s+(?:\d+-\d+)',
+            r'from\s+(?:\d+-\d+)\s+(?:down|behind|up|ahead)',
+            r'games?\s+(?:where|when)\s+(?:server|returner)\s+(?:lost|won)\s+(?:the\s+)?first',
+            r'when\s+(?:down|up|behind|ahead)\s+(?:\d+-\d+|0-15|15-0|0-30|30-0|0-40|40-0)',
+        ]
+        is_game_state_query = any(re.search(pattern, query_lower) for pattern in game_state_patterns)
+        if is_game_state_query:
+            return 'narrative'
         
         # NARRATIVE indicators - needs LLM synthesis, not just data
         narrative_keywords = [
@@ -8004,9 +8521,33 @@ Answer:"""
         filters['shot_modifier'] = shot_info['shot_modifier']
         filters['direction'] = shot_info['shot_direction']
         
+        # === APPLY TERM_MAPPINGS CONFIG ===
+        # Check for common terms that map to specific filter values
+        for term, mapping in self.TERM_MAPPINGS.items():
+            if term in query_lower:
+                for filter_key, filter_value in mapping.items():
+                    if filters.get(filter_key) is None:  # Don't override explicit values
+                        filters[filter_key] = filter_value
+                        print(f"[DETECT-FILTERS] Applied TERM_MAPPING '{term}' -> {filter_key}={filter_value}")
+        
         # === SITUATION FILTER ===
-        # Direct detection for common situations
+        # Check SITUATION_SYNONYMS config first (e.g., "clutch", "pressure points")
         print(f"[DETECT-FILTERS] Checking for situations in: '{query_lower[:80]}...'")
+        situation_found = False
+        
+        # Check config-based synonyms first (expands to multiple situations)
+        for synonym, situations in self.SITUATION_SYNONYMS.items():
+            if synonym in query_lower:
+                # For synonyms that map to multiple situations, use the first one
+                # (Query Plan will handle multi-situation if needed)
+                filters['situation'] = situations[0]  # Primary situation
+                filters['situation_group'] = situations  # Store all for Query Plan
+                print(f"[DETECT-FILTERS] *** FOUND synonym '{synonym}' -> situation={situations[0]} (group: {situations}) ***")
+                situation_found = True
+                break
+        
+        # Direct detection for specific situations (if no synonym matched)
+        if not situation_found:
         if 'break point' in query_lower or 'breakpoint' in query_lower or 'break points' in query_lower:
             filters['situation'] = 'break_point'
             print(f"[DETECT-FILTERS] *** FOUND break_point ***")
@@ -8019,7 +8560,8 @@ Answer:"""
         elif 'match point' in query_lower or 'match points' in query_lower:
             filters['situation'] = 'match_point'
             print(f"[DETECT-FILTERS] *** FOUND match_point ***")
-        elif 'tiebreak' in query_lower or 'tie-break' in query_lower or 'tie break' in query_lower:
+        elif ('tiebreak' in query_lower or 'tie-break' in query_lower or 'tie break' in query_lower) and 'tiebreak-level' not in query_lower and 'tiebreak level' not in query_lower:
+            # Exclude metaphorical uses like "tiebreak-level clutch"
             filters['situation'] = 'tiebreak'
             print(f"[DETECT-FILTERS] *** FOUND tiebreak ***")
         elif 'deuce' in query_lower and 'court' not in query_lower:
@@ -8030,16 +8572,17 @@ Answer:"""
         
         # === POINT SCORE FILTER (e.g., "at 30-30", "at 15-40") ===
         # Detect specific point scores like "30-30", "15-40", "40-AD"
+        # NOTE: For multiple conditions (e.g., "30-30 and deuce combined"), LLM handles via metrics_parsed
         # Use POINT_SCORE_CONFIG for validation and normalization
         point_score_pattern = self.POINT_SCORE_CONFIG['patterns']['with_context']
-        point_score_match = re.search(point_score_pattern, query, re.IGNORECASE)  # Use original query for en dash support
+        point_score_match = re.search(point_score_pattern, query, re.IGNORECASE)
         if point_score_match:
             p1, p2 = point_score_match.groups()
             # Validate using config
             valid_scores = set(self.POINT_SCORE_CONFIG['valid_values'] + ['all'])
             valid_scores_lower = {v.lower() for v in valid_scores}
             
-            if p1 in valid_scores_lower and p2.lower() in valid_scores_lower:
+            if p1.lower() in valid_scores_lower and p2.lower() in valid_scores_lower:
                 # Handle "30-all" -> "30-30" using config
                 if p2.lower() == 'all':
                     p2 = p1
@@ -8083,23 +8626,10 @@ Answer:"""
                 filters['role'] = 'returner'
                 print(f"[DETECT-FILTERS] Break serve query â†’ role='returner'")
         
-        # Set filter - single set or set groups
-        # Check for set group comparison first (e.g., "sets 2 and 4 versus sets 1, 3, and 5")
-        set_group_pattern = r'sets?\s*([\d,\s]+(?:and\s+\d+)?)\s*(?:versus|vs\.?|compared to|against)\s*(?:the\s+)?(?:three\s+)?sets?\s*([\d,\s]+(?:and\s+\d+)?)'
-        set_group_match = re.search(set_group_pattern, query_lower)
-        if set_group_match:
-            # Parse both groups of sets
-            def parse_set_list(s):
-                # Extract all digits from the string
-                return [int(d) for d in re.findall(r'\d', s)]
-            filters['set_group_a'] = parse_set_list(set_group_match.group(1))
-            filters['set_group_b'] = parse_set_list(set_group_match.group(2))
-            filters['set'] = None  # Use groups instead
-        else:
-            # Single set filter
-            set_match = re.search(r'(\d)(?:st|nd|rd|th)?\s*set|set\s*(\d)', query_lower)
-            if set_match:
-                filters['set'] = int(set_match.group(1) or set_match.group(2))
+        # Set filter - single set (Query Plan will handle multi-set comparisons)
+        set_match = re.search(r'(\d)(?:st|nd|rd|th)?\s*set|set\s*(\d)', query_lower)
+        if set_match:
+            filters['set'] = int(set_match.group(1) or set_match.group(2))
         
         # === GAME FILTER ===
         # Support various reference styles:
@@ -8130,6 +8660,40 @@ Answer:"""
                 game_num = game_match.group(1) or game_match.group(2)
                 if game_num:
                     filters['game_number'] = int(game_num)
+        
+        # === POINT NUMBER RANGE FILTER (Temporal/Segment Analysis) ===
+        # Enables queries like "first 100 points", "last 100 points", "first half vs second half"
+        # Store as (min, max) tuple
+        filters['point_number_range'] = None
+        
+        # Total points in match (needed for "last N" and "second half" calculations)
+        total_points = len(self.point_by_point) if hasattr(self, 'point_by_point') else 283
+        
+        # Pattern: "first X points"
+        first_n_match = re.search(r'first\s+(\d+)\s+points?', query_lower)
+        if first_n_match:
+            n = int(first_n_match.group(1))
+            filters['point_number_range'] = (1, n)
+            print(f"[DETECT-FILTERS] *** FOUND point_number_range: first {n} points (1-{n}) ***")
+        
+        # Pattern: "last X points"
+        last_n_match = re.search(r'last\s+(\d+)\s+points?', query_lower)
+        if last_n_match:
+            n = int(last_n_match.group(1))
+            filters['point_number_range'] = (total_points - n + 1, total_points)
+            print(f"[DETECT-FILTERS] *** FOUND point_number_range: last {n} points ({total_points-n+1}-{total_points}) ***")
+        
+        # Pattern: "first half"
+        if 'first half' in query_lower:
+            mid = total_points // 2
+            filters['point_number_range'] = (1, mid)
+            print(f"[DETECT-FILTERS] *** FOUND point_number_range: first half (1-{mid}) ***")
+        
+        # Pattern: "second half"
+        if 'second half' in query_lower:
+            mid = total_points // 2
+            filters['point_number_range'] = (mid + 1, total_points)
+            print(f"[DETECT-FILTERS] *** FOUND point_number_range: second half ({mid+1}-{total_points}) ***")
         
         # === METADATA-DRIVEN DEPTH FILTER ===
         # Match against known depths from inventory
@@ -8178,12 +8742,8 @@ Answer:"""
         elif exact_match:
             # Exact "X shot rallies"
             filters['rally_length'] = int(exact_match.group(1))
-        elif 'extended rall' in query_lower:
-            filters['rally_length'] = '>=7'  # Extended rallies = 7+ shots (Extended category: 7-9)
-        elif 'long rall' in query_lower:
-            filters['rally_length'] = '>=7'  # Long rallies = 7+ shots
-        elif 'short rall' in query_lower or 'short point' in query_lower:
-            filters['rally_length'] = '<=3'  # Short = 1-3 shots
+        # NOTE: "long rally", "short rally", "extended rally" handled by TERM_MAPPINGS config
+        # Don't duplicate hardcoded checks here - config is single source of truth
         
         # Neutral rallies - rallies without early winners/errors
         # Patterns: "neutral rallies", "no winner before X", "without error before X", 
@@ -8997,10 +9557,15 @@ Answer:"""
                 current_set = meta.get('set_number')
                 if current_set is None:
                     current_set = self._extract_current_set(score)
-                # Handle both string and int comparisons
+                # Handle both single value and list (e.g., [1, 2] for "Sets 1-2")
                 if isinstance(value, str) and value.isdigit():
                     value = int(value)
-                passes_filter = (current_set == value)
+                if isinstance(value, (list, tuple)):
+                    # List of sets - check if current set is in the list
+                    passes_filter = (current_set in value)
+                else:
+                    # Single set - exact match
+                    passes_filter = (current_set == value)
             
             elif dimension == 'set_group_a' or dimension == 'set_group_b':
                 current_set = meta.get('set_number')
@@ -9023,8 +9588,26 @@ Answer:"""
                 passes_filter = (current_set in set_list)
             
             elif dimension == 'serve_number':
-                # Use metadata for serve number (1st or 2nd serve attempt)
-                serve_num = meta.get('serve_info', {}).get('serve_number', 1)
+                # CRITICAL: ALWAYS calculate from text to avoid stale cache issues
+                # Don't rely on enriched serve_number which may be from old cache
+                point_text_lower = point_text.lower()
+                has_2nd_serve = '2nd serve' in point_text_lower or 'second serve' in point_text_lower
+                has_1st_fault = bool(re.search(r'1st serve[^;]*fault', point_text_lower))
+                is_second_serve = has_2nd_serve or has_1st_fault
+                serve_num = 2 if is_second_serve else 1
+                
+                # DEBUG: Count second serves by server
+                if not hasattr(self, '_serve_debug'):
+                    self._serve_debug = {'total': 0, 'empty_text': 0, 'by_server': {}, 'filter_value': value}
+                
+                if is_second_serve:
+                    self._serve_debug['total'] += 1
+                    svr = server or 'UNKNOWN'
+                    self._serve_debug['by_server'][svr] = self._serve_debug['by_server'].get(svr, 0) + 1
+                    
+                if not point_text_lower:
+                    self._serve_debug['empty_text'] += 1
+                
                 if value == 1 or value == '1st':
                     passes_filter = (serve_num == 1)
                 elif value == 2 or value == '2nd':
@@ -9125,29 +9708,42 @@ Answer:"""
             
             elif dimension == 'point_score':
                 # Filter by specific point score (e.g., "30-30", "15-40", "40-AD")
-                # This enables queries like "Who won more points at 30-30?"
+                # SUPPORTS LISTS: "30-30 and deuce combined" -> ['30-30', '40-40'] (OR logic)
                 # Note: point_score is stored at top level of metadata, not in game_info
                 actual_point_score = meta.get('point_score', '')
-                
-                # Use config-based normalization for consistent comparison
-                value_normalized = self._normalize_point_score(value)
                 actual_normalized = self._normalize_point_score(actual_point_score)
                 
-                # Direct match
-                passes_filter = (value_normalized == actual_normalized)
-                
-                # Also check if the score string contains the point score pattern
-                if not passes_filter and score:
-                    # Look for the point score in the full score string
-                    passes_filter = value_normalized in score.upper()
+                # Handle list values (OR logic) vs single value
+                if isinstance(value, list):
+                    # OR logic: matches ANY score in the list
+                    passes_filter = False
+                    for score_val in value:
+                        value_normalized = self._normalize_point_score(score_val)
+                        if value_normalized == actual_normalized:
+                            passes_filter = True
+                            break
+                        # Fallback: check if the score string contains this point score pattern
+                        if not passes_filter and score:
+                            if value_normalized in score.upper():
+                                passes_filter = True
+                                break
+                else:
+                    # Single value: exact match
+                    value_normalized = self._normalize_point_score(value)
+                    passes_filter = (value_normalized == actual_normalized)
+                    
+                    # Also check if the score string contains the point score pattern
+                    if not passes_filter and score:
+                        passes_filter = value_normalized in score.upper()
             
             elif dimension == 'role':
-                player_filter = (filters.get('player') or '').lower()
+                # CRITICAL: Check player from BOTH filters AND classification (query planner may not include it in filters)
+                player_filter = (filters.get('player') or classification.get('player') or '').lower()
                 # GENERIC role handling using ROLE_CONFIG
                 if value in self.ROLE_CONFIG:
                     role_player = self._get_player_for_role(value, server, returner, meta.get('point_winner', ''), point_data.get('error_player', ''))
                     if player_filter and player_filter != 'both':
-                        # Player specified with role â†’ filter by that role's player
+                        # Player specified with role â†' filter by that role's player
                         passes_filter = player_filter in role_player.lower() if role_player else True
                     else:
                         # No specific player, role means keep all points (everyone plays both roles)
@@ -9251,11 +9847,26 @@ Answer:"""
                 rally_category = meta.get('rally_category')
                 passes_filter = (rally_category == value)
             
+            elif dimension == 'point_number_range':
+                # Temporal/segment filter - filter by point number range
+                # Value is (min, max) tuple/list (inclusive)
+                point_num = point_data.get('point_number', 0)
+                if isinstance(value, (tuple, list)) and len(value) == 2:
+                    min_point, max_point = value
+                    passes_filter = (min_point <= point_num <= max_point)
+                else:
+                    # Invalid format - don't pass
+                    passes_filter = False
+            
             elif dimension == 'rally_length':
-                # Use metadata for rally length (exact or comparison)
+                # Use metadata for rally length (exact, comparison, or range)
                 rally_len = meta.get('rally_length', 0)
                 if isinstance(value, int):
                     passes_filter = (rally_len == value)
+                elif isinstance(value, (tuple, list)) and len(value) == 2:
+                    # CRITICAL: Handle tuple/list range (min, max) - e.g., (0, 4) or [0, 4] means 0-4 shots
+                    min_val, max_val = value
+                    passes_filter = (min_val <= rally_len <= max_val)
                 elif isinstance(value, str):
                     # IMPORTANT: Check '>=' before '>' ('>=' startswith '>')
                     if value.startswith('>='):
@@ -9271,9 +9882,9 @@ Answer:"""
                         threshold = int(value[1:])
                         passes_filter = (rally_len < threshold)
                     else:
-                        passes_filter = True  # Unknown format, don't filter
+                        passes_filter = False  # Unknown string format
                 else:
-                    passes_filter = True  # Unknown format, don't filter
+                    passes_filter = False  # Unknown format, reject
             
             elif dimension == 'rally_length_range':
                 # Use metadata for rally length range (min, max)
@@ -9345,7 +9956,7 @@ Answer:"""
                     passes_filter = False
             
             elif dimension == 'after_rally_length':
-                # Use enriched context data
+                # Use enriched context data (legacy bucket approach)
                 context = point_data.get('context', {})
                 prev_rally = context.get('prev_rally_length', 0)
                 
@@ -9357,6 +9968,33 @@ Answer:"""
                     passes_filter = 5 <= prev_rally <= 9
                 elif value == 'after_long':
                     passes_filter = prev_rally >= 10
+            
+            elif dimension == 'prev_rally_length':
+                # NEW: Filter by previous rally length with comparison operators (e.g., ">=7")
+                # Get prev_rally from enriched data
+                prev_rally = point_data.get('_prev_rally_length', 0)
+                
+                if isinstance(value, str):
+                    # Comparison filter: ">=7", "<=4", etc.
+                    if value.startswith('>='):
+                        passes_filter = prev_rally >= int(value[2:])
+                    elif value.startswith('<='):
+                        passes_filter = prev_rally <= int(value[2:])
+                    elif value.startswith('>'):
+                        passes_filter = prev_rally > int(value[1:])
+                    elif value.startswith('<'):
+                        passes_filter = prev_rally < int(value[1:])
+                    else:
+                        # Try exact match
+                        try:
+                            passes_filter = prev_rally == int(value)
+                        except ValueError:
+                            passes_filter = True  # Unknown format, don't filter
+                elif isinstance(value, int):
+                    passes_filter = prev_rally == value
+                elif isinstance(value, (tuple, list)) and len(value) == 2:
+                    # Range filter: (min, max) or [min, max]
+                    passes_filter = value[0] <= prev_rally <= value[1]
             
             if passes_filter:
                 filtered.append(point_data)
@@ -9516,12 +10154,29 @@ Answer:"""
                 point.get('returner', '')
             )
             
-            # Count actual shots (exclude faults and lets)
-            actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
-            rally_len = len(actual_shots)
+            # Use centralized rally length calculation (single source of truth)
+            rally_len = self._calculate_rally_length(rally_shots, point.get('description', ''))
             
-            # 1b. Compute and store error_player (needed for error metrics filtering)
-            _, _, error_player = self._determine_point_winner(
+            # CRITICAL: Store rally_length on point for filter checking
+            point['rally_length'] = rally_len
+            
+            # CRITICAL: Store prev_rally_length (for "after X rally" queries)
+            point['_prev_rally_length'] = prev_rally_length
+            
+            # Also get actual_shots for later use (exclude faults/lets)
+            actual_shots = [s for s in rally_shots if s.get('outcome') not in ['FAULT', 'LET']]
+            
+            # CRITICAL: Store set_number on point for filter checking
+            score_str = point.get('score', '')
+            set_number = self._extract_current_set(score_str)
+            point['set_number'] = set_number
+            
+            # Also store game_number_in_set for filter checking
+            game_info = self._extract_game_info(score_str, point.get('point_number', 0))
+            point['game_number_in_set'] = game_info.get('game_number_in_set')
+            
+            # 1b. Compute and store error_player AND winning shot info (needed for metrics)
+            computed_winner, winning_shot_type, error_player = self._determine_point_winner(
                 actual_shots, 
                 point.get('server', ''), 
                 point.get('returner', ''),
@@ -9529,8 +10184,37 @@ Answer:"""
             )
             point['error_player'] = error_player or ''
             
-            # 2. Extract winner for momentum tracking
+            # 2. Extract winner from tag (if available), otherwise use computed winner from rally analysis
             winner = self._extract_winner_from_point(point)
+            if not winner and computed_winner:
+                winner = computed_winner  # Fall back to rally-based determination
+            # CRITICAL: Store point_winner on point for tree filtering (e.g., points_won metric)
+            point['point_winner'] = winner or ''
+            
+            # CRITICAL: Store serve_number for serve analysis (1st vs 2nd serve queries)
+            # Detect from text: multiple patterns for second serve
+            description_lower = point.get('description', '').lower()
+            has_2nd_serve_text = '2nd serve' in description_lower or 'second serve' in description_lower
+            has_1st_fault = bool(re.search(r'1st serve[^;]*fault', description_lower))  # "1st serve..., fault" = 2nd serve played
+            is_second_serve = has_2nd_serve_text or has_1st_fault
+            point['serve_number'] = 2 if is_second_serve else 1
+            
+            # CRITICAL: Store winning shot info for shot-level queries
+            # This enables Query Plan to filter/count by shot type without re-parsing
+            if actual_shots:
+                last_shot = actual_shots[-1]
+                point['winning_shot'] = {
+                    'shot_type': last_shot.get('shot_type', ''),
+                    'direction': last_shot.get('direction', ''),
+                    'shot_modifier': last_shot.get('shot_modifier', ''),
+                    'outcome': last_shot.get('outcome', winning_shot_type or ''),
+                    'at_net': last_shot.get('location') == 'net'
+                }
+            else:
+                point['winning_shot'] = {
+                    'shot_type': '', 'direction': '', 'shot_modifier': '', 
+                    'outcome': winning_shot_type or '', 'at_net': False
+                }
             
             # 3. Add CONTEXT (Fatigue/History/Momentum)
             point['context'] = {
@@ -9588,6 +10272,36 @@ Answer:"""
                 tactics['return_plus_one_outcome'] = return_plus_one.get('outcome')
             
             point['tactics'] = tactics
+            
+            # 6. Add BREAK_BACK detection (breaking immediately after being broken)
+            # Requires game_winners and game_servers to be populated first (done in _extract_game_winners)
+            is_break_back = False
+            if hasattr(self, 'game_winners') and hasattr(self, 'game_servers') and self.game_winners and self.game_servers:
+                current_set = set_number
+                current_game = game_info.get('game_number_in_set', 0)
+                
+                if current_game > 1:  # Need at least 2 games to detect break back
+                    # Get current game winner and server (the game this point belongs to)
+                    current_game_winner = self.game_winners.get((current_set, current_game))
+                    current_server = self.game_servers.get((current_set, current_game))
+                    
+                    # Get previous game winner and server
+                    prev_game_winner = self.game_winners.get((current_set, current_game - 1))
+                    prev_server = self.game_servers.get((current_set, current_game - 1))
+                    
+                    # Check if both games were breaks
+                    # A break = returner won the game (game winner != server)
+                    current_is_break = (current_game_winner and current_server and current_game_winner != current_server)
+                    prev_is_break = (prev_game_winner and prev_server and prev_game_winner != prev_server)
+                    
+                    # Break back = both games were breaks AND the player who broke back is the same player who got broken
+                    # Scenario: Player A served game N and lost (got broken)
+                    #           Player B served game N+1 and lost (got broken back by Player A)
+                    # So: current_game_winner (who broke) == prev_server (who got broken)
+                    if current_is_break and prev_is_break and current_game_winner == prev_server:
+                        is_break_back = True
+            
+            point['is_break_back_game'] = is_break_back
             
             # Update state for NEXT point
             prev_rally_length = rally_len
@@ -10065,12 +10779,14 @@ Answer:"""
             server = point_data.get('server', '')
             returner = point_data.get('returner', '')
             
-            # CRITICAL: Extract point winner from [Point won by: Player] tag in NL file
-            # This is the AUTHORITATIVE source - already computed during NL generation
-            point_winner = None
-            winner_match = re.search(r'\[Point won by:\s*([^\]]+)\]', point_text)
-            if winner_match:
-                point_winner = winner_match.group(1).strip()
+            # CRITICAL: Get point winner - prefer enriched field, fallback to text extraction
+            # Enriched data has point_winner set during _enrich_point_data()
+            point_winner = point_data.get('point_winner')
+            if not point_winner:
+                # Fallback: Extract from [Point won by: Player] tag in NL text
+                winner_match = re.search(r'\[Point won by:\s*([^\]]+)\]', point_text)
+                if winner_match:
+                    point_winner = winner_match.group(1).strip()
             
             # Parse rally for shot counting and other analysis
             rally_shots = self._parse_rally_sequence(point_text, server, returner)
@@ -10100,14 +10816,23 @@ Answer:"""
                 has_second_serve = '2nd serve' in point_text.lower() or 'second serve' in point_text.lower()
                 serve_number = 2 if has_second_serve else 1
             
+            # CRITICAL: Include ALL point metadata needed for filter checking!
+            # Must include: set, rally_length, point_score, game_number_in_set, point_number
             point_data_for_metric = {
                 'point_text': point_text,
-                'rally_length': len(actual_shots),
+                'rally_length': point_data.get('rally_length') or point_data.get('_metadata', {}).get('rally_length') or self._calculate_rally_length(rally_shots, point_text),
+                '_prev_rally_length': point_data.get('_prev_rally_length', 0),  # For "after X rally" queries
                 'server': server,
                 'returner': returner,
                 'error_player': error_player,
                 'point_winner': point_winner,
-                'serve_number': serve_number
+                'serve_number': serve_number,
+                # CRITICAL: Add metadata fields for filter checking
+                'set': point_data.get('set_number') or point_data.get('set') or point_data.get('_metadata', {}).get('set_number'),
+                'point_score': point_data.get('score') or point_data.get('point_score'),
+                'point_number': point_data.get('point_number'),
+                'game_number_in_set': point_data.get('game_number_in_set') or point_data.get('_metadata', {}).get('game_number_in_set'),
+                'game_number': point_data.get('game_number') or point_data.get('_metadata', {}).get('game_number'),
             }
             
             for metric in metrics:
@@ -10370,11 +11095,11 @@ Answer:"""
         def safe_lower(val):
             return str(val or '').lower()
         
-        # Get serve number from point data
-        serve_number = point_data_for_metric.get('serve_number', 1)
-        if serve_number is None or serve_number == 0:
-            has_second_serve = '2nd serve' in point_lower or 'second serve' in point_lower
-            serve_number = 2 if has_second_serve else 1
+        # CRITICAL: ALWAYS calculate serve_number from text to avoid stale cache issues
+        has_2nd_serve = '2nd serve' in point_lower or 'second serve' in point_lower
+        has_1st_fault = bool(re.search(r'1st serve[^;]*fault', point_lower))
+        is_second_serve = has_2nd_serve or has_1st_fault
+        serve_number = 2 if is_second_serve else 1
         
         # === GENERIC FILTER CHECKING - Works for ALL filter types ===
         # Tree traversal filters with global filters, but metric-specific filters need per-metric checks
@@ -10439,30 +11164,124 @@ Answer:"""
                     if should_debug:
                         print(f"{debug_prefix} | MATCH {filter_key}={filter_str} matches in rally shots")
         
-        # Generic point-level string filter check (for court_side, serve_target)
-        point_string_filters = ['court_side', 'serve_target']
-        for filter_key in point_string_filters:
-            filter_val = filters.get(filter_key)
-            if filter_val:
-                filter_str = safe_lower(filter_val)
-                point_val = safe_lower(point_data_for_metric.get(filter_key))
-                if point_val != filter_str:
-                    if should_debug:
-                        print(f"{debug_prefix} | FILTERED: {filter_key}={filter_str} != point_value={point_val}")
-                    return
-                if should_debug:
-                    print(f"{debug_prefix} | âœ“ {filter_key}={filter_str} matches point_value={point_val}")
+        # REMOVED: court_side, serve_target filter checks
+        # These are TREE-LEVEL filters - already applied during tree traversal!
+        # The points passed to _track_per_player_metric have ALREADY been filtered.
+        # Re-checking here fails because point_data_for_metric doesn't include these fields.
         
-        # set filter (exact match, not string comparison)
+        # set filter (supports both single value and list)
         set_filter = filters.get('set')
         if set_filter is not None:
             point_set = point_data_for_metric.get('set')
-            if point_set != set_filter:
+            # Handle both single value and list (e.g., [1, 2] for "Sets 1-2")
+            if isinstance(set_filter, (list, tuple)):
+                if point_set not in set_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: set={set_filter} doesn't contain point_set={point_set}")
+                    return
+            else:
+                if point_set != set_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: set={set_filter} != point_set={point_set}")
+                    return
+            if should_debug:
+                print(f"{debug_prefix} | OK set={set_filter} matches point_set={point_set}")
+        
+        # CRITICAL: rally_length filter (supports ranges, comparisons, exact matches)
+        rally_filter = filters.get('rally_length')
+        if rally_filter is not None:
+            pt_rally = point_data_for_metric.get('rally_length', 0)
+            passes_rally_filter = False
+            
+            if isinstance(rally_filter, (tuple, list)) and len(rally_filter) == 2:
+                # Range filter: (min, max) or [min, max]
+                min_val, max_val = rally_filter
+                passes_rally_filter = min_val <= pt_rally <= max_val
+                if not passes_rally_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: rally_length {pt_rally} not in range ({min_val}, {max_val})")
+                    return
+            elif isinstance(rally_filter, str):
+                # Comparison filter: ">=5", "<=10", ">3", "<7"
+                if rally_filter.startswith('<='):
+                    passes_rally_filter = pt_rally <= int(rally_filter[2:])
+                elif rally_filter.startswith('>='):
+                    passes_rally_filter = pt_rally >= int(rally_filter[2:])
+                elif rally_filter.startswith('<'):
+                    passes_rally_filter = pt_rally < int(rally_filter[1:])
+                elif rally_filter.startswith('>'):
+                    passes_rally_filter = pt_rally > int(rally_filter[1:])
+                
+                if not passes_rally_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: rally_length {pt_rally} does not match {rally_filter}")
+                    return
+            elif isinstance(rally_filter, int):
+                # Exact match
+                passes_rally_filter = pt_rally == rally_filter
+                if not passes_rally_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: rally_length {pt_rally} != {rally_filter}")
+                    return
+            
+            if should_debug and passes_rally_filter:
+                print(f"{debug_prefix} | OK rally_length={pt_rally} matches filter={rally_filter}")
+        
+        # CRITICAL: prev_rally_length filter (for "after X rally" queries)
+        prev_rally_filter = filters.get('prev_rally_length')
+        if prev_rally_filter is not None:
+            pt_prev_rally = point_data_for_metric.get('_prev_rally_length', 0)
+            passes_prev_rally_filter = False
+            
+            if isinstance(prev_rally_filter, (tuple, list)) and len(prev_rally_filter) == 2:
+                # Range filter: (min, max) or [min, max]
+                min_val, max_val = prev_rally_filter
+                passes_prev_rally_filter = min_val <= pt_prev_rally <= max_val
+                if not passes_prev_rally_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: prev_rally_length {pt_prev_rally} not in range ({min_val}, {max_val})")
+                    return
+            elif isinstance(prev_rally_filter, str):
+                # Comparison filter: ">=5", "<=10", ">3", "<7"
+                if prev_rally_filter.startswith('<='):
+                    passes_prev_rally_filter = pt_prev_rally <= int(prev_rally_filter[2:])
+                elif prev_rally_filter.startswith('>='):
+                    passes_prev_rally_filter = pt_prev_rally >= int(prev_rally_filter[2:])
+                elif prev_rally_filter.startswith('<'):
+                    passes_prev_rally_filter = pt_prev_rally < int(prev_rally_filter[1:])
+                elif prev_rally_filter.startswith('>'):
+                    passes_prev_rally_filter = pt_prev_rally > int(prev_rally_filter[1:])
+                
+                if not passes_prev_rally_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: prev_rally_length {pt_prev_rally} does not match {prev_rally_filter}")
+                    return
+            elif isinstance(prev_rally_filter, int):
+                # Exact match
+                passes_prev_rally_filter = pt_prev_rally == prev_rally_filter
+                if not passes_prev_rally_filter:
+                    if should_debug:
+                        print(f"{debug_prefix} | FILTERED: prev_rally_length {pt_prev_rally} != {prev_rally_filter}")
+                    return
+            
+            if should_debug and passes_prev_rally_filter:
+                print(f"{debug_prefix} | OK prev_rally_length={pt_prev_rally} matches filter={prev_rally_filter}")
+        
+        # REMOVED: point_score filter check
+        # This is a TREE-LEVEL filter - already applied during tree traversal!
+        # Re-checking here fails because point_data_for_metric has the FULL score string
+        # (e.g., "0-0 1-1 0-40") while the filter is just the game score (e.g., "0-40")
+        
+        # CRITICAL: game_number filter
+        game_number_filter = filters.get('game_number') or filters.get('game_number_in_set')
+        if game_number_filter is not None:
+            pt_game = point_data_for_metric.get('game_number_in_set') or point_data_for_metric.get('game_number')
+            if pt_game != game_number_filter:
                 if should_debug:
-                    print(f"{debug_prefix} | FILTERED: set={set_filter} != point_set={point_set}")
+                    print(f"{debug_prefix} | FILTERED: game_number={game_number_filter} != point_game={pt_game}")
                 return
             if should_debug:
-                print(f"{debug_prefix} | âœ“ set={set_filter} matches point_set={point_set}")
+                print(f"{debug_prefix} | OK game_number={pt_game} matches filter={game_number_filter}")
         
         # DEBUG: Point passed all filters (only show first 3)
         active_filters = {k: v for k, v in filters.items() if v is not None}
@@ -11150,14 +11969,23 @@ Answer:"""
             if situation_flags:
                 response += f"   **Situation:** {', '.join(situation_flags)}\n"
         
-        # Show FULL extracted metadata
-        winner = pt.get('winner', '?')
-        shot_type = pt.get('shot_type', '?')
-        shot_mod = pt.get('shot_modifier', '-')
-        direction = pt.get('direction', '?')
-        at_net = pt.get('at_net', False)
-        outcome = pt.get('outcome', '?')
-        rally_len = pt.get('rally_length', '?')
+        # Show FULL extracted metadata (use winning_shot dict if available)
+        winner = pt.get('point_winner', pt.get('winner', '?'))
+        winning_shot = pt.get('winning_shot', {})
+        shot_type = winning_shot.get('shot_type') or pt.get('shot_type', '?')
+        shot_mod = winning_shot.get('shot_modifier') or pt.get('shot_modifier', '-')
+        direction = winning_shot.get('direction') or pt.get('direction', '?')
+        at_net = winning_shot.get('at_net', pt.get('at_net', False))
+        outcome = winning_shot.get('outcome') or pt.get('outcome', '?')
+        
+        # CRITICAL: Recalculate rally_length from source (don't trust stale enriched metadata)
+        # The enriched metadata might be outdated if code has changed
+        point_text = pt.get('description', '')
+        server = pt.get('server', '')
+        returner = pt.get('returner', '')
+        rally_shots = self._parse_rally_sequence(point_text, server, returner) if point_text else []
+        rally_len = self._calculate_rally_length(rally_shots, point_text)
+        
         group = pt.get('group', '-')
         
         response += f"   **Winning Shot:** {shot_type}"
@@ -11522,17 +12350,17 @@ Answer:"""
                 if primary_metric in per_player_pct_metrics:
                     # For serve percentage metrics, show the metric-specific count/total
                     response += f"| Player | {metric_label} | Count | Total |\n"
-                    response += "|---|---|---|---|\n"
+                response += "|---|---|---|---|\n"
+                
+                for val, branch_data in branches.items():
+                    label = branch_data['label']  # Player name
+                    sub_results = branch_data.get('results', {})
                     
-                    for val, branch_data in branches.items():
-                        label = branch_data['label']  # Player name
-                        sub_results = branch_data.get('results', {})
-                        
-                        if sub_results.get('type') == 'group':
-                            response += f"\n**{label}:**\n"
-                            response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
-                                                                 metrics, player1, player2, player_filter, depth + 1, classification=classification)
-                        else:
+                    if sub_results.get('type') == 'group':
+                        response += f"\n**{label}:**\n"
+                        response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
+                                                             metrics, player1, player2, player_filter, depth + 1, classification=classification)
+                    else:
                             # Get this player's metric data from per_player_metrics
                             per_player = sub_results.get('per_player_metrics', {}).get(primary_metric, {})
                             
@@ -11548,13 +12376,19 @@ Answer:"""
                             
                             response += f"| **{label}** | {m_pct}% | {m_count} | {m_total} |\n"
                 else:
-                    # For other metrics (points_won, etc.), show points won
-                    response += f"| Player | Total | Won | Win % |\n"
-                    response += "|---|---|---|---|\n"
+                    # For points_won metric grouped by player (grouped by point_winner):
+                    # Each branch count IS that player's points won
+                    # Show: Points Won | % of Total (not Win % which would be 100%)
+                    
+                    # Calculate total points across all branches for percentage
+                    total_points_all = sum(b['count'] for b in branches.values())
+                    
+                    response += f"| Player | Points Won | % of Total |\n"
+                    response += "|---|---|---|\n"
                     
                     for val, branch_data in branches.items():
                         label = branch_data['label']  # Player name
-                        count = branch_data['count']  # Points where this player served/returned
+                        count = branch_data['count']  # Points WON by this player (since grouped by point_winner)
                         sub_results = branch_data.get('results', {})
                         
                         if sub_results.get('type') == 'group':
@@ -11562,22 +12396,9 @@ Answer:"""
                             response += self._format_tree_results(sub_results, groups[1:] if len(groups) > 1 else [],
                                                                  metrics, player1, player2, player_filter, depth + 1, classification=classification)
                         else:
-                            # For player branch, wins = points won by that player
-                            # The player in this branch IS the player who served/returned
-                            p1_wins = sub_results.get('player1_wins', 0)
-                            p2_wins = sub_results.get('player2_wins', 0)
-                            
-                            # Determine wins for this specific player
-                            if label.lower() == player1.lower() if player1 else False:
-                                wins = p1_wins
-                            elif label.lower() == player2.lower() if player2 else False:
-                                wins = p2_wins
-                            else:
-                                # Fallback: use whichever is non-zero
-                                wins = p1_wins if p1_wins > 0 else p2_wins
-                            
-                            win_pct = round(wins / count * 100) if count > 0 else 0
-                            response += f"| **{label}** | {count} | {wins} | {win_pct}% |\n"
+                            # Percentage of total points won
+                            pct_of_total = round(count / total_points_all * 100, 1) if total_points_all > 0 else 0
+                            response += f"| **{label}** | {count} | {pct_of_total}% |\n"
                 
                 return response
             
@@ -12124,10 +12945,13 @@ Answer:"""
             if winner_match:
                 point_winner = winner_match.group(1).strip()
             
-            # Set filter
+            # Set filter (supports both single value and list)
             if set_filter:
                 current_set = self._extract_current_set(score)
-                if current_set != set_filter:
+                if isinstance(set_filter, (list, tuple)):
+                    if current_set not in set_filter:
+                        continue
+                elif current_set != set_filter:
                     continue
             
             # Parse rally
@@ -12568,9 +13392,16 @@ Answer:"""
                     response += f"\n**{label}: {total_msg}**\n"
                 for i, pt in enumerate(matching_points, 1):
                     response += f"{i}. Point {pt.get('point_number', '?')} [{pt.get('server', '?')} serving] "
-                    winner = pt.get('winner', '?')
+                    winner = pt.get('point_winner', pt.get('winner', '?'))
                     outcome = pt.get('outcome', '?')
-                    rally_len = pt.get('rally_length', '?')
+                    
+                    # CRITICAL: Recalculate rally_length from source (don't trust stale enriched metadata)
+                    point_text = pt.get('description', '')
+                    server = pt.get('server', '')
+                    returner = pt.get('returner', '')
+                    rally_shots = self._parse_rally_sequence(point_text, server, returner) if point_text else []
+                    rally_len = self._calculate_rally_length(rally_shots, point_text)
+                    
                     response += f"Score: {pt.get('score', '?')} | Winner: {winner} | "
                     response += f"Outcome: {outcome} | Rally: {rally_len} shots\n"
                     response += f"   {pt.get('description', '')}\n"
@@ -13017,14 +13848,1996 @@ Answer:"""
             print(f"[NARRATIVE] Error in LLM synthesis: {e}")
             answer = self.answer_query_with_llm(question, relevant_chunks)
         
+        # CRITICAL: If answer cites specific point numbers, show those points in debug
+        # This ensures transparency and verifiability when narrative answers reference specific plays
+        self._extract_and_show_cited_points(answer)
+        
         return answer
+    
+    # =========================================================================
+    # QUERY PLAN ARCHITECTURE
+    # =========================================================================
+    # Instead of monolithic routing, LLM generates a structured query plan:
+    #   - Multiple operations (tree, narrative, or hybrid)
+    #   - Each operation is independent with its own filters/metrics
+    #   - Synthesis instructions combine results
+    # =========================================================================
+    
+    def _should_use_query_plan(self, question: str, classification: Dict, llm_parse: Dict) -> bool:
+        """
+        Determine if the query should use Query Plan architecture.
+        
+        PHILOSOPHY: Use Query Plan for ANY non-trivial query. Let the LLM decide structure.
+        Only skip Query Plan for the simplest single-stat, single-filter questions.
+        
+        The Query Plan LLM is smart - trust it to parse complex questions and generate
+        the right operations. Don't try to detect every pattern here.
+        """
+        question_lower = question.lower()
+        
+        # ONLY skip Query Plan for the most trivial questions
+        # Everything else goes to the Query Plan LLM to figure out
+        
+        # Check if this is a simple single-stat query with at most one filter
+        metrics_parsed = llm_parse.get('metrics_parsed', []) if llm_parse else []
+        category = classification.get('category', 'narrative')
+        
+        # Simple = analytical + single metric + no comparison words
+        is_simple_analytical = (
+            category == 'analytical' and
+            len(metrics_parsed) <= 1 and
+            '?' not in question_lower[5:]  # Not a complex question
+        )
+        
+        # Trigger Query Plan for basically everything except trivial queries
+        should_use = not is_simple_analytical
+        
+        if should_use:
+            print(f"[QUERY-PLAN] Using Query Plan (non-trivial query)")
+        else:
+            print(f"[QUERY-PLAN] Skipping Query Plan (simple single-stat query)")
+        
+        return should_use
+    
+    def _generate_query_plan(self, question: str, classification: Dict) -> Dict:
+        """
+        Generate a Query Plan for the question.
+        
+        The Query Plan allows:
+        - Multiple independent operations (tree, narrative)
+        - Each operation has its own filters and metrics
+        - Operations can reference results from previous operations
+        - Explicit synthesis instructions
+        
+        Returns:
+            {
+                "query_plan": [
+                    {"id": "A", "route": "tree", "filters": {...}, "metrics": [...]},
+                    {"id": "B", "route": "narrative", "point_source": "A", "chunk_retrieval": true}
+                ],
+                "synthesis_instructions": "..."
+            }
+        """
+        import json
+        
+        player1 = self.player1 or "Player 1"
+        player2 = self.player2 or "Player 2"
+        
+        # Build supported metrics list from config
+        supported_metrics = ', '.join(sorted(self.TREE_SUPPORTED_METRICS))
+        supported_filters = ', '.join(sorted(self.TREE_LEVEL_DIMENSIONS))
+        
+        prompt = """You are a tennis data query planner. Your ONLY job is to route questions correctly.
+
+PLAYERS: {player1} vs {player2}
+
+╔══════════════════════════════════════════════════════════════════════════════════════════╗
+║                    THE FUNDAMENTAL ROUTING RULE                                          ║
+╠══════════════════════════════════════════════════════════════════════════════════════════╣
+║  SHOT-LEVEL attributes (direction, shot_type, depth) → NARRATIVE (data in NL chunks)     ║
+║  POINT-LEVEL attributes (set, situation, serve_number, role) → TREE (computed on fly)    ║
+║  BOTH shot-level AND point-level → HYBRID (tree filters, then narrative analyzes)        ║
+╚══════════════════════════════════════════════════════════════════════════════════════════╝
+
+════════════════════════════════════════════════════════════════════════════════════════════
+SHOT-LEVEL ATTRIBUTES (TREE CANNOT HANDLE - MUST USE NARRATIVE)
+════════════════════════════════════════════════════════════════════════════════════════════
+These are attributes of individual SHOTS within rallies. Tree has NO access to these.
+Data lives in pre-computed NL file chunks (SHOTDIR, SHOTS, NETPTS sections).
+
+• direction: crosscourt, down_the_line, inside_out, inside_in, down_the_middle
+• shot_type: forehand, backhand, volley, overhead, drop_shot, slice  
+• shot_modifier: slice, volley, drop_shot, approach, lob
+• depth: shallow, deep, very_deep
+• spin: topspin, slice, flat
+• net_play: approaches, volleys, points at net
+
+KEYWORD DETECTION → NARRATIVE:
+- "crosscourt", "down the line", "DTL", "inside-out", "inside-in", "down the middle"
+- "forehand", "backhand" (when asking about counts/patterns, not winners/errors)
+- "volley", "approach", "net point", "came to net"
+- "drop shot", "lob", "slice" (shot types)
+- "pattern", "placement", "direction"
+
+════════════════════════════════════════════════════════════════════════════════════════════
+POINT-LEVEL ATTRIBUTES (NARRATIVE CANNOT FILTER - MUST USE TREE)
+════════════════════════════════════════════════════════════════════════════════════════════
+These are attributes of POINTS (not shots). Tree filters/aggregates these.
+
+• set: 1, 2, 3, 4, 5
+• situation: break_point, game_point, deuce, set_point, match_point, tiebreak
+• serve_number: 1 (first serve), 2 (second serve)
+• role: server, returner
+• court_side: deuce, ad
+• rally_length: numeric (1, 2, 3, ... or >=7, <=3)
+• prev_rally_length: for "after X" questions
+• point_score: "30-30", "15-40", "40-15", etc.
+• point_number_range: [1, 100] for temporal segments
+
+KEYWORD DETECTION → TREE:
+- "Set 3", "in the 4th set", "sets 4 and 5"
+- "break point", "game point", "deuce", "set point", "match point"
+- "first serve", "second serve", "2nd serve", "1st serve"
+- "when serving", "when returning", "serve games", "return games"
+- "at 30-30", "at 15-40", "when ahead", "when behind"
+- "long rallies", "short rallies", "rallies of 7+"
+- "first 100 points", "last 50 points"
+
+════════════════════════════════════════════════════════════════════════════════════════════
+TREE METRICS (what tree can compute)
+════════════════════════════════════════════════════════════════════════════════════════════
+{supported_metrics}
+
+════════════════════════════════════════════════════════════════════════════════════════════
+NL FILE SECTIONS (what narrative chunks contain)
+════════════════════════════════════════════════════════════════════════════════════════════
+• OVERVIEW STATISTICS: Total aces, double faults, winners, errors, final score
+• SERVE1/SERVE2: Detailed serve stats (by court, by outcome) per player
+• RETURN1/RETURN2: Detailed return stats per player  
+• KEY POINTS: Break point, game point, deuce stats
+• SHOTS1/SHOTS2: Shot TYPE totals (forehand count, backhand count, volleys)
+• SHOTDIR1/SHOTDIR2: Shot DIRECTION with WIN% (crosscourt, DTL, inside-out, inside-in)
+• NETPTS1/NETPTS2: Net approach statistics
+• POINT-BY-POINT: Full descriptions for qualitative analysis
+
+════════════════════════════════════════════════════════════════════════════════════════════
+COMPLETE ROUTING TABLE - MEMORIZE THIS
+════════════════════════════════════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────┬───────────┬─────────────────────────────────────┐
+│ QUESTION TYPE                           │ ROUTE     │ CHUNK/FILTER                        │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ SHOT DIRECTION                          │           │                                     │
+│ "most successful forehand pattern"      │ NARRATIVE │ chunk: "forehand direction win %"   │
+│ "crosscourt vs DTL"                     │ NARRATIVE │ chunk: "crosscourt down the line"   │
+│ "inside-out winners"                    │ NARRATIVE │ chunk: "inside-out winners"         │
+│ "direction breakdown"                   │ NARRATIVE │ chunk: "shot direction breakdown"   │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ SHOT TYPE COUNTS                        │           │                                     │
+│ "how many forehands"                    │ NARRATIVE │ chunk: "forehand total shots"       │
+│ "forehand vs backhand"                  │ NARRATIVE │ chunk: "forehand backhand shots"    │
+│ "total shots hit"                       │ NARRATIVE │ chunk: "shot totals"                │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ NET PLAY                                │           │                                     │
+│ "net approaches"                        │ NARRATIVE │ chunk: "net approaches"             │
+│ "volley win %"                          │ NARRATIVE │ chunk: "volley net points won"      │
+│ "times at net"                          │ NARRATIVE │ chunk: "net points statistics"      │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ MATCH TOTALS                            │           │                                     │
+│ "total aces", "total winners"           │ NARRATIVE │ chunk: "overview statistics"        │
+│ "final score", "who won"                │ NARRATIVE │ chunk: "match overview"             │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ SET-FILTERED                            │           │                                     │
+│ "points in Set 3"                       │ TREE      │ filter: set=3                       │
+│ "which set best"                        │ TREE      │ filters: set=1,2,3,4,5 (compare)    │
+│ "Set 4 vs Set 5"                        │ TREE      │ filters: set=4, set=5               │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ SITUATION-FILTERED                      │           │                                     │
+│ "break point conversion"                │ TREE      │ filter: situation=break_point       │
+│ "at deuce"                              │ TREE      │ filter: situation=deuce             │
+│ "game points saved"                     │ TREE      │ filter: situation=game_point        │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ SERVE-FILTERED                          │           │                                     │
+│ "2nd serve win %"                       │ TREE      │ filter: serve_number=2              │
+│ "aces on 1st serve"                     │ TREE      │ filter: serve_number=1              │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ ROLE-FILTERED                           │           │                                     │
+│ "return points won"                     │ TREE      │ filter: role=returner               │
+│ "serve games"                           │ TREE      │ filter: role=server                 │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ RALLY-FILTERED                          │           │                                     │
+│ "long rally (7+) win %"                 │ TREE      │ filter: rally_length>=7             │
+│ "short rally performance"               │ TREE      │ filter: rally_length<=3             │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ SEQUENTIAL/MOMENTUM (prev point)        │           │                                     │
+│ "after long rallies"                    │ TREE      │ filter: prev_rally_length>=7        │
+│ "following a break"                     │ TREE      │ filter: (use prev game context)     │
+│ "after winning X"                       │ TREE      │ filter: prev_point_result           │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ QUALITATIVE MOMENTUM                    │           │                                     │
+│ "turning point", "momentum shift"       │ NARRATIVE │ chunk: "momentum turning points"    │
+│ "tactics", "strategy"                   │ NARRATIVE │ chunk: "tactics strategy"           │
+├─────────────────────────────────────────┼───────────┼─────────────────────────────────────┤
+│ HYBRID (point filter + shot analysis)   │           │                                     │
+│ "forehand pattern in Set 3"             │ HYBRID    │ tree: set=3, narrative: point_source│
+│ "tactics at break points"               │ HYBRID    │ tree: situation=bp, narrative: desc │
+│ "serve placement at deuce"              │ HYBRID    │ tree: situation=deuce, narr: serve  │
+└─────────────────────────────────────────┴───────────┴─────────────────────────────────────┘
+
+════════════════════════════════════════════════════════════════════════════════════════════
+QUERY PLAN JSON FORMAT
+════════════════════════════════════════════════════════════════════════════════════════════
+{{
+  "query_plan": [
+    {{
+      "id": "A",
+      "route": "tree" | "narrative" | "clarify",
+      "filters": {{}},           // tree: ONLY point-level filters
+      "metrics": [],             // tree: ONLY supported metrics
+      "chunk_retrieval": true,   // narrative: ALWAYS true
+      "chunk_query": "...",      // narrative: REQUIRED - keywords to find right chunks
+      "point_source": "A",       // hybrid: use filtered points from tree op
+      "top_k": 15                // narrative: chunks to retrieve
+    }}
+  ],
+  "synthesis_instructions": "..."
+}}
+
+════════════════════════════════════════════════════════════════════════════════════════════
+CRITICAL DECISION RULES
+════════════════════════════════════════════════════════════════════════════════════════════
+
+RULE 1: Check for SHOT-LEVEL keywords first:
+  - crosscourt, down the line, DTL, inside-out, inside-in → NARRATIVE
+  - forehand/backhand totals, shot counts, patterns → NARRATIVE  
+  - net approaches, volleys, times at net → NARRATIVE
+  
+RULE 2: Check for POINT-LEVEL keywords:
+  - Set X, situation, break point, deuce, serve number → TREE
+  - role (server/returner), rally length, point score → TREE
+  
+RULE 3: If BOTH shot-level AND point-level keywords → HYBRID
+  - Tree operation first to filter points
+  - Narrative operation with point_source to analyze
+
+RULE 4: For narrative ops, ALWAYS set:
+  - chunk_retrieval: true
+  - chunk_query: descriptive keywords matching NL section content
+  
+RULE 5: For tree comparison questions:
+  - Create SEPARATE tree operation for EACH entity being compared
+  - "Set 3 vs Set 5" → TWO ops with set=3 and set=5
+  - "break point vs deuce" → TWO ops with different situations
+
+RULE 6: For NARRATIVE comparison questions (shot directions, patterns, tactics):
+  - Create SEPARATE narrative operation for EACH direction/pattern being compared
+  - "inside-out vs inside-in vs DTL" → THREE narrative ops, each with specific chunk_query
+  - Each op should target the specific direction's statistics
+  - This allows proper retrieval and comparison like tree does
+
+RULE 7: When asking about "most successful" or "best" pattern:
+  - This is a COMPARISON question requiring data for ALL patterns
+  - Generate separate narrative ops for each pattern to retrieve ALL relevant stats
+  - The synthesis can then determine which is "most successful"
+
+RULE 8: CRITICAL - Distinguish QUALITATIVE momentum vs SEQUENTIAL momentum:
+  - QUALITATIVE (NARRATIVE): "What was the turning point?", "momentum shift", "when did X take control?"
+    → Looking for strategic/psychological analysis of match flow
+  - SEQUENTIAL (TREE): "after long rallies", "following a break", "immediately after X"
+    → Statistical analysis using prev_rally_length, prev_point_result filters
+  - Keywords: "after", "following", "immediately after", "in response to" → TREE with prev_* filters
+
+RULE 9: CRITICAL - If group_by is NOT in TREE_LEVEL_DIMENSIONS, use HYBRID:
+  - Tree dimensions: {supported_filters}
+  - Examples of shot-level groupings: return_depth, serve_placement, direction, shot_type, depth, spin
+  - Tree operation filters to relevant points (e.g., role=returner for return_depth)
+  - Narrative operation analyzes point descriptions to extract shot-level data
+
+════════════════════════════════════════════════════════════════════════════════════════════
+EXAMPLES - COPY THESE PATTERNS
+════════════════════════════════════════════════════════════════════════════════════════════
+
+Q: "Who won more break points?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"situation": "break_point"}}, "metrics": ["points_won", "win_percentage"]}}
+  ],
+  "synthesis_instructions": "Report break point stats directly from A"
+}}
+
+Q: "Who performed better at deuce or at break points?"
+EXPLANATION: This compares 2 situations. Must create 2 operations.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"situation": "deuce"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "B", "route": "tree", "filters": {{"situation": "break_point"}}, "metrics": ["win_percentage", "points_won"]}}
+  ],
+  "synthesis_instructions": "Compare win% at deuce (A) vs break points (B) for both players. Identify who performed better in each situation."
+}}
+
+Q: "What shot patterns did Sinner use on break points?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"situation": "break_point"}}, "metrics": []}},
+    {{"id": "B", "route": "narrative", "point_source": "A", "filters": {{"situation": "break_point"}}, "chunk_retrieval": true}}
+  ],
+  "synthesis_instructions": "Use A to identify break points, then B analyzes shot patterns in those points using both the point data and break point chunks"
+}}
+
+Q: "Points won at 30-30 and deuce combined?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"point_score": "30-30"}}, "metrics": ["points_won"]}},
+    {{"id": "B", "route": "tree", "filters": {{"situation": "deuce"}}, "metrics": ["points_won"]}}
+  ],
+  "synthesis_instructions": "Combine points from A and B, report total per player"
+}}
+
+Q: "How did the match flow change across sets?"
+EXPLANATION: Qualitative momentum question asking for narrative/strategic analysis.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "narrative", "chunk_retrieval": true, "chunk_query": "match flow momentum across sets"}}
+  ],
+  "synthesis_instructions": "Describe match flow evolution from narrative context"
+}}
+
+Q: "How did Sinner perform after winning long rallies?" or "Did Medvedev serve worse after long rallies?"
+EXPLANATION: Sequential momentum - asking about performance FOLLOWING a specific type of point. Use prev_rally_length filter (TREE).
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"prev_rally_length": ">=7"}}, "metrics": ["win_percentage", "winners", "unforced_errors"]}}
+  ],
+  "synthesis_instructions": "Report performance on points that followed long rallies (7+ shots), comparing both players"
+}}
+
+Q: "Who won more points immediately after losing long rallies?" or "Performance following breaks?"
+EXPLANATION: Sequential patterns - use TREE's temporal filters (prev_rally_length, prev_point_result).
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"prev_rally_length": ">=7"}}, "metrics": ["points_won", "win_percentage"]}}
+  ],
+  "synthesis_instructions": "Analyze points following long rallies to identify sequential momentum patterns"
+}}
+
+Q: "On break points, what was the 2nd serve win% and what tactics were used?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"situation": "break_point", "serve_number": 2}}, "metrics": ["win_percentage"]}},
+    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "filters": {{"situation": "break_point"}}, "chunk_retrieval": true, "chunk_query": "break point tactics"}}
+  ],
+  "synthesis_instructions": "Report 2nd serve win% from A, then describe tactics from B"
+}}
+
+Q: "What were the turning points in Set 3?" or "What were the mini momentum shifts in Set 4?"
+EXPLANATION: Set-specific narrative questions need tree filtering first, then narrative analysis with filtered chunk retrieval.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"set": 3}}, "metrics": []}},
+    {{"id": "B", "route": "narrative", "op_type": "narrative_timeline", "point_source": "A", "filters": {{"set": 3}}, "chunk_retrieval": true, "chunk_query": "turning points momentum shifts Set 3"}}
+  ],
+  "synthesis_instructions": "Use A to filter to Set 3 points only, then B analyzes turning points/momentum shifts within that set using both the points and Set 3 chunks"
+}}
+
+Q: "Compare Sinner on break points vs on set points"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"situation": "break_point"}}, "metrics": ["points_won", "win_percentage"]}},
+    {{"id": "B", "route": "tree", "op_type": "tree_aggregate", "filters": {{"situation": "set_point"}}, "metrics": ["points_won", "win_percentage"]}}
+  ],
+  "synthesis_instructions": "Compare A (break points) vs B (set points) side by side. Note if either has insufficient data."
+}}
+
+Q: "Who was more effective?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "clarify", "clarify_question": "When you say 'effective', do you mean: (1) win percentage overall, (2) winners vs errors ratio, (3) performance on big points, or (4) something else?"}}
+  ],
+  "synthesis_instructions": "Ask user for clarification before proceeding"
+}}
+
+Q: "How did momentum shift after the 3rd set?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"set": 4}}, "metrics": ["points_won", "win_percentage"]}},
+    {{"id": "B", "route": "tree", "op_type": "tree_aggregate", "filters": {{"set": 5}}, "metrics": ["points_won", "win_percentage"]}},
+    {{"id": "C", "route": "narrative", "op_type": "narrative_timeline", "chunk_retrieval": true, "chunk_query": "momentum shift sets 4 and 5"}}
+  ],
+  "synthesis_instructions": "Use A and B for stats in sets 4-5, use C for narrative about momentum shift"
+}}
+
+Q: "Did either player get hot on serve for a stretch (like 12/14 points)?"
+EXPLANATION: Streak/stretch questions need ALL points for sequential analysis + comprehensive chunks.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{}}, "metrics": []}},
+    {{"id": "B", "route": "narrative", "op_type": "narrative_timeline", "point_source": "A", "chunk_retrieval": true, "chunk_query": "serving streaks hot stretches momentum runs", "top_k": 18}}
+  ],
+  "synthesis_instructions": "Use A to get ALL points in sequence, then B analyzes for consecutive/near-consecutive winning patterns on serve. Identify any stretches where a player won 10+ of 12-15 points while serving."
+}}
+
+Q: "Who won more points in rallies of 7+ shots?"
+PARSED CLASSIFICATION: {{"filters": {{"rally_length": ">=7"}}, "metrics": ["points_won"], "group_by": "player"}}
+EXPLANATION: Classification already detected rally_length filter - USE IT in the tree operation!
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"rally_length": ">=7"}}, "metrics": ["points_won"]}}
+  ],
+  "synthesis_instructions": "Report points won by each player in rallies of 7+ shots from operation A."
+}}
+
+Q: "Who won more points immediately after long rallies (7+ shots)?"
+EXPLANATION: "immediately after" = use prev_rally_length filter! The current point follows a point where rally>=7.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"prev_rally_length": ">=7"}}, "metrics": ["points_won"]}}
+  ],
+  "synthesis_instructions": "Report points won by each player on points that immediately followed rallies of 7+ shots."
+}}
+
+Q: "When did Medvedev's level drop the most: Set 3, 4, or 5?"
+EXPLANATION: This is a COMPARISON question asking about 3 sets. Must create 3 separate tree operations.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"set": 3}}, "metrics": ["points_won", "win_percentage", "unforced_errors"]}},
+    {{"id": "B", "route": "tree", "filters": {{"set": 4}}, "metrics": ["points_won", "win_percentage", "unforced_errors"]}},
+    {{"id": "C", "route": "tree", "filters": {{"set": 5}}, "metrics": ["points_won", "win_percentage", "unforced_errors"]}}
+  ],
+  "synthesis_instructions": "Compare Medvedev's win% across sets 3, 4, 5. Identify which set had LOWEST win% or HIGHEST errors = biggest drop. Present as comparison table showing all 3 sets."
+}}
+
+Q: "Did Sinner improve more on serve or on return after Set 2?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"set": 3, "role": "server"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "B", "route": "tree", "filters": {{"set": 3, "role": "returner"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "C", "route": "tree", "filters": {{"set": 4, "role": "server"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "D", "route": "tree", "filters": {{"set": 4, "role": "returner"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "E", "route": "tree", "filters": {{"set": 5, "role": "server"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "F", "route": "tree", "filters": {{"set": 5, "role": "returner"}}, "metrics": ["win_percentage", "points_won"]}}
+  ],
+  "synthesis_instructions": "Compare Sinner's serve performance (A, C, E) vs return performance (B, D, F) across sets 3-5. Calculate improvement trends for each role."
+}}
+
+Q: "First 100 points vs last 100 points - what changed most?"
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"point_number_range": [1, 100]}}, "metrics": ["points_won", "win_percentage", "aces", "unforced_errors"]}},
+    {{"id": "B", "route": "tree", "filters": {{"point_number_range": [184, 283]}}, "metrics": ["points_won", "win_percentage", "aces", "unforced_errors"]}}
+  ],
+  "synthesis_instructions": "Compare early match (A) vs late match (B) stats. Identify biggest differences in win%, aces, errors for each player."
+}}
+
+Q: "Did Sinner start returning deeper later, or was it constant?"
+PARSED CLASSIFICATION: {{"filters": {{"role": "returner"}}, "group_by": "sets"}}
+EXPLANATION: TREND question about return depth. Get ALL return points via tree, then narrative analyzes the POINT DESCRIPTIONS to extract depth patterns per set.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"role": "returner"}}, "metrics": []}},
+    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "chunk_retrieval": false}}
+  ],
+  "synthesis_instructions": "Operation A gives ALL return points with full descriptions. Analyze the return shot in each point (2nd shot, after serve). Extract depth labels ('very deep', 'deep', 'shallow') from descriptions like 'backhand return down the middle (very deep)'. Group by set and count depths per set. Report whether depth was constant or changed across sets."
+}}
+
+Q: "How did Medvedev's serve placement change throughout the match?"
+EXPLANATION: Shot-level pattern analysis (serve placement). Get ALL serve points, then narrative analyzes POINT DESCRIPTIONS to extract placement.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"role": "server"}}, "metrics": []}},
+    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "chunk_retrieval": false}}
+  ],
+  "synthesis_instructions": "Operation A gives ALL serve points with descriptions. Extract serve placement ('wide', 'T', 'body') from descriptions like '1st serve wide' or '2nd serve down the T'. Group by set and count placements. Report how placement changed across sets."
+}}
+
+Q: "Which return depth zone created the most advantage: deep vs very deep?"
+PARSED CLASSIFICATION: {{"group_by": "return_depth", "role": "returner", "metric": "win_percentage"}}
+EXPLANATION: Return depth is shot-level (extracted from point descriptions). Get ALL return points via tree, then analyze descriptions.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"role": "returner"}}, "metrics": []}},
+    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "chunk_retrieval": false}}
+  ],
+  "synthesis_instructions": "Operation A gives ALL return points. Extract return depth ('deep', 'very deep', 'shallow') from point descriptions. Group by depth and compute win % for each. Report which depth had highest win %."
+}}
+
+Q: "What was Sinner's most successful forehand pattern (inside-out, inside-in, DTL)?"
+PARSED CLASSIFICATION: {{"group_by": "direction", "shot_type": "forehand", "player": "Jannik Sinner"}}
+EXPLANATION: Shot direction comparison - data is in SHOTDIR chunks with win percentages by direction. Use narrative with chunk_retrieval to get SHOTDIR data.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "narrative", "op_type": "narrative_describe", "chunk_retrieval": true, "chunk_query": "Sinner forehand direction inside-out inside-in down the line win percentage points won", "top_k": 15}}
+  ],
+  "synthesis_instructions": "Find SHOTDIR1 chunk with forehand win percentages by direction. Compare inside-out, inside-in, and down the line win rates. Report which pattern was most successful (highest win %)."
+}}
+
+Q: "How many crosscourt winners did each player hit?"
+PARSED CLASSIFICATION: {{"metrics": ["winners"], "filters": {{"direction": "crosscourt"}}, "group_by": "player"}}
+EXPLANATION: Direction + outcome query - data is in SHOTDIR chunks with breakdowns by direction and outcome.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "narrative", "op_type": "narrative_describe", "chunk_retrieval": true, "chunk_query": "crosscourt winners shot direction forehand backhand", "top_k": 15}}
+  ],
+  "synthesis_instructions": "Find SHOTDIR chunks for both players. Extract crosscourt winner counts for each. Sum forehand + backhand crosscourt winners per player."
+}}
+
+Q: "Compare Sinner's forehand vs backhand effectiveness"
+PARSED CLASSIFICATION: {{"group_by": "shot_type", "player": "Jannik Sinner"}}
+EXPLANATION: Shot type comparison - data is in SHOTS chunks with win percentages per shot type.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "narrative", "op_type": "narrative_describe", "chunk_retrieval": true, "chunk_query": "Sinner forehand backhand win percentage points won effectiveness", "top_k": 15}}
+  ],
+  "synthesis_instructions": "Find SHOTS1 chunk with Sinner's shot statistics. Compare forehand vs backhand win percentages, winners, and errors."
+}}
+
+Q: "Which direction did Medvedev hit most winners from?"
+PARSED CLASSIFICATION: {{"group_by": "direction", "metrics": ["winners"], "player": "Daniil Medvedev"}}
+EXPLANATION: Direction grouping for winners - data is in SHOTDIR2 chunk with winner counts by direction.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "narrative", "op_type": "narrative_describe", "chunk_retrieval": true, "chunk_query": "Medvedev shot direction winners crosscourt down the line inside-out", "top_k": 15}}
+  ],
+  "synthesis_instructions": "Find SHOTDIR2 chunk. Extract winner counts per direction (crosscourt, DTL, inside-out, etc.). Report which direction had most winners."
+}}
+
+Q: "How did Sinner perform on clutch points?"
+PARSED CLASSIFICATION: {{"situation_group": ["break_point", "deuce", "set_point", "match_point"]}}
+EXPLANATION: "Clutch" maps to multiple situations. Create ops for EACH situation and combine.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"situation": "break_point"}}, "metrics": ["points_won", "win_percentage"]}},
+    {{"id": "B", "route": "tree", "filters": {{"situation": "deuce"}}, "metrics": ["points_won", "win_percentage"]}},
+    {{"id": "C", "route": "tree", "filters": {{"situation": "set_point"}}, "metrics": ["points_won", "win_percentage"]}},
+    {{"id": "D", "route": "tree", "filters": {{"situation": "match_point"}}, "metrics": ["points_won", "win_percentage"]}}
+  ],
+  "synthesis_instructions": "Combine results from all clutch situations (A=break points, B=deuce, C=set points, D=match points). Report total combined win % across all clutch moments."
+}}
+
+Q: "Which serve target was most effective for Sinner?"
+PARSED CLASSIFICATION: {{"group_by": "serve_target", "role": "server", "metrics": ["win_percentage"]}}
+EXPLANATION: Ranking query - compare multiple targets. Create op for EACH target, then rank.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"role": "server", "serve_target": "wide"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "B", "route": "tree", "filters": {{"role": "server", "serve_target": "T"}}, "metrics": ["win_percentage", "points_won"]}},
+    {{"id": "C", "route": "tree", "filters": {{"role": "server", "serve_target": "body"}}, "metrics": ["win_percentage", "points_won"]}}
+  ],
+  "synthesis_instructions": "Compare win % for each serve target (A=wide, B=T, C=body). RANK from highest to lowest win %. Report most effective target."
+}}
+
+Q: "Did Sinner perform better on big points than Medvedev?"
+PARSED CLASSIFICATION: {{"situation_group": ["break_point", "game_point", "set_point", "match_point"], "group_by": "player"}}
+EXPLANATION: "Big points" = pressure situations combined. Compare both players across these.
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "filters": {{"situation": "break_point"}}, "metrics": ["win_percentage"]}},
+    {{"id": "B", "route": "tree", "filters": {{"situation": "game_point"}}, "metrics": ["win_percentage"]}},
+    {{"id": "C", "route": "tree", "filters": {{"situation": "set_point"}}, "metrics": ["win_percentage"]}},
+    {{"id": "D", "route": "tree", "filters": {{"situation": "deuce"}}, "metrics": ["win_percentage"]}}
+  ],
+  "synthesis_instructions": "For each player, combine win% across all big point situations (break points, game points, set points, deuce). Compare Sinner vs Medvedev overall big-point performance."
+}}
+
+IMPORTANT: 'player' is NOT a tree filter! Use 'role' (server/returner) instead. The tree knows who served/returned each point.
+IMPORTANT: If group_by is NOT in TREE_LEVEL_DIMENSIONS ({supported_filters}), it's shot-level → use HYBRID or narrative with chunks!
+IMPORTANT: For direction questions, data may be in SHOTDIR chunks (use chunk_retrieval) OR need point description analysis (use hybrid).
+IMPORTANT: Use point_source to pass filtered points TO narrative for shot-level analysis from point descriptions!
+
+USER QUESTION: {question}
+
+PARSED CLASSIFICATION (use this information when creating the query plan):
+{classification_json}
+
+CRITICAL: Use the filters, metrics, and groupings from PARSED CLASSIFICATION in your query plan operations!
+- If rally_length filter exists, include it in tree operation filters
+- If set filter exists, include it in tree operation filters
+- If metrics were parsed, use those metrics in tree operations
+- If player is set, consider whether to use player grouping
+- If situation/role filters exist, include them
+
+Return ONLY valid JSON (no markdown, no explanation):"""
+
+        # Format the classification for the LLM - include ALL shot-level fields
+        import json
+        filters = classification.get('filters', {})
+        classification_json = json.dumps({
+            'filters': filters,
+            'metrics': classification.get('metrics', []),
+            'metric_filters': classification.get('metric_filters', {}),
+            'group_by': classification.get('group_by'),
+            'secondary_group_by': classification.get('secondary_group_by'),
+            'player': filters.get('player') or classification.get('player'),
+            'query_category': classification.get('query_category'),
+            # CRITICAL: Include shot-level fields so planner knows to use narrative
+            'shot_type': classification.get('shot_type') or filters.get('shot_type'),
+            'direction': classification.get('direction') or filters.get('direction'),
+            'shot_modifier': classification.get('shot_modifier') or filters.get('shot_modifier'),
+            # CRITICAL: Include situation_group for multi-situation queries (clutch, pressure, big points)
+            'situation_group': filters.get('situation_group'),
+            'rally_length': filters.get('rally_length'),
+            'set': filters.get('set'),
+        }, indent=2)
+        
+        prompt = prompt.format(
+            player1=player1,
+            player2=player2,
+            supported_metrics=supported_metrics,
+            supported_filters=supported_filters,
+            question=question,
+            classification_json=classification_json
+        )
+
+        try:
+            import google.generativeai as genai
+            model = genai.GenerativeModel(self.model_25_flash)  # Fast model for planning
+            response = model.generate_content(prompt, generation_config={"temperature": 0.3})
+            
+            response_text = response.text.strip()
+            # Clean markdown if present
+            if response_text.startswith("```"):
+                response_text = response_text.split("```")[1]
+                if response_text.startswith("json"):
+                    response_text = response_text[4:]
+                response_text = response_text.strip()
+            
+            query_plan = json.loads(response_text)
+            
+            # Check if plan is garbage (all empty filters/no chunk_query for narrative)
+            ops = query_plan.get('query_plan', [])
+            is_garbage = all(
+                (not op.get('filters') and not op.get('chunk_query') and not op.get('metrics') and not op.get('chunk_retrieval'))
+                for op in ops
+            ) if ops else True
+            
+            if is_garbage:
+                print(f"[QUERY-PLAN] Generated garbage (empty ops) → using fallback")
+                return self._fallback_query_plan(question, classification)
+            
+            print(f"[QUERY-PLAN] Generated plan with {len(ops)} operations")
+            return query_plan
+            
+        except Exception as e:
+            print(f"[QUERY-PLAN] Error generating plan: {e}")
+            # Fallback: simple single-operation plan based on classification
+            return self._fallback_query_plan(question, classification)
+    
+    def _validate_query_plan(self, query_plan: Dict) -> tuple:
+        """
+        Validate a query plan for correctness before execution.
+        
+        Checks:
+        1. Dependencies exist (point_source references valid op)
+        2. Routes/types are valid
+        3. Filters use TREE_LEVEL_DIMENSIONS
+        4. Metrics are in TREE_SUPPORTED_METRICS
+        5. Total operations within limit
+        
+        Returns: (is_valid, errors_list)
+        """
+        errors = []
+        operations = query_plan.get('query_plan', [])
+        
+        if not operations:
+            errors.append("No operations in query plan")
+            return False, errors
+        
+        # Max operations limit (safety guard against runaway plans only)
+        MAX_OPERATIONS = 20  # High limit - let LLM generate what it needs
+        if len(operations) > MAX_OPERATIONS:
+            errors.append(f"Too many operations ({len(operations)} > {MAX_OPERATIONS})")
+        
+        # Track operation IDs
+        defined_ops = set()
+        
+        for op in operations:
+            op_id = op.get('id', '')
+            route = op.get('route', '')
+            
+            # Check route is valid
+            valid_routes = {'tree', 'narrative', 'clarify'}
+            if route not in valid_routes:
+                errors.append(f"Op {op_id}: Invalid route '{route}' (must be {valid_routes})")
+            
+            # Track defined ops
+            defined_ops.add(op_id)
+            
+            # Check tree-specific validation
+            if route == 'tree':
+                # Check filters use valid dimensions
+                filters = op.get('filters', {})
+                for dim in filters.keys():
+                    if dim not in self.TREE_LEVEL_DIMENSIONS:
+                        errors.append(f"Op {op_id}: Filter '{dim}' not in TREE_LEVEL_DIMENSIONS")
+                
+                # Check metrics are supported
+                metrics = op.get('metrics', [])
+                for metric in metrics:
+                    if metric not in self.TREE_SUPPORTED_METRICS:
+                        errors.append(f"Op {op_id}: Metric '{metric}' not in TREE_SUPPORTED_METRICS")
+                    
+                    # Check metric requirements can be met
+                    if metric in self.METRIC_REQUIREMENTS:
+                        req = self.METRIC_REQUIREMENTS[metric]
+                        if req.get('fallback') == 'narrative':
+                            # This metric may not be reliable from tree
+                            errors.append(f"Op {op_id}: Metric '{metric}' may need narrative fallback")
+            
+            # Check narrative dependencies
+            if route == 'narrative':
+                point_source = op.get('point_source')
+                if point_source and point_source not in defined_ops:
+                    errors.append(f"Op {op_id}: point_source '{point_source}' references undefined operation")
+        
+        is_valid = len(errors) == 0 or all('may need' in e for e in errors)  # Warnings are OK
+        return is_valid, errors
+    
+    def _fallback_query_plan(self, question: str, classification: Dict) -> Dict:
+        """
+        Fallback query plan when LLM planning fails.
+        Uses classification signals GENERICALLY - no hardcoded keywords.
+        """
+        filters = classification.get('filters', {})
+        metrics = classification.get('metrics', ['points_won'])
+        group_by = classification.get('group_by')
+        shot_type = classification.get('shot_type') or filters.get('shot_type')
+        direction = classification.get('direction') or filters.get('direction')
+        shot_modifier = classification.get('shot_modifier') or filters.get('shot_modifier')
+        
+        # SHOT-LEVEL = group_by is NOT in TREE_LEVEL_DIMENSIONS (use config, not hardcoded lists!)
+        # These are shot-level attributes that require analyzing point descriptions
+        
+        # Check if group_by is a shot-level attribute (not in tree dimensions)
+        is_grouping_shot_level = group_by and group_by not in self.TREE_LEVEL_DIMENSIONS
+        
+        # Check if any shot attributes are specified
+        has_shot_attributes = any([shot_type, direction, shot_modifier])
+        
+        is_shot_level = is_grouping_shot_level or has_shot_attributes
+        
+        if is_shot_level:
+            # CRITICAL: Shot-level groupings need HYBRID approach:
+            # 1. Tree filters to relevant points (e.g., role=returner for return_depth)
+            # 2. Narrative analyzes point descriptions to extract shot-level data
+            
+            tree_filters = {k: v for k, v in filters.items() if k in self.TREE_LEVEL_DIMENSIONS and v}
+            
+            # For shot-level groupings, we ALWAYS need point data for analysis
+            # HYBRID: tree filter (even if empty) + narrative analysis
+            print(f"[FALLBACK] Shot-level grouping '{group_by}' NOT in TREE_LEVEL_DIMENSIONS")
+            print(f"[FALLBACK] Routing to HYBRID (tree filter + narrative analysis)")
+            return {
+                "query_plan": [
+                    {"id": "A", "route": "tree", "filters": tree_filters or {}, "metrics": []},
+                    {"id": "B", "route": "narrative", "point_source": "A", "chunk_retrieval": False}
+                ],
+                "synthesis_instructions": f"Analyze the filtered points from A. Extract {group_by or 'shot-level data'} from point descriptions and compute win percentages. Answer the question."
+            }
+        
+        # Check if any filters are NOT in tree dimensions → narrative
+        non_tree_filters = [k for k in filters.keys() if k not in self.TREE_LEVEL_DIMENSIONS and filters[k]]
+        if non_tree_filters:
+            print(f"[FALLBACK] Non-tree filters {non_tree_filters} → narrative")
+            return {
+                "query_plan": [
+                    {"id": "A", "route": "narrative", "chunk_retrieval": True, 
+                     "chunk_query": question, "top_k": 12}
+                ],
+                "synthesis_instructions": "Answer from narrative context"
+            }
+        
+        # DEFAULT: TREE with valid filters only
+        tree_filters = {k: v for k, v in filters.items() 
+                       if v is not None and k in self.TREE_LEVEL_DIMENSIONS}
+            return {
+                "query_plan": [
+                {"id": "A", "route": "tree", "filters": tree_filters, "metrics": metrics}
+                ],
+                "synthesis_instructions": "Report stats from tree analysis"
+            }
+    
+    def _execute_query_plan(self, question: str, query_plan: Dict, classification: Dict, top_k: int = None) -> str:
+        """
+        Execute a Query Plan and synthesize results.
+        
+        Steps:
+        1. Check for clarify operations first (return early)
+        2. Execute each operation in order
+        3. Store structured results by operation ID
+        4. Use synthesis instructions to combine into final answer
+        
+        Each operation result includes:
+        - operation_id, filters_applied, n_points, results (metrics/context)
+        - confidence: high/medium/low
+        - limitations: any caveats about the data
+        """
+        # Determine optimal chunk count if not provided
+        if top_k is None:
+            top_k = self._determine_optimal_chunk_count(question)
+            # Ensure minimum for query plan operations
+            top_k = max(top_k, 8)
+        operations = query_plan.get('query_plan', [])
+        synthesis_instructions = query_plan.get('synthesis_instructions', '')
+        
+        if not operations:
+            return "No operations in query plan."
+        
+        # VALIDATE PLAN before execution
+        is_valid, validation_errors = self._validate_query_plan(query_plan)
+        if not is_valid:
+            print(f"[QUERY-PLAN] Validation failed: {validation_errors}")
+            # Try to regenerate once
+            print("[QUERY-PLAN] Attempting to regenerate plan...")
+            query_plan = self._fallback_query_plan(question, classification)
+            operations = query_plan.get('query_plan', [])
+            synthesis_instructions = query_plan.get('synthesis_instructions', '')
+        elif validation_errors:
+            # Warnings only
+            print(f"[QUERY-PLAN] Validation warnings: {validation_errors}")
+        
+        # Check for clarify operations first
+        for op in operations:
+            if op.get('route') == 'clarify':
+                clarify_question = op.get('clarify_question', 'Could you please clarify your question?')
+                print(f"[QUERY-PLAN] Clarification needed: {clarify_question}")
+                return f"I'd like to give you an accurate answer. {clarify_question}"
+        
+        print(f"[QUERY-PLAN] Executing {len(operations)} operations...")
+        
+        # Store structured results and filtered points by operation ID
+        results = {}
+        filtered_points_by_id = {}
+        
+        for op in operations:
+            op_id = op.get('id', 'unknown')
+            route = op.get('route', 'tree')
+            op_type = op.get('op_type', route)  # Default to route if no op_type
+            
+            print(f"[QUERY-PLAN] Executing operation {op_id} ({route}, type={op_type})...")
+            
+            if route == 'tree':
+                result, points = self._execute_tree_operation(op, classification)
+                
+                # Add structured metadata
+                result['operation_id'] = op_id
+                result['op_type'] = op_type
+                # Use config thresholds for confidence
+                thresholds = self.SAMPLE_SIZE_THRESHOLDS
+                result['confidence'] = (
+                    'high' if len(points) >= thresholds['high_confidence'] else 
+                    ('medium' if len(points) >= thresholds['medium_confidence'] else 'low')
+                )
+                result['limitations'] = []
+                if len(points) < thresholds['medium_confidence']:
+                    result['limitations'].append(f"Small sample size ({len(points)} points)")
+                if not result.get('per_player_metrics'):
+                    result['limitations'].append("No metrics computed")
+                
+                results[op_id] = result
+                filtered_points_by_id[op_id] = points
+                
+            elif route == 'narrative':
+                # Get point source if specified
+                point_source = op.get('point_source')
+                source_points = filtered_points_by_id.get(point_source, []) if point_source else []
+                
+                # Use operation-specific top_k if provided, otherwise use query-level top_k
+                op_top_k = op.get('top_k', top_k)
+                result = self._execute_narrative_operation(op, classification, source_points, op_top_k)
+                
+                # Add structured metadata
+                result['operation_id'] = op_id
+                result['op_type'] = op_type
+                result['confidence'] = 'high' if (source_points or result.get('chunks')) else 'low'
+                result['limitations'] = []
+                if point_source and not source_points:
+                    result['limitations'].append(f"No points from source operation {point_source}")
+                if op.get('chunk_retrieval') and not result.get('chunks'):
+                    result['limitations'].append("No relevant chunks found")
+                
+                results[op_id] = result
+        
+        # Synthesize results
+        print("[QUERY-PLAN] Synthesizing results...")
+        answer = self._synthesize_query_plan_results(question, results, filtered_points_by_id, synthesis_instructions, classification)
+        
+        return answer
+    
+    def _execute_tree_operation(self, operation: Dict, classification: Dict) -> tuple:
+        """
+        Execute a tree operation: filter points and compute metrics.
+        
+        Uses existing _apply_dimension_filter for GENERIC filtering - no hardcoded dimensions.
+        
+        Returns: (result_dict, filtered_points_list)
+        """
+        filters = operation.get('filters', {})
+        metrics = operation.get('metrics', ['points_won'])
+        
+        if not hasattr(self, 'point_by_point') or not self.point_by_point:
+            return {"error": "No point data available"}, []
+        
+        # Start with all points
+        filtered_points = list(self.point_by_point)
+        
+        # Build a temporary classification for _apply_dimension_filter
+        temp_classification = dict(classification)
+        # CRITICAL: Get player context from original classification for role filtering
+        # But DON'T put player in operation filters - that breaks metric computation for grouped queries
+        original_filters = classification.get('filters', {})
+        player_context = original_filters.get('player') or classification.get('player')
+        
+        # Set operation filters but preserve player at classification level for role filtering
+        temp_classification['filters'] = filters
+        temp_classification['player'] = player_context  # Top-level for role filter access
+        
+        # Apply each filter using the existing generic filter method
+        for dim, value in filters.items():
+            if value is None:
+                continue
+            
+            # Use existing _apply_dimension_filter - it handles ALL dimension types from config
+            filtered_points = self._apply_dimension_filter(
+                filtered_points, dim, value, temp_classification
+            )
+        
+        print(f"[TREE-OP] Filtered {len(filtered_points)} points with filters: {filters}")
+        
+        # DEBUG: Print serve_number filter stats if it was used
+        if 'serve_number' in filters and hasattr(self, '_serve_debug'):
+            debug = self._serve_debug
+            print(f"[SERVE-DEBUG] 2nd serves found: {debug['total']}, empty_text: {debug['empty_text']}")
+            print(f"[SERVE-DEBUG] By server: {debug['by_server']}")
+            delattr(self, '_serve_debug')  # Reset for next query
+        
+        # Build classification for metric computation
+        temp_classification['metrics'] = metrics
+        temp_classification['group_by'] = None  # Query Plan operations don't group by default
+        
+        # Use existing _compute_leaf_metrics - it's GENERIC and handles ALL metrics via config
+        # NO HARDCODING - the config defines how each metric is computed
+        computed_results = self._compute_leaf_metrics(filtered_points, temp_classification)
+        
+        # Return the computed results directly with minimal formatting
+        # Let synthesis handle the display - we just provide the data
+        result = {
+            'filters': filters,
+            'total_points': len(filtered_points),
+            'per_player_metrics': computed_results['per_player_metrics'],  # Generic structure for ALL metrics
+            'player1_name': self.player1,
+            'player2_name': self.player2,
+        }
+        
+        return result, filtered_points
+    
+    def _execute_narrative_operation(self, operation: Dict, classification: Dict, source_points: list, top_k: int = None) -> Dict:
+        """
+        Execute a narrative operation: analyze points and/or retrieve chunks.
+        
+        Args:
+            operation: The operation definition
+            classification: Query classification
+            source_points: Points from a previous tree operation (if point_source specified)
+            top_k: Number of chunks to retrieve
+        
+        Returns: result dict with 'context' and optionally 'chunks'
+        """
+        chunk_retrieval = operation.get('chunk_retrieval', False)
+        chunk_query = operation.get('chunk_query', '')
+        
+        result = {
+            'source_points_count': len(source_points),
+            'point_texts': [],
+            'chunks': []
+        }
+        
+        # Build point context if we have source points
+        if source_points:
+            for pt in source_points:
+                point_num = pt.get('point_number', '?')
+                server = pt.get('server', '?')
+                returner = pt.get('returner', '?')
+                score = pt.get('score', '?')
+                description = pt.get('point_text', pt.get('description', 'No description'))
+                point_winner = pt.get('point_winner', '?')
+                
+                point_text = f"Point {point_num} [Server: {server} | Score: {score}]:\n{description}\n[Point won by: {point_winner}]"
+                result['point_texts'].append(point_text)
+        
+        # Retrieve chunks if requested
+        if chunk_retrieval:
+            # Determine optimal chunk count if not provided
+            if top_k is None:
+                query_for_chunks = chunk_query or classification.get('original_question', '')
+                top_k = self._determine_optimal_chunk_count(query_for_chunks)
+                # Narratives need more context - ensure minimum
+                top_k = max(top_k, 8)
+            else:
+                query_for_chunks = chunk_query or classification.get('original_question', '')
+            
+            # CRITICAL: Enhance query with filter information to ensure proper filtering
+            # If operation has filters (e.g., set=3), explicitly add them to the query
+            operation_filters = operation.get('filters', {})
+            if operation_filters:
+                filter_parts = []
+                if 'set' in operation_filters:
+                    filter_parts.append(f"Set {operation_filters['set']}")
+                if 'situation' in operation_filters:
+                    filter_parts.append(operation_filters['situation'].replace('_', ' '))
+                # Add other relevant filters as needed
+                
+                if filter_parts:
+                    enhanced_query = f"{query_for_chunks} {' '.join(filter_parts)}"
+                    query_for_chunks = enhanced_query
+                    print(f"[NARRATIVE-OP] Enhanced query with filters: {filter_parts}")
+            
+            if hasattr(self, 'retrieve_relevant_chunks'):
+                # Pass operation filters to chunk retrieval for proper filtering
+                chunks = self.retrieve_relevant_chunks(query_for_chunks, top_k=top_k, filters=operation_filters)
+                result['chunks'] = chunks
+                print(f"[NARRATIVE-OP] Retrieved {len(chunks)} chunks (top_k={top_k}, filters={operation_filters})")
+        
+        return result
+    
+    def _compute_point_aggregations(self, points: list, classification: Dict) -> str:
+        """
+        GENERIC aggregation of ALL points - extracts shot-level data and computes statistics.
+        
+        This is the KEY to handling large point sets: instead of passing raw descriptions
+        to the LLM, we extract and aggregate the data programmatically.
+        
+        Returns a formatted string with all computed statistics.
+        """
+        import re
+        from collections import defaultdict
+        
+        if not points:
+            return "No points to analyze."
+        
+        # Initialize aggregation structures
+        stats_by_set = defaultdict(lambda: {
+            'total_points': 0,
+            'return_depths': defaultdict(int),  # very_deep, deep, shallow, unspecified
+            'serve_targets': defaultdict(int),  # wide, T, body
+            'shot_directions': defaultdict(int),  # crosscourt, down_the_line, middle
+            'outcomes': defaultdict(int),  # winner, unforced_error, forced_error, ace
+            'rally_lengths': [],
+            'points_won': {'player1': 0, 'player2': 0},
+        })
+        
+        player1 = self.player1
+        player2 = self.player2
+        
+        # Process EVERY point
+        for pt in points:
+            set_num = pt.get('set_number', pt.get('set', 1)) or 1
+            description = pt.get('point_text', pt.get('description', ''))
+            desc_lower = description.lower()
+            server = pt.get('server', '')
+            returner = pt.get('returner', '')
+            point_winner = pt.get('point_winner', '')
+            
+            stats = stats_by_set[set_num]
+            stats['total_points'] += 1
+            
+            # Track point winner
+            if point_winner:
+                if self._names_match_robust(player1, point_winner):
+                    stats['points_won']['player1'] += 1
+                elif self._names_match_robust(player2, point_winner):
+                    stats['points_won']['player2'] += 1
+            
+            # Extract return depth from description (e.g., "return down the middle (very deep)")
+            depth_match = re.search(r'return[^;]*\((very deep|deep|shallow)\)', desc_lower)
+            if depth_match:
+                depth = depth_match.group(1).replace(' ', '_')
+                stats['return_depths'][depth] += 1
+            elif 'return' in desc_lower:
+                stats['return_depths']['unspecified'] += 1
+            
+            # Extract serve target (e.g., "1st serve wide", "2nd serve down the T")
+            serve_match = re.search(r'(?:1st|2nd)\s+serve\s+(wide|down the t|to body|body)', desc_lower)
+            if serve_match:
+                target = serve_match.group(1)
+                if 'wide' in target:
+                    stats['serve_targets']['wide'] += 1
+                elif 't' in target:
+                    stats['serve_targets']['T'] += 1
+                elif 'body' in target:
+                    stats['serve_targets']['body'] += 1
+            
+            # Extract outcomes
+            if 'ace' in desc_lower:
+                stats['outcomes']['ace'] += 1
+            if 'winner' in desc_lower and 'service winner' not in desc_lower:
+                stats['outcomes']['winner'] += 1
+            # CRITICAL: Check unforced FIRST to avoid 'forced error' matching inside 'unforced error'
+            if 'unforced error' in desc_lower:
+                stats['outcomes']['unforced_error'] += 1
+            elif 'forced error' in desc_lower:
+                stats['outcomes']['forced_error'] += 1
+            if 'double fault' in desc_lower:
+                stats['outcomes']['double_fault'] += 1
+            
+            # Track rally length
+            rally_len = pt.get('rally_length', 0)
+            if rally_len:
+                stats['rally_lengths'].append(rally_len)
+        
+        # Build formatted output
+        output_parts = [f"=== COMPLETE ANALYSIS OF ALL {len(points)} POINTS ===\n"]
+        
+        for set_num in sorted(stats_by_set.keys()):
+            stats = stats_by_set[set_num]
+            output_parts.append(f"\n--- SET {set_num} ({stats['total_points']} points) ---")
+            
+            # Points won
+            p1_wins = stats['points_won']['player1']
+            p2_wins = stats['points_won']['player2']
+            output_parts.append(f"Points won: {player1}: {p1_wins}, {player2}: {p2_wins}")
+            
+            # Return depths (if any recorded)
+            if any(stats['return_depths'].values()):
+                depths = stats['return_depths']
+                output_parts.append(f"Return depths: very_deep={depths['very_deep']}, deep={depths['deep']}, shallow={depths['shallow']}, unspecified={depths['unspecified']}")
+            
+            # Serve targets (if any recorded)
+            if any(stats['serve_targets'].values()):
+                targets = stats['serve_targets']
+                output_parts.append(f"Serve targets: wide={targets['wide']}, T={targets['T']}, body={targets['body']}")
+            
+            # Outcomes
+            if any(stats['outcomes'].values()):
+                outcomes = stats['outcomes']
+                output_parts.append(f"Outcomes: aces={outcomes['ace']}, winners={outcomes['winner']}, UE={outcomes['unforced_error']}, FE={outcomes['forced_error']}, DF={outcomes['double_fault']}")
+            
+            # Rally length stats
+            if stats['rally_lengths']:
+                avg_rally = sum(stats['rally_lengths']) / len(stats['rally_lengths'])
+                output_parts.append(f"Avg rally length: {avg_rally:.1f} shots")
+        
+        return "\n".join(output_parts)
+    
+    def _synthesize_query_plan_results(self, question: str, results: Dict, filtered_points_by_id: Dict, synthesis_instructions: str, classification: Dict) -> str:
+        """
+        Synthesize results from all operations into a final answer.
+        
+        Uses LLM to combine tree stats and narrative context based on synthesis instructions.
+        Includes structured metadata: confidence, limitations from each operation.
+        """
+        # Build context for synthesis with structured metadata
+        context_parts = []
+        all_points = []
+        all_limitations = []
+        
+        for op_id, result in results.items():
+            if isinstance(result, dict):
+                # Extract structured metadata
+                confidence = result.get('confidence', 'unknown')
+                limitations = result.get('limitations', [])
+                op_type = result.get('op_type', 'unknown')
+                
+                if limitations:
+                    all_limitations.extend([f"Op {op_id}: {lim}" for lim in limitations])
+                
+                if 'per_player_metrics' in result:
+                    # Tree operation result - uses GENERIC per_player_metrics structure
+                    context_parts.append(f"=== Operation {op_id} (Tree, {op_type}) ===")
+                    context_parts.append(f"Filters: {result.get('filters', {})}")
+                    context_parts.append(f"Total points: {result.get('total_points', 0)}")
+                    
+                    # Display metrics in a readable format
+                    player1 = result.get('player1_name', 'Player 1')
+                    player2 = result.get('player2_name', 'Player 2')
+                    
+                    for metric, player_data in result.get('per_player_metrics', {}).items():
+                        p1_count = player_data.get('player1', {}).get('count', 0)
+                        p1_total = player_data.get('player1', {}).get('total', 0)
+                        p2_count = player_data.get('player2', {}).get('count', 0)
+                        p2_total = player_data.get('player2', {}).get('total', 0)
+                        
+                        context_parts.append(f"{metric}:")
+                        context_parts.append(f"  {player1}: {p1_count} (out of {p1_total})")
+                        context_parts.append(f"  {player2}: {p2_count} (out of {p2_total})")
+                    
+                    if limitations:
+                        context_parts.append(f"Limitations: {', '.join(limitations)}")
+                    
+                    # Collect filtered points
+                    points = filtered_points_by_id.get(op_id, [])
+                    all_points.extend(points)
+                    
+                elif 'point_texts' in result:
+                    # Narrative operation result
+                    context_parts.append(f"\n=== Operation {op_id} (Narrative, {op_type}) ===")
+                    context_parts.append(f"Source points analyzed: {result.get('source_points_count', 0)}")
+                    
+                    # CRITICAL FIX: Include point_texts from narrative operation for hybrid queries
+                    # These are the filtered points that need shot-level analysis
+                    if result.get('point_texts'):
+                        num_points = len(result['point_texts'])
+                        context_parts.append(f"\nFiltered Point Descriptions ({num_points} points):")
+                        # For shot-level questions, we NEED the point descriptions
+                        # Include ALL points if < 50, otherwise sample intelligently
+                        if num_points <= 50:
+                            context_parts.extend(result['point_texts'])
+                        else:
+                            # Sample evenly across the filtered points
+                            step = num_points // 40  # Show ~40 points max
+                            sampled = result['point_texts'][::step][:40]
+                            context_parts.extend(sampled)
+                            context_parts.append(f"\n[Note: Showing 40 of {num_points} filtered points]")
+                    
+                    if result.get('chunks'):
+                        context_parts.append("\nRetrieved Reference Chunks:")
+                        # For SHOTDIR chunks, include full content (win percentages are in detailed breakdown)
+                        for chunk in result['chunks'][:5]:  # Show up to 5 chunks
+                            chunk_text = chunk.get('text', chunk.get('content', ''))
+                            chunk_section = chunk.get('metadata', {}).get('section', '')
+                            
+                            # SHOTDIR chunks contain detailed breakdowns with win percentages - include full text
+                            if 'shotdir' in chunk_section.lower():
+                                context_parts.append(f"  [{chunk_section}]:")
+                                context_parts.append(chunk_text)
+                            else:
+                                # Other chunks can be truncated
+                                context_parts.append(f"  - {chunk_text[:1500]}..." if len(chunk_text) > 1500 else f"  - {chunk_text}")
+                    
+                    if limitations:
+                        context_parts.append(f"Limitations: {', '.join(limitations)}")
+        
+        # Build final context
+        final_context = "\n".join(context_parts)
+        
+        # Add point texts for synthesis
+        point_context = ""
+        aggregated_stats = ""
+        
+        if all_points:
+            # ONLY compute aggregations for questions that NEED full point analysis:
+            # - Trend analysis (changes across sets)
+            # - Shot-level pattern questions (return depth, serve placement, directions)
+            # - Questions grouped by sets
+            # Simple metric questions (aces, winners, win%) use tree stats directly
+            
+            analysis_type = classification.get('analysis_type', '')
+            group_by = classification.get('group_by', '')
+            question_lower = question.lower()
+            
+            needs_full_analysis = (
+                analysis_type == 'trend' or
+                group_by == 'sets' or
+                'depth' in question_lower or
+                'placement' in question_lower or
+                'direction' in question_lower or
+                'pattern' in question_lower or
+                'constant' in question_lower or  # "was it constant?"
+                'change' in question_lower or    # "did X change?"
+                'evolve' in question_lower or
+                'throughout' in question_lower
+            )
+            
+            if needs_full_analysis and len(all_points) > 10:
+                aggregated_stats = self._compute_point_aggregations(all_points, classification)
+                print(f"[SYNTHESIS] Full point analysis for trend/pattern question")
+            
+            # Provide sample points for context
+            sample_size = min(30, len(all_points))
+            if len(all_points) > sample_size:
+                step = len(all_points) // sample_size
+                sample_points = all_points[::step][:sample_size]
+            else:
+                sample_points = all_points
+            
+            point_texts = []
+            for pt in sample_points:
+                point_num = pt.get('point_number', '?')
+                server = pt.get('server', '?')
+                score = pt.get('score', '?')
+                set_num = pt.get('set_number', pt.get('set', '?'))
+                description = pt.get('point_text', pt.get('description', ''))
+                point_winner = pt.get('point_winner', '?')
+                point_texts.append(f"Point {point_num} [Set {set_num} | {server} serving at {score}]: {description} [Won by: {point_winner}]")
+            point_context = "\n\n".join(point_texts)
+            print(f"[SYNTHESIS] Analyzed ALL {len(all_points)} points, showing {len(sample_points)} samples")
+        
+        # Build limitations summary for LLM
+        limitations_text = "\n".join(all_limitations) if all_limitations else "None"
+        
+        # Synthesize with LLM
+        prompt = f"""You are a tennis analyst synthesizing query results.
+
+QUESTION: {question}
+
+SYNTHESIS INSTRUCTIONS: {synthesis_instructions}
+
+OPERATION RESULTS:
+{final_context}
+
+LIMITATIONS/CAVEATS:
+{limitations_text}
+
+AGGREGATED STATISTICS (computed from ALL points):
+{aggregated_stats if aggregated_stats else "(No aggregated stats)"}
+
+SAMPLE POINT DETAILS (for context):
+{point_context if point_context else "(No point details)"}
+
+Based on the operation results and AGGREGATED STATISTICS, provide a clear answer to the question.
+CRITICAL: Use the AGGREGATED STATISTICS for your analysis - they cover ALL points, not just the samples.
+
+DATA SOURCE HIERARCHY (CRITICAL):
+1. For shot-level questions (forehand/backhand, direction, etc.) with point-level filters (Set X, break points):
+   - PRIMARY SOURCE: "Filtered Point Descriptions" from narrative operations
+   - Analyze these point descriptions to count forehands, shot directions, etc.
+   - DO NOT use match-wide totals from reference chunks
+   
+2. For point-level metrics (points won, win %, aces, double faults):
+   - PRIMARY SOURCE: Tree operation results with exact counts
+   - NEVER calculate these yourself
+   
+3. Reference chunks are SUPPLEMENTARY context only
+   - If a chunk says "Match-wide totals" but the question asks about Set 3, DO NOT use that chunk
+   - Acknowledge when data is limited to filtered points
+
+RULES (CRITICAL):
+- Use EXACT numbers from tree operations - NEVER calculate or estimate numbers yourself
+- If you need a number that's not in the tree results, say "not available from data"
+- For hybrid queries: Analyze the "Filtered Point Descriptions" to extract shot-level data
+- Reference specific points when relevant (by point number)
+- Provide tactical insight for PATTERNS only, not for inventing statistics
+- If any operation has low confidence or small sample size, explicitly mention this caveat
+- If sample size < 7 points, avoid strong tactical claims like "dominated" or "struggled"
+- Be concise but complete
+
+FORBIDDEN:
+- Do NOT calculate percentages yourself - only report what tree operations computed
+- Do NOT invent counts - if winners/errors not in tree results, say "detailed breakdown not available"
+- Do NOT extrapolate from small samples to general patterns
+- Do NOT use match-wide totals when the question asks about a specific set/situation
+
+Answer:"""
+
+        try:
+            model_config = classification.get('_model_config', {})
+            model_name = model_config.get('model_name', self.model)
+            
+            import google.generativeai as genai
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(prompt, generation_config={"temperature": 0.7})
+            answer = response.text
+            
+        except Exception as e:
+            print(f"[SYNTHESIS] Error: {e}")
+            # Fallback: just return the raw results
+            answer = f"Query Plan Results:\n{final_context}"
+        
+        # Add debug section showing filtered points (controlled by DEBUG flag)
+        if self.DEBUG_SHOW_POINTS and all_points:
+            debug_section = f"\n\n**DEBUG: Filtered Points ({len(all_points)} total)**\n"
+            for i, pt in enumerate(all_points[:20], 1):
+                debug_section += self._format_debug_point(pt, i)
+            if len(all_points) > 20:
+                debug_section += f"\n... and {len(all_points) - 20} more points"
+            answer += debug_section
+        elif all_points and not self.DEBUG_SHOW_POINTS:
+            # Production mode: just show count and filters
+            answer += f"\n\n*Based on {len(all_points)} filtered points.*"
+        
+        return answer
+    
+    def _check_hybrid_routing(self, question: str, classification: Dict, filters: Dict) -> Dict:
+        """
+        Check if query needs hybrid routing (tree filter → narrative analysis).
+        
+        Hybrid is needed when:
+        1. Query has tree-filterable conditions that aren't pre-computed with shot stats
+        2. AND requires shot-level analysis (directions, patterns, etc.)
+        3. OR multiple metrics_parsed entries need separate tree filtering (LLM synthesizes)
+        
+        Returns:
+            Dict with 'needs_hybrid', 'reason', 'tree_filters', 'shot_trigger', 'multi_metric_filters'
+        """
+        question_lower = question.lower()
+        
+        # === CONDITION 0: MULTIPLE METRICS_PARSED WITH DIFFERENT TREE FILTERS ===
+        # When LLM parses "X and Y combined" into multiple entries, each needs separate tree filtering
+        # Then narrative LLM synthesizes the combined results
+        metric_filters = classification.get('metric_filters', {})
+        if len(metric_filters) > 1:
+            # Collect tree-level filters from each metric (use class config)
+            multi_filter_sets = []
+            
+            for metric_key, metric_data in metric_filters.items():
+                mf = metric_data.get('filters', {})
+                # Check for tree-level filters using class config
+                tree_filters_for_metric = {}
+                for dim in self.TREE_LEVEL_DIMENSIONS:
+                    # Check if this metric has this dimension filter
+                    if mf.get(dim):
+                        tree_filters_for_metric[dim] = mf[dim]
+                
+                # Store metric key with its filters
+                if tree_filters_for_metric:
+                    multi_filter_sets.append({
+                        'metric_key': metric_key,
+                        'filters': tree_filters_for_metric
+                    })
+            
+            # If multiple metrics have tree filters, trigger hybrid
+            if len(multi_filter_sets) > 1:
+                return {
+                    'needs_hybrid': True,
+                    'reason': f"Multiple metrics_parsed entries ({len(multi_filter_sets)}) need separate tree filtering → narrative synthesis",
+                    'tree_filters': {},  # Will use multi_metric_filters instead
+                    'shot_trigger': 'multi_metric',
+                    'multi_metric_filters': multi_filter_sets
+                }
+        
+        # === FILTERS THAT NEED HYBRID WHEN COMBINED WITH SHOT QUESTIONS ===
+        # These filters are NEVER pre-computed with shot direction/pattern breakdowns
+        # Use class config for tree-level dimensions
+        ALWAYS_HYBRID_FILTERS = {
+            dim: filters.get(dim) for dim in self.TREE_LEVEL_DIMENSIONS
+            if filters.get(dim) is not None
+        }
+        
+        # Situation needs hybrid when asking about shot DIRECTIONS (not just winners/errors)
+        # NL has "winners at break points" but NOT "crosscourt at break points"
+        situation_filter = filters.get('situation')
+        
+        # === DETECT SHOT-LEVEL QUESTION (CONFIG-DRIVEN) ===
+        # These indicate we need to analyze shots, not just point outcomes
+        
+        # Build direction terms from GROUP_CONFIG
+        direction_config = self.GROUP_CONFIG.get('shot_direction', {}).get('default_branches', [])
+        shot_direction_terms = []
+        for d in direction_config:
+            shot_direction_terms.append(d.lower())
+            shot_direction_terms.append(d.lower().replace('_', ' '))
+            shot_direction_terms.append(d.lower().replace('_', '-'))
+        # Add common aliases
+        shot_direction_terms.extend(['dtl', 'cc', 'middle'])
+        
+        # Build shot type terms from GROUP_CONFIG
+        shot_type_config = self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+        shot_type_terms = []
+        for s in shot_type_config:
+            shot_type_terms.append(s.lower())
+            shot_type_terms.append(s.lower().replace('_', ' '))
+        
+        # Pattern and counting keywords (these are semantic, not from config)
+        shot_pattern_keywords = [
+            'shot pattern', 'shot sequence', 'rally pattern',
+            'what shots', 'which shots', 'shot selection',
+            'shot breakdown', 'shot distribution'
+        ]
+        
+        shot_counting_keywords = [
+            'how many shots', 'shot count', 'total shots'
+        ]
+        # Add shot counting with shot types from config: "forehand shots", "backhand shots"
+        for st in shot_type_terms:
+            shot_counting_keywords.append(f'{st} shots')
+        
+        has_direction_question = any(kw in question_lower for kw in shot_direction_terms)
+        has_pattern_question = any(kw in question_lower for kw in shot_pattern_keywords)
+        has_shot_counting = any(kw in question_lower for kw in shot_counting_keywords)
+        
+        is_shot_question = has_direction_question or has_pattern_question or has_shot_counting
+        
+        # Determine which trigger caused the shot question
+        shot_trigger = None
+        if has_direction_question:
+            shot_trigger = 'direction'
+        elif has_pattern_question:
+            shot_trigger = 'pattern'
+        elif has_shot_counting:
+            shot_trigger = 'counting'
+        
+        # === CHECK FOR HYBRID CONDITIONS ===
+        active_hybrid_filters = {k: v for k, v in ALWAYS_HYBRID_FILTERS.items() if v is not None}
+        
+        # Condition 1: Always-hybrid filter + shot question
+        if active_hybrid_filters and is_shot_question:
+            return {
+                'needs_hybrid': True,
+                'reason': f"Filter {list(active_hybrid_filters.keys())} + shot {shot_trigger} not pre-computed",
+                'tree_filters': active_hybrid_filters,
+                'shot_trigger': shot_trigger
+            }
+        
+        # Condition 2: Situation + shot direction (situation stats exist, but not with directions)
+        if situation_filter and has_direction_question:
+            return {
+                'needs_hybrid': True,
+                'reason': f"Situation '{situation_filter}' + shot direction not pre-computed",
+                'tree_filters': {'situation': situation_filter},
+                'shot_trigger': 'direction'
+            }
+        
+        # Condition 3: QUALITATIVE ANALYSIS on filtered points
+        # Questions asking "how", "who handled", "composure", "resilience", etc. on specific point subsets
+        # These need tree filtering for precision, then LLM for narrative analysis
+        # NOTE: Keywords must be specific enough to avoid false positives
+        qualitative_keywords = [
+            # Mental/pressure
+            'held up better', 'handled better', 'composure', 'resilience', 'mental strength',
+            'under pressure', 'clutch', 'recovered', 'pressure points',
+            # Momentum/turning points (specific phrases, not just "shift")
+            'momentum', 'momentum shift', 'momentum swing', 'turning point', 'turning points',
+            'mini turning', 'shifted momentum', 'key moment', 'key moments', 'pivotal',
+            'decisive', 'critical point', 'critical moment',
+            # Narrative requests
+            'what happened', 'tell me about', 'describe', 'explain', 'story of', 'narrative',
+            # Tactical analysis
+            'how did', 'tactics', 'tactical', 'strategy', 'approach', 'responded', 'game plan',
+            # Pattern/adaptation
+            'adapted', 'adjusted', 'changed approach', 'pattern', 'trend'
+        ]
+        
+        has_qualitative_question = any(kw in question_lower for kw in qualitative_keywords)
+        
+        # Check for ANY tree-level filter (not just situation/point_score)
+        # Use active_hybrid_filters which already collected all tree-level filters
+        active_tree_filters = active_hybrid_filters if active_hybrid_filters else {}
+        if not active_tree_filters:
+            # Also check common narrative filters: situation, point_score, set
+            for dim in ['situation', 'point_score', 'set', 'serve_number', 'role']:
+                if filters.get(dim):
+                    active_tree_filters[dim] = filters[dim]
+        
+        if has_qualitative_question and active_tree_filters:
+            return {
+                'needs_hybrid': True,
+                'reason': f"Qualitative analysis with filters {list(active_tree_filters.keys())} needs tree filter + narrative synthesis",
+                'tree_filters': active_tree_filters,
+                'shot_trigger': 'qualitative'
+            }
+        
+        return {'needs_hybrid': False, 'reason': None, 'tree_filters': {}, 'shot_trigger': None}
+    
+    def _handle_hybrid_query(self, question: str, classification: Dict, hybrid_result: Dict, top_k: int = None) -> str:
+        """
+        Handle hybrid queries: Use tree to filter points, then narrative to analyze shots.
+        
+        Steps:
+        1. Use tree to filter to matching points (guarantees completeness)
+        2. Extract point texts from filtered points
+        3. Pass filtered point texts to LLM for shot-level analysis
+        4. Show cited points in debug
+        
+        For multi-metric queries (e.g., "30-30 and deuce combined"):
+        - Filter points for EACH metric's filters separately
+        - Combine all filtered points
+        - Let narrative LLM synthesize the combined analysis
+        """
+        print("[HYBRID] Step 1: Filtering points using tree...")
+        
+        if not hasattr(self, 'point_by_point') or not self.point_by_point:
+            print("[HYBRID] ERROR: point_by_point data not available")
+            return self._handle_narrative_query(question, classification, top_k)
+        
+        # === MULTI-METRIC HANDLING ===
+        # When multiple metrics_parsed entries have different tree filters,
+        # filter for EACH separately and combine results
+        multi_metric_filters = hybrid_result.get('multi_metric_filters')
+        if multi_metric_filters and len(multi_metric_filters) > 1:
+            print(f"[HYBRID] Multi-metric mode: {len(multi_metric_filters)} filter sets")
+            all_filtered_points = {}  # point_number -> (point, metric_keys)
+            
+            for mf_entry in multi_metric_filters:
+                metric_key = mf_entry['metric_key']
+                mf_filters = mf_entry['filters']
+                print(f"[HYBRID]   Filtering for metric '{metric_key}' with filters: {mf_filters}")
+                
+                for pt in self.point_by_point:
+                    include = True
+                    
+                    # Apply each filter in this metric's filter set
+                    for dim, value in mf_filters.items():
+                        if not include:
+                            break
+                        
+                        if dim == 'set':
+                            pt_set = pt.get('set_number') or pt.get('_metadata', {}).get('set_number')
+                            if pt_set != value:
+                                include = False
+                        
+                        elif dim == 'situation':
+                            pt_situation = pt.get('situation', {})
+                            if isinstance(pt_situation, dict):
+                                pt_situation_type = pt_situation.get('type', '')
+                            else:
+                                pt_situation_type = str(pt_situation)
+                            is_situation = (
+                                pt_situation_type == value or
+                                pt.get(f'is_{value}', False) or
+                                pt.get('_metadata', {}).get(f'is_{value}', False)
+                            )
+                            if not is_situation:
+                                include = False
+                        
+                        elif dim == 'point_score':
+                            pt_score = pt.get('point_score') or pt.get('_metadata', {}).get('point_score', '')
+                            normalized_pt = self._normalize_point_score(pt_score)
+                            normalized_filter = self._normalize_point_score(value)
+                            if normalized_pt != normalized_filter:
+                                include = False
+                        
+                        elif dim == 'rally_length':
+                            pt_rally = pt.get('rally_length') or pt.get('_metadata', {}).get('rally_length', 0)
+                            if isinstance(value, (tuple, list)) and len(value) == 2:
+                                min_val, max_val = value
+                                if not (min_val <= pt_rally <= max_val):
+                                    include = False
+                            elif isinstance(value, int):
+                                if pt_rally != value:
+                                    include = False
+                    
+                    if include:
+                        pt_num = pt.get('point_number')
+                        if pt_num not in all_filtered_points:
+                            all_filtered_points[pt_num] = (pt, [metric_key])
+                        else:
+                            all_filtered_points[pt_num][1].append(metric_key)
+            
+            # Convert to list
+            filtered_points = [entry[0] for entry in all_filtered_points.values()]
+            print(f"[HYBRID] Combined: {len(filtered_points)} unique points from {len(multi_metric_filters)} filter sets")
+            
+            # Now continue with standard hybrid flow using combined points
+            # (skip the single-filter logic below)
+            return self._finish_hybrid_query(question, classification, filtered_points, top_k, hybrid_result)
+        
+        # === SINGLE FILTER SET (original logic) ===
+        tree_filters = hybrid_result.get('tree_filters', {})
+        
+        # Filter points using tree logic
+        filtered_points = []
+        filters = classification.get('filters', {})
+        
+        for pt in self.point_by_point:
+            include = True
+            
+            # Apply set filter
+            if tree_filters.get('set'):
+                pt_set = pt.get('set_number') or pt.get('_metadata', {}).get('set_number')
+                if pt_set != tree_filters['set']:
+                    include = False
+            
+            # Apply situation filter
+            if include and tree_filters.get('situation'):
+                situation = tree_filters['situation']
+                pt_situation = pt.get('situation', {})
+                if isinstance(pt_situation, dict):
+                    pt_situation_type = pt_situation.get('type', '')
+                else:
+                    pt_situation_type = str(pt_situation)
+                
+                # Also check boolean flags
+                is_situation = (
+                    pt_situation_type == situation or
+                    pt.get(f'is_{situation}', False) or
+                    pt.get('_metadata', {}).get(f'is_{situation}', False)
+                )
+                if not is_situation:
+                    include = False
+            
+            # Apply point_score filter (supports single value OR list of values)
+            if include and tree_filters.get('point_score'):
+                pt_score = pt.get('point_score') or pt.get('_metadata', {}).get('point_score', '')
+                normalized_pt = self._normalize_point_score(pt_score)
+                
+                filter_value = tree_filters['point_score']
+                if isinstance(filter_value, list):
+                    # OR logic: point matches if it matches ANY score in the list
+                    normalized_filters = [self._normalize_point_score(s) for s in filter_value]
+                    if normalized_pt not in normalized_filters:
+                        include = False
+                else:
+                    # Single value: exact match
+                    normalized_filter = self._normalize_point_score(filter_value)
+                    if normalized_pt != normalized_filter:
+                        include = False
+            
+            # Apply rally_length filter
+            if include and tree_filters.get('rally_length'):
+                pt_rally = pt.get('rally_length') or pt.get('_metadata', {}).get('rally_length', 0)
+                rally_filter = tree_filters['rally_length']
+                
+                if isinstance(rally_filter, (tuple, list)) and len(rally_filter) == 2:
+                    # Range filter: (min, max) or [min, max]
+                    min_val, max_val = rally_filter
+                    if not (min_val <= pt_rally <= max_val):
+                        include = False
+                elif isinstance(rally_filter, str):
+                    if rally_filter.startswith('<='):
+                        if pt_rally > int(rally_filter[2:]):
+                            include = False
+                    elif rally_filter.startswith('>='):
+                        if pt_rally < int(rally_filter[2:]):
+                            include = False
+                    elif rally_filter.startswith('<'):
+                        if pt_rally >= int(rally_filter[1:]):
+                            include = False
+                    elif rally_filter.startswith('>'):
+                        if pt_rally <= int(rally_filter[1:]):
+                            include = False
+                elif isinstance(rally_filter, int):
+                    if pt_rally != rally_filter:
+                        include = False
+            
+            # Apply game_number filter
+            if include and tree_filters.get('game_number'):
+                pt_game = pt.get('game_number_in_set') or pt.get('_metadata', {}).get('game_number_in_set')
+                if pt_game != tree_filters['game_number']:
+                    include = False
+            
+            if include:
+                filtered_points.append(pt)
+        
+        print(f"[HYBRID] Step 2: Filtered to {len(filtered_points)} points (from {len(self.point_by_point)} total)")
+        
+        # Continue with common hybrid logic
+        return self._finish_hybrid_query(question, classification, filtered_points, top_k, hybrid_result)
+    
+    def _finish_hybrid_query(self, question: str, classification: Dict, filtered_points: list, top_k: int, hybrid_result: Dict) -> str:
+        """
+        Complete hybrid query: Build context from filtered points and send to LLM for narrative synthesis.
+        
+        Called by _handle_hybrid_query after points are filtered (single or multi-filter modes).
+        """
+        tree_filters = hybrid_result.get('tree_filters', {})
+        
+        if not filtered_points:
+            filter_desc = ", ".join([f"{k}={v}" for k, v in tree_filters.items()]) or "specified filters"
+            return f"No points found matching the filters: {filter_desc}"
+        
+        # Build context from filtered point texts
+        print("[HYBRID] Step 3: Building context from filtered points...")
+        
+        point_texts = []
+        for pt in filtered_points:
+            point_num = pt.get('point_number', '?')
+            server = pt.get('server', '?')
+            returner = pt.get('returner', '?')
+            score = pt.get('score', '?')
+            description = pt.get('point_text', pt.get('description', 'No description'))
+            point_winner = pt.get('point_winner', '?')
+            
+            point_text = f"Point {point_num} [Server: {server} | Returner: {returner} | Score: {score}]:\n{description}\n[Point won by: {point_winner}]"
+            point_texts.append(point_text)
+        
+        context_text = "\n\n".join(point_texts)
+        
+        # ALSO retrieve relevant chunks for qualitative analysis
+        # The NL file may have pre-analyzed narrative (turning points, momentum shifts)
+        chunk_context = ""
+        if hybrid_result.get('shot_trigger') == 'qualitative' and hasattr(self, 'retrieve_relevant_chunks'):
+            print("[HYBRID] Step 3b: Also retrieving relevant NL chunks for qualitative context...")
+            # Use filters to ensure chunks are from the right subset (e.g., Set 3)
+            chunks = self.retrieve_relevant_chunks(question, top_k=10, filters=tree_filters)
+            if chunks:
+                chunk_texts = []
+                for chunk in chunks[:5]:
+                    chunk_text = chunk.get('text', '')
+                    chunk_section = chunk.get('metadata', {}).get('section', '')
+                    # SHOTDIR chunks need full content for win percentages
+                    if 'shotdir' in chunk_section.lower():
+                        chunk_texts.append(chunk_text)
+                    else:
+                        chunk_texts.append(chunk_text[:2000] if len(chunk_text) > 2000 else chunk_text)
+                chunk_context = "\n\nPRE-ANALYZED NARRATIVE CONTEXT:\n" + "\n---\n".join(chunk_texts)
+                print(f"[HYBRID] Retrieved {len(chunks)} chunks for additional context")
+        
+        # Build prompt for LLM
+        # Handle multi-metric case description
+        multi_metric_filters = hybrid_result.get('multi_metric_filters')
+        if multi_metric_filters:
+            filter_description = " + ".join([f"{mf['metric_key']}({', '.join(f'{k}={v}' for k,v in mf['filters'].items())})" for mf in multi_metric_filters])
+        else:
+            filter_description = ", ".join([f"{k}={v}" for k, v in tree_filters.items()])
+        
+        prompt = f"""You are analyzing tennis match data. The following {len(filtered_points)} points have been filtered from the match based on: {filter_description}
+
+QUESTION: {question}
+
+FILTERED POINTS DATA:
+{context_text}
+{chunk_context}
+
+Instructions:
+- Analyze ONLY the points shown above (they are the complete set matching the filter)
+- Count shots, directions, patterns as asked
+- When referencing specific points, use their point numbers (e.g., "Point 45", "Points 23 and 67")
+- Be precise with counts since you have the complete filtered dataset
+- For shot directions, look for: crosscourt, down the line, inside-out, inside-in, down the middle
+- If points came from MULTIPLE filter conditions (e.g., "30-30 AND deuce combined"), synthesize analysis across all conditions
+- For narrative/qualitative questions (momentum, turning points, etc.), also use the PRE-ANALYZED NARRATIVE CONTEXT if provided
+
+Answer:"""
+
+        print("[HYBRID] Step 4: Sending to LLM for analysis...")
+        
+        # Use LLM to analyze
+        try:
+            model_config = classification.get('_model_config', {})
+            model_name = model_config.get('model_name', self.model)
+            temperature = model_config.get('temperature', 0.7)
+            
+            if self.llm_provider == "gemini":
+                import google.generativeai as genai
+                gen_config = {"temperature": temperature}
+                
+                try:
+                    model = genai.GenerativeModel(model_name)
+                    response = model.generate_content(prompt, generation_config=gen_config)
+                    answer = response.text
+                except Exception as e:
+                    if "3-flash" in model_name.lower() and ("not found" in str(e).lower() or "404" in str(e)):
+                        fallback_model = genai.GenerativeModel(self.model_25_flash)
+                        response = fallback_model.generate_content(prompt, generation_config=gen_config)
+                        answer = response.text
+                    else:
+                        raise
+            else:
+                # Fallback for non-Gemini
+                answer = self._call_llm_simple(prompt)
+        except Exception as e:
+            print(f"[HYBRID] LLM error: {e}")
+            answer = f"Error analyzing filtered points: {e}"
+        
+        # CRITICAL: Show cited points in debug (console)
+        self._extract_and_show_cited_points(answer)
+        
+        # Also show all filtered points in debug for transparency (console)
+        print(f"\n[HYBRID-DEBUG] Complete filtered point set ({len(filtered_points)} points):")
+        print("=" * 100)
+        for pt in filtered_points[:20]:  # Show first 20
+            point_num = pt.get('point_number', '?')
+            server = pt.get('server', '?')
+            score = pt.get('score', '?')
+            point_winner = pt.get('point_winner', '?')
+            description = pt.get('point_text', pt.get('description', ''))[:100]
+            print(f"Point {point_num} [Server: {server} | Score: {score}] -> Won by: {point_winner}")
+            print(f"  {description}...")
+        if len(filtered_points) > 20:
+            print(f"  ... and {len(filtered_points) - 20} more points")
+        print("=" * 100)
+        
+        # CRITICAL: Append point details to ANSWER so user can see them in UI (not just console)
+        # Reuse existing _format_debug_point function for consistency
+        if filtered_points:
+            filter_desc = filter_description or "specified filters"
+            debug_section = f"\n\n**DEBUG: Points by Metric:**\n"
+            debug_section += f"**Filter: {filter_desc} ({len(filtered_points)} points)**\n"
+            for i, pt in enumerate(filtered_points, 1):
+                debug_section += self._format_debug_point(pt, i)
+            answer = answer + debug_section
+        
+        return answer
+    
+    def _extract_and_show_cited_points(self, answer: str):
+        """
+        Extract point numbers cited in narrative answer and display full point details.
+        
+        If the LLM answer references specific point numbers (e.g., "Point 23", "points 45 and 67"),
+        extract those points from the PBP data and show them in debug output for verification.
+        
+        This ensures transparency when narrative answers cite specific plays - user sees full points
+        just like analytical path shows matching_points.
+        """
+        import re
+        
+        # Pattern to match point number references:
+        # "Point 23", "point 145", "Points 23, 45", "points 23 and 67", etc.
+        pattern = r'\bpoints?\s+(\d+(?:\s*(?:,|and)\s*\d+)*)'
+        matches = re.findall(pattern, answer, re.IGNORECASE)
+        
+        if not matches:
+            return  # No point numbers cited
+        
+        # Extract all unique point numbers from matches
+        cited_point_numbers = set()
+        for match in matches:
+            # Split on comma and 'and', extract digits
+            nums = re.findall(r'\d+', match)
+            cited_point_numbers.update(int(n) for n in nums)
+        
+        if not cited_point_numbers:
+            return
+        
+        # Sort for display
+        cited_point_numbers = sorted(cited_point_numbers)
+        
+        print(f"\n[NARRATIVE-DEBUG] Answer cites {len(cited_point_numbers)} point(s): {cited_point_numbers}")
+        print(f"[NARRATIVE-DEBUG] Displaying full point details for verification...\n")
+        
+        # Look up points in point_by_point data
+        if not hasattr(self, 'point_by_point') or not self.point_by_point:
+            print("[NARRATIVE-DEBUG] WARNING: point_by_point data not available")
+            return
+        
+        found_points = []
+        for pt in self.point_by_point:
+            point_num = pt.get('point_number')
+            if point_num in cited_point_numbers:
+                found_points.append(pt)
+        
+        if not found_points:
+            print(f"[NARRATIVE-DEBUG] WARNING: Could not find cited points in PBP data")
+            return
+        
+        # Display points in same format as analytical debug
+        print("=" * 120)
+        print(f"CITED POINTS FROM NARRATIVE ANSWER ({len(found_points)} points)")
+        print("=" * 120)
+        
+        for pt in found_points:
+            point_num = pt.get('point_number', '?')
+            server = pt.get('server', '?')
+            returner = pt.get('returner', '?')
+            score = pt.get('score', '?')
+            point_winner = pt.get('point_winner', '?')
+            description = pt.get('point_text', pt.get('description', 'No description'))
+            
+            print(f"\nPoint {point_num} [Server: {server} | Returner: {returner} | Score: {score}]")
+            print(f"  {description}")
+            print(f"  [Point won by: {point_winner}]")
+        
+        print("=" * 120)
+    
+    def _convert_rally_category_to_filter(self, category: str):
+        """
+        Convert rally_length_category value to rally_length filter.
+        
+        Examples:
+            "0-4" -> (0, 4) or "<=4"
+            "1-3" -> (1, 3)
+            "4-6" -> (4, 6)
+            "7-9" -> (7, 9)
+            "10+" -> ">=10"
+        
+        Returns:
+            tuple (min, max) for range filters, or string for comparison filters
+        """
+        if not category:
+            return None
+        
+        category = str(category).strip()
+        
+        # Handle "X+" format (e.g., "10+")
+        if category.endswith('+'):
+            try:
+                min_val = int(category[:-1])
+                return f'>={min_val}'
+            except ValueError:
+                return None
+        
+        # Handle "X-Y" format (e.g., "0-4", "1-3", "4-6", "7-9")
+        if '-' in category or '–' in category:
+            # Split on hyphen or en-dash
+            parts = category.replace('–', '-').split('-')
+            if len(parts) == 2:
+                try:
+                    min_val = int(parts[0].strip())
+                    max_val = int(parts[1].strip())
+                    return (min_val, max_val)
+                except ValueError:
+                    return None
+        
+        # Handle single number (exact match)
+        try:
+            return int(category)
+        except ValueError:
+            return None
     
     def _extract_current_set(self, score: str) -> int:
         """
         Extract current set number from score string.
         
         Handles multiple formats:
-        - "Djokovic 0-0 1-2" (name + sets + games) â†’ Set 1
+        - "Djokovic 0-0 1-2" (name + sets + games) â†' Set 1
         - "Djokovic 1-0 0-0" (name + sets + games) â†’ Set 2
         - "0-0 1-2 15-30" (sets + games + points) â†’ Set 1
         - "2-1 3-2 40-30" (sets + games + points) â†’ Set 4
@@ -13119,6 +15932,82 @@ Answer:"""
         
         return (server_points, returner_points) in game_point_scores
     
+    def _is_grand_slam(self) -> bool:
+        """Check if the current match is a Grand Slam tournament."""
+        if not self.tournament:
+            return False
+        
+        grand_slams = [
+            'Australian Open',
+            'French Open',
+            'Wimbledon',
+            'US Open',
+            'Roland Garros',  # Alternate name
+        ]
+        
+        tournament_lower = self.tournament.lower()
+        return any(slam.lower() in tournament_lower for slam in grand_slams)
+    
+    def _get_tiebreak_threshold(self, set_number: int) -> int:
+        """
+        Get the point threshold for winning a tiebreak based on set number and tournament.
+        
+        Args:
+            set_number: Current set number (1-5)
+        
+        Returns:
+            7 for standard tiebreaks, 10 for 5th set super tiebreaks in Grand Slams
+        """
+        # Grand Slam 5th set (or 3rd set for best-of-3) uses 10-point tiebreak
+        if self._is_grand_slam() and set_number >= 5:
+            return 10
+        
+        # Standard tiebreak
+        return 7
+    
+    def _parse_tiebreak_score(self, score_str: str) -> tuple:
+        """
+        Parse tiebreak score from score string.
+        
+        Args:
+            score_str: Full score string like "2-2 6-6 5-4"
+        
+        Returns:
+            Tuple of (server_points, returner_points) or (None, None) if not a tiebreak
+        """
+        import re
+        parts = score_str.strip().split()
+        
+        if len(parts) < 2:
+            return (None, None)
+        
+        # Check if games are 6-6 (tiebreak)
+        game_match = re.match(r'(\d+)-(\d+)', parts[1])
+        if not game_match:
+            return (None, None)
+        
+        games_server = int(game_match.group(1))
+        games_returner = int(game_match.group(2))
+        
+        # Must be 6-6 for tiebreak
+        if not (games_server == 6 and games_returner == 6):
+            return (None, None)
+        
+        # Parse tiebreak points (last part)
+        if len(parts) < 3:
+            return (None, None)
+        
+        points_match = re.match(r'(\d+)-(\d+)', parts[-1])
+        if not points_match:
+            return (None, None)
+        
+        try:
+            server_tb_points = int(points_match.group(1))
+            returner_tb_points = int(points_match.group(2))
+            return (server_tb_points, returner_tb_points)
+        except:
+            return (None, None)
+    
     def _is_deuce_score(self, score_str: str) -> bool:
         """Determine if score is at deuce (40-40)."""
         import re
@@ -13137,12 +16026,12 @@ Answer:"""
         Score format: "X-Y A-B C-D" where:
         - X-Y = Sets (from server's perspective)
         - A-B = Games (from server's perspective)
-        - C-D = Points in current game (server points - returner points)
+        - C-D = Points in current game (server points - returner points) OR tiebreak points
         
         Set point scenarios:
         1. Server serving for set: Game score is 5-X (X < 5) AND game point (40-0, 40-15, 40-30, AD-40)
         2. Returner serving for set: Game score is X-5 (X < 5) AND break point (0-40, 15-40, 30-40, 40-AD)
-        3. Tiebreak: At 6-6 in games, any point in tiebreak is a set point
+        3. Tiebreak: At 6-6 in games AND one player has 6+ points (or 9+ for super tiebreak) AND is leading by 1+
         """
         import re
         if not score_str:
@@ -13160,11 +16049,33 @@ Answer:"""
         games_server = int(game_match.group(1))
         games_returner = int(game_match.group(2))
         
-        # Check if in tiebreak (6-6, 7-6, 6-7)
-        if (games_server == 6 and games_returner == 6) or \
-           (games_server == 7 and games_returner == 6) or \
-           (games_server == 6 and games_returner == 7):
+        # Check if in tiebreak (6-6 only - 7-6 or 6-7 means set is over)
+        if games_server == 6 and games_returner == 6:
+            # Parse tiebreak score
+            server_tb_pts, returner_tb_pts = self._parse_tiebreak_score(score_str)
+            
+            if server_tb_pts is None or returner_tb_pts is None:
+                # Can't parse tiebreak score, assume no set point
+                return False
+            
+            # Get the set number to determine tiebreak threshold
+            set_number = self._extract_current_set(score_str)
+            threshold = self._get_tiebreak_threshold(set_number)
+            
+            # Set point if:
+            # - Server has threshold-1 points (e.g., 6 for standard, 9 for super) AND is leading
+            # - Returner has threshold-1 points AND is leading
+            # OR either player has threshold+ points and is leading by 1+
+            
+            # Server set point: has threshold-1+ points AND leading by 1+
+            if server_tb_pts >= (threshold - 1) and server_tb_pts > returner_tb_pts:
             return True
+            
+            # Returner set point: has threshold-1+ points AND leading by 1+
+            if returner_tb_pts >= (threshold - 1) and returner_tb_pts > server_tb_pts:
+                return True
+            
+            return False
         
         # Check if server is serving for set (5-X where X < 5)
         if games_server == 5 and games_returner < 5:
@@ -13186,7 +16097,7 @@ Answer:"""
         Score format: "X-Y A-B C-D" where:
         - X-Y = Sets (from server's perspective)
         - A-B = Games (from server's perspective)
-        - C-D = Points in current game (server points - returner points)
+        - C-D = Points in current game (server points - returner points) OR tiebreak points
         
         Match point scenarios:
         1. Best of 3: Player up 2-0 in sets AND has set point
@@ -13238,27 +16149,10 @@ Answer:"""
         elif sets_returner == 1 and sets_server == 0 and len(parts) > 1:  # Final set, up 0-1
             returner_can_win = True
         
-        # If server can win match, check if they have set point
-        if server_can_win:
-            # Server has set point if they're serving for set (5-X) with game point
-            if len(parts) > 1:
-                game_match = re.match(r'(\d+)-(\d+)', parts[1])
-                if game_match:
-                    games_server = int(game_match.group(1))
-                    games_returner = int(game_match.group(2))
-                    if games_server == 5 and games_returner < 5:
-                        return self._is_game_point_score(score_str)
-        
-        # If returner can win match, check if they have set point
-        if returner_can_win:
-            # Returner has set point if they're serving for set (X-5) with game point (break point for server)
-            if len(parts) > 1:
-                game_match = re.match(r'(\d+)-(\d+)', parts[1])
-                if game_match:
-                    games_server = int(game_match.group(1))
-                    games_returner = int(game_match.group(2))
-                    if games_returner == 5 and games_server < 5:
-                        return self._is_break_point_score(score_str)
+        # Check if either player can win AND has set point
+        # (Use the fixed _is_set_point_score which now handles tiebreaks correctly)
+        if (server_can_win or returner_can_win) and self._is_set_point_score(score_str):
+            return True
         
         return False
     
@@ -13435,6 +16329,17 @@ Return ONLY valid JSON (no markdown, no explanation) with these fields:
   "court_zone": "net|baseline|null - CRITICAL: Use 'net' for 'net points' queries, NOT shot_type volley!",
   "set_filter": "single set number (1-5) or null",
   "set_comparison": {{"set_a": [list of sets for first group], "set_b": [list of sets for second group]}},
+  
+  // === RALLY LENGTH HANDLING (CRITICAL!) ===
+  // DO NOT use rally_length_category in filters! It's ONLY for grouping.
+  // For filtering by rally length:
+  //   - "when rally was 0-4 shots" â†' metrics_parsed: [{{"filters": {{"rally_length_range": "0-4"}}}}]
+  //   - "when rally was 5+ shots" â†' metrics_parsed: [{{"filters": {{"rally_length_range": "5+"}}}}]
+  //   - "when rally was exactly 7 shots" â†' metrics_parsed: [{{"filters": {{"rally_length": 7}}}}]
+  // For grouping by rally length:
+  //   - "short vs long rallies" â†' group_by: "rally_length_category"
+  //   - "points by rally length" â†' group_by: "rally_length_category"
+  
   "group_by": "sets|set_groups|rally_length_category|court_side|serve_number|serve_direction|shot_direction|return_depth|shot_type|shot_modifier|spin|court_position|depth|outcome|shot_number|game_outcome|player|situation|pressure_level|serve_plus_one_type|net_play_type|null",
   "secondary_group_by": "for 2D analysis - same options as group_by, or null",
   "tertiary_group_by": "for 3D analysis - same options as group_by, or null (rarely needed)",
@@ -13502,8 +16407,26 @@ CRITICAL RULES:
 EXAMPLES BY ANALYSIS TYPE:
 
 COUNTING:
-- "How many aces?" â†’ {{"metric": "aces", "analysis_type": "count"}}
-- "Forehand winners in Set 3" â†’ {{"shot_type": "forehand", "metric": "winners", "set_filter": 3}}
+- "How many aces?" â†' {{"metric": "aces", "analysis_type": "count"}}
+- "Forehand winners in Set 3" â†' {{"shot_type": "forehand", "metric": "winners", "set_filter": 3}}
+
+RALLY LENGTH (CRITICAL - Filter vs Group):
+**FILTER** (when filtering to specific rally length range):
+- "In Set 5, who won more points when the rally was 0-4 shots?" â†' {{
+    "player": "both",
+    "group_by": "player",
+    "set_filter": 5,
+    "metrics_parsed": [{{"metric": "points_won", "filters": {{"rally_length_range": "0-4"}}}}],
+    "analysis_type": "comparison"
+  }}
+- "Who won more when rally was 5+ shots?" â†' {{
+    "player": "both",
+    "group_by": "player",
+    "metrics_parsed": [{{"metric": "points_won", "filters": {{"rally_length_range": "5+"}}}}]
+  }}
+**GROUP** (when comparing rally length categories):
+- "Short vs long rallies win %" â†' {{"group_by": "rally_length_category", "metric": "win_percentage"}}
+- "Points by rally length" â†' {{"group_by": "rally_length_category"}}
 
 GROUPING/COMPARISON (CRITICAL - dimension being compared goes in group_by, NOT filter):
 - "T vs Wide serves" â†’ {{"group_by": "serve_direction", "serve_target": null}}
@@ -13530,16 +16453,49 @@ SET COMPARISON:
   - "Player A's stats in sets he won vs sets he lost" â†’ {{"player": "Player A", "set_comparison": {{"set_a": [2, 3, 5], "set_b": [1, 4]}}}}
 
 SITUATION COMPARISON:
-- "Net points in tiebreaks compared to rest of match" â†’ {{"court_zone": "net", "metric": "net_points_won", "group_by": "situation", "situation_comparison": {{"situation_a": "tiebreak", "situation_b": "non_tiebreak"}}}}
-- "Break points vs non-break points" â†’ {{"group_by": "situation", "situation_comparison": {{"situation_a": "break_point", "situation_b": "non_break_point"}}}}
+- "Net points in tiebreaks compared to rest of match" â†' {{"court_zone": "net", "metric": "net_points_won", "group_by": "situation", "situation_comparison": {{"situation_a": "tiebreak", "situation_b": "non_tiebreak"}}}}
+- "Break points vs non-break points" â†' {{"group_by": "situation", "situation_comparison": {{"situation_a": "break_point", "situation_b": "non_break_point"}}}}
+
+GAME-STATE TO POINT_SCORE MAPPING (CRITICAL!):
+- "After losing the first point on serve" = points at 0-15 â†' {{"point_score": "0-15", "role": "server"}}
+- "After winning the first point on serve" = points at 15-0 â†' {{"point_score": "15-0", "role": "server"}}
+- "After going down 0-30" = points at 0-30 â†' {{"point_score": "0-30"}}
+- "After going up 30-0" = points at 30-0 â†' {{"point_score": "30-0"}}
+- "At deuce" = points at 40-40 â†' {{"point_score": "40-40"}}
+Example: "Who won more points after losing the first point of the game on serve?"
+â†' {{"metrics_parsed": [{{"metric": "points_won", "filters": {{"point_score": "0-15", "role": "server"}}}}], "query_type": "analytical"}}
 
 MULTI-METRIC QUERIES (N metrics in one question - GENERIC FOR ALL METRIC TYPES):
 **CRITICAL DISTINCTION:**
 - Use "metrics_parsed" for DIFFERENT metrics or UNRELATED filters (e.g., "aces AND double faults")
 - Use "group_by" for SAME metric with different values of ONE dimension (e.g., "forehand VS backhand winners")
-- Keywords: "vs"/"compared to"/"versus" â†’ group_by | "and"/"plus"/"also" â†’ metrics_parsed
+- Keywords: "vs"/"compared to"/"versus" â†' group_by | "and"/"plus"/"also" â†' metrics_parsed
 
-- "First serve % and first serve win %" â†’ {{
+**COMBINED CONDITIONS (same metric, different filters - CRITICAL!):**
+When query says "X and Y combined", "X plus Y", "both X and Y":
+- Create MULTIPLE metrics_parsed entries for the SAME metric with DIFFERENT filters
+- The tree will traverse for EACH entry and combine results
+- "Points at 30-30 and deuce combined" â†' {{
+    "metrics_parsed": [
+      {{"metric": "points_won", "filters": {{"point_score": "30-30"}}, "context": "situation"}},
+      {{"metric": "points_won", "filters": {{"situation": "deuce"}}, "context": "situation"}}
+    ],
+    "analysis_type": "count"
+  }}
+- "Winners in Set 1 and Set 5" â†' {{
+    "metrics_parsed": [
+      {{"metric": "winners", "filters": {{"set": 1}}}},
+      {{"metric": "winners", "filters": {{"set": 5}}}}
+    ]
+  }}
+- "Break points and game points combined" â†' {{
+    "metrics_parsed": [
+      {{"metric": "points_won", "filters": {{"situation": "break_point"}}}},
+      {{"metric": "points_won", "filters": {{"situation": "game_point"}}}}
+    ]
+  }}
+
+- "First serve % and first serve win %" â†' {{
     "metrics_parsed": [
       {{"metric": "first_serve_pct", "filters": {{"role": "server"}}, "context": "serve"}},
       {{"metric": "first_serve_win_pct", "filters": {{"role": "server", "serve_number": 1}}, "context": "serve"}}
@@ -13620,6 +16576,12 @@ CHAIN LOGIC (A â†’ B):
 - "Backhand slice led to unforced error" â†’ {{"chain_logic": {{"shot_a": "backhand slice", "shot_b": "unforced error"}}, "analysis_type": "chain"}}
 - "Approach shot followed by winner" â†’ {{"chain_logic": {{"shot_a": "approach shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
 - "Drop shot directly led to winner" â†’ {{"chain_logic": {{"shot_a": "drop shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
+
+SEQUENTIAL/TEMPORAL QUERIES (CRITICAL - "after", "following", "next"):
+⚠️ Questions asking about "immediately after X rally" use **prev_rally_length_range** filter - tree CAN handle this!
+- "Points immediately after long rallies (7+ shots)" → {{"metrics_parsed": [{{"metric": "points_won", "filters": {{"prev_rally_length_range": "7+"}}}}], "query_type": "analytical"}}
+- "Performance after short rallies (1-4)" → {{"metrics_parsed": [{{"metric": "win_percentage", "filters": {{"prev_rally_length_range": "1-4"}}}}], "query_type": "analytical"}}
+- "After double faults" → {{"query_type": "narrative", "note": "prev_point_outcome filter not yet implemented"}}
 
 NEW TAXONOMY EXAMPLES:
 - "Forehand slice winners" â†’ {{"shot_type": "forehand", "spin": "slice", "metric": "winners"}}
@@ -13928,12 +16890,32 @@ Return ONLY the JSON:"""
                 # Store COMPLETE filter set for this metric (LLM decides everything)
                 metric_filters = mp.get('filters', {})
                 
-                # CRITICAL: Remove tree-dimension filters from metric filters
+                # CRITICAL: Before removing tree-dimension filters, check if 'situation' is actually a point_score
+                # LLM often returns "30-30" as situation instead of point_score
+                metric_situation = metric_filters.get('situation')
+                if metric_situation and self._is_valid_point_score(str(metric_situation)):
+                    # It's a point_score! Convert and set at TOP LEVEL so tree uses it
+                    normalized_score = self._normalize_point_score(str(metric_situation))
+                    print(f"[LLM-PARSE] Converting metric situation '{metric_situation}' to TOP-LEVEL point_score='{normalized_score}'")
+                    filters['point_score'] = normalized_score  # Set at TOP LEVEL for tree
+                    del metric_filters['situation']  # Remove from metric filters
+                
+                # CRITICAL: PROMOTE tree-dimension filters to top-level BEFORE removing from metric filters
                 # These will be applied during tree traversal, not at metric level
                 # Re-checking them causes false negatives when metadata isn't populated
-                tree_dimensions = ['situation', 'set', 'point_score', 'serve_target', 'court_side', 'court_zone', 'rally_length', 'role']
-                for dim in tree_dimensions:
-                    if dim in metric_filters:
+                for dim in self.TREE_LEVEL_DIMENSIONS:
+                    if dim in metric_filters and metric_filters[dim] is not None:
+                        value = metric_filters[dim]
+                        # Type coercion for integer fields (LLM often returns strings)
+                        if dim in ('serve_number', 'set', 'game_number', 'game_number_in_set'):
+                            try:
+                                value = int(value)
+                            except (ValueError, TypeError):
+                                pass
+                        # PROMOTE to top-level filters (if not already set)
+                        if not filters.get(dim):
+                            filters[dim] = value
+                            print(f"[LLM-PARSE] Promoted '{dim}={value}' to top-level filters for tree use")
                         print(f"[LLM-PARSE] Removing '{dim}={metric_filters[dim]}' from metric filters (tree dimension)")
                         del metric_filters[dim]
                 
@@ -13981,15 +16963,48 @@ Return ONLY the JSON:"""
                     else:
                         print(f"[LLM-PARSE] WARNING: Metric '{metric_key}' has unknown situation '{metric_situation}'")
                 
-                classification['metric_filters'][metric_key] = {
-                    'metric': metric_name,  # Original metric name
-                    'filters': metric_filters,  # Complete filter set for THIS metric
-                    'context': mp.get('context'),  # For synthesis grouping
-                }
+                # CRITICAL: Convert rally_length_range or rally_length_category to rally_length filter
+                # LLM should parse "rally was 0-4 shots" as rally_length_range='0-4' (new)
+                # But might still use rally_length_category='0-4' (legacy) - handle both
+                # MUST DO THIS BEFORE saving to metric_filters!
+                if 'rally_length_range' in metric_filters:
+                    range_spec = metric_filters['rally_length_range']
+                    if range_spec:
+                        rally_filter = self._convert_rally_category_to_filter(range_spec)
+                        if rally_filter:
+                            metric_filters['rally_length'] = rally_filter
+                            print(f"[LLM-PARSE] Converted rally_length_range='{range_spec}' to rally_length={rally_filter}")
+                        del metric_filters['rally_length_range']
+                elif 'rally_length_category' in metric_filters:
+                    # Legacy - should only happen if LLM didn't follow new instructions
+                    category = metric_filters['rally_length_category']
+                    if category:
+                        rally_filter = self._convert_rally_category_to_filter(category)
+                        if rally_filter:
+                            metric_filters['rally_length'] = rally_filter
+                            print(f"[LLM-PARSE] LEGACY: Converted rally_length_category='{category}' to rally_length={rally_filter}")
+                        del metric_filters['rally_length_category']
+                
+                # CRITICAL: Convert prev_rally_length_range to prev_rally_length filter (for "after X rally" queries)
+                if 'prev_rally_length_range' in metric_filters:
+                    range_spec = metric_filters['prev_rally_length_range']
+                    if range_spec:
+                        prev_rally_filter = self._convert_rally_category_to_filter(range_spec)
+                        if prev_rally_filter:
+                            metric_filters['prev_rally_length'] = prev_rally_filter
+                            print(f"[LLM-PARSE] Converted prev_rally_length_range='{range_spec}' to prev_rally_length={prev_rally_filter}")
+                        del metric_filters['prev_rally_length_range']
                 
                 # Log what filters this metric has
                 filter_str = ', '.join(f"{k}={v}" for k, v in metric_filters.items() if v is not None)
                 print(f"[LLM-PARSE] Metric '{metric_key}' with filters: {{{filter_str}}}")
+                
+                # NOW save the metric_filters with converted values
+                classification['metric_filters'][metric_key] = {
+                    'metric': metric_name,  # Original metric name
+                    'filters': metric_filters,  # Complete filter set for THIS metric (with conversions applied)
+                    'context': mp.get('context'),  # For synthesis grouping
+                }
             
             # CRITICAL: If metrics_parsed has different shot_type filters, remove global shot_type filter
             # Global filter would conflict with per-metric filters (e.g., one metric for forehand, one for backhand)
@@ -14016,6 +17031,23 @@ Return ONLY the JSON:"""
                 classification['synthesize_related_metrics'] = True
                 classification['metric_context_type'] = list(contexts)[0]
                 print(f"[LLM-PARSE] Related metrics detected (context: {list(contexts)[0]}) - will synthesize in narrative")
+            
+            # CRITICAL: If we have ONLY ONE metric, promote its filters to top-level filters
+            # This ensures the tree uses them for filtering (e.g., rally_length, serve_number)
+            if len(classification['metric_filters']) == 1:
+                single_metric_key = list(classification['metric_filters'].keys())[0]
+                single_metric_filters = classification['metric_filters'][single_metric_key]['filters']
+                
+                # Promote tree-level dimensions to top-level (use config, not hardcoded list!)
+                for filter_key in self.TREE_LEVEL_DIMENSIONS:
+                    if filter_key in single_metric_filters and single_metric_filters[filter_key] is not None:
+                        # Don't overwrite if already set at top level
+                        if not filters.get(filter_key):
+                            filters[filter_key] = single_metric_filters[filter_key]
+                            print(f"[LLM-PARSE] Promoted single-metric filter '{filter_key}={single_metric_filters[filter_key]}' to top-level for tree use")
+                
+                # Update classification
+                classification['filters'] = filters
         else:
             # UNIFIED: Convert single metric to metrics_parsed format for consistent processing
             # This eliminates duplication and ensures all metrics go through the same logic
@@ -14136,11 +17168,59 @@ Return ONLY the JSON:"""
         if llm_parse.get('query_type'):
             classification['query_category'] = llm_parse['query_type']
         
+        # CRITICAL: Game-state chain queries MUST go to narrative (LLM often misclassifies)
+        # These require tracking within-game progression (0-15, 15-0, etc.)
+        is_game_state_query = False
+        
+        # Check 1: LLM returned game_state_scenario in filters (we can't handle this analytically)
+        # Handle case where metrics_parsed might be None (use 'or []' to ensure we get a list)
+        for mp in (llm_parse.get('metrics_parsed') or []):
+            metric_filters = mp.get('filters', {})
+            if 'game_state_scenario' in metric_filters:
+                is_game_state_query = True
+                print(f"[LLM-PARSE] LLM returned game_state_scenario='{metric_filters['game_state_scenario']}' -> Overriding to narrative")
+                break
+        
+        # Check 2: Pattern-based detection from original question
+        if not is_game_state_query and original_question:
+            import re
+            q_lower = original_question.lower()
+            game_state_patterns = [
+                r'after\s+(?:losing|winning)\s+(?:the\s+)?(?:first|second|third|opening)\s+point',
+                r'after\s+(?:losing|winning)\s+(?:the\s+)?first\s+\d+\s+points?',
+                r'after\s+(?:going|falling|getting)\s+(?:up|down|behind|ahead)\s*(?:\d+-\d+)?',
+                r'after\s+(?:starting|beginning)\s+(?:\d+-\d+)',
+                r'from\s+(?:\d+-\d+)\s+(?:down|behind|up|ahead)',
+                r'games?\s+(?:where|when)\s+(?:server|returner)\s+(?:lost|won)\s+(?:the\s+)?first',
+                r'when\s+(?:down|up|behind|ahead)\s+(?:\d+-\d+|0-15|15-0|0-30|30-0|0-40|40-0)',
+            ]
+            is_game_state_query = any(re.search(pattern, q_lower) for pattern in game_state_patterns)
+        
+        # REMOVED: Game-state chain override to narrative
+        # Tree CAN handle these queries with proper game-level metadata:
+        #   - _point_in_game, _server_lost_first_point, etc.
+        # Previously this was forcing to narrative which then generated clarify operations
+        if is_game_state_query:
+            print(f"[LLM-PARSE] GAME-STATE query detected (tree CAN handle via game metadata)")
+            # Keep as analytical - tree uses enriched game-state fields
+        
         # CRITICAL: Override to narrative if metric is vague
+        # BUT: If we have specific filters (point_score, situation, set, etc.), keep analytical
+        # because the filters indicate a countable/analytical query even if phrasing is vague
         metric_clarity = llm_parse.get('metric_clarity')
         if metric_clarity == 'vague':
-            print(f"[LLM-PARSE] Metric clarity is VAGUE -> Overriding to narrative route")
-            classification['query_category'] = 'narrative'
+            filters = classification.get('filters', {})
+            # Use config for tree-level dimensions instead of hardcoding
+            # These specific filters indicate an analytical query even with vague phrasing
+            has_specific_filter = any(filters.get(f) for f in self.TREE_LEVEL_DIMENSIONS)
+            
+            if has_specific_filter:
+                detected_filters = [f"{f}={filters[f]}" for f in self.TREE_LEVEL_DIMENSIONS if filters.get(f)]
+                print(f"[LLM-PARSE] Metric clarity is VAGUE but has specific filters: {', '.join(detected_filters)}")
+                print(f"[LLM-PARSE]   -> Keeping analytical route (filters indicate countable query)")
+            else:
+                print(f"[LLM-PARSE] Metric clarity is VAGUE and no specific filters -> Overriding to narrative route")
+                classification['query_category'] = 'narrative'
         
         # CRITICAL: Shot direction success rate -> narrative (too complex for tree analysis)
         if original_question and 'success rate' in original_question.lower():
@@ -14186,20 +17266,37 @@ Return ONLY the JSON:"""
         
         # CRITICAL: Questions asking about "shots" descriptively must go to narrative
         # But quantitative shot queries (ratio, count, percentage) should be analytical
+        # EXCEPTION: Rally length patterns (e.g., "0-4 shots", "rally was 5 shots") are about
+        # rally LENGTH metadata, not individual shot counting - these stay analytical/hybrid
         if original_question:
             q_lower = original_question.lower()
             if (' shot' in q_lower or q_lower.startswith('shot')):
-                # Allow analytical if:
-                # 1. About winners/errors/outcomes
-                # 2. About shot counts/ratios/percentages/rates
-                is_quantitative = any(kw in q_lower for kw in [
-                    'winner', 'winners', 'error', 'errors', 'winning shot',
-                    'ratio', 'percentage', 'percent', 'how many', 'count', 
-                    'total', 'number of', 'shot count', 'rate', 'success'
-                ])
-                if not is_quantitative:
-                    print(f"[LLM-PARSE] Question asks about 'shots' descriptively (not quantitative) -> Overriding to narrative route")
-                    classification['query_category'] = 'narrative'
+                # Check if this is a rally length pattern (NOT individual shot counting)
+                import re
+                rally_length_patterns = [
+                    r'\d+[-–]\d+\s*shots',  # "0-4 shots", "5-10 shots"
+                    r'\d+\+?\s*shots?\s*(?:rally|rallies)',  # "5+ shot rally"
+                    r'rally\s+(?:was|were|of|with)\s+\d+',  # "rally was 5 shots"
+                    r'when\s+(?:the\s+)?rally\s+(?:was|is)\s+\d+',  # "when rally was 4"
+                ]
+                is_rally_length = any(re.search(pattern, q_lower) for pattern in rally_length_patterns)
+                
+                if is_rally_length:
+                    print(f"[LLM-PARSE] Rally length pattern detected ('{q_lower[:50]}...') - keeping analytical/hybrid route")
+                else:
+                    # Allow analytical if:
+                    # 1. About winners/errors/outcomes
+                    # 2. About shot counts/ratios/percentages/rates
+                    # 3. About "who won more points"
+                    is_quantitative = any(kw in q_lower for kw in [
+                        'winner', 'winners', 'error', 'errors', 'winning shot',
+                        'ratio', 'percentage', 'percent', 'how many', 'count', 
+                        'total', 'number of', 'shot count', 'rate', 'success',
+                        'won more', 'win more', 'who won'
+                    ])
+                    if not is_quantitative:
+                        print(f"[LLM-PARSE] Question asks about 'shots' descriptively (not quantitative) -> Overriding to narrative route")
+                        classification['query_category'] = 'narrative'
         
         # Handle group_by from LLM (e.g., 'sets' for per-set breakdown)
         # CRITICAL: Do NOT apply group_by='player' for overall win% queries
@@ -14457,6 +17554,22 @@ Return ONLY the JSON:"""
             classification['metrics'] = metrics
             print(f"[LLM-PARSE] Fixed break serve query - using games_lost metric with role=returner")
         
+        # === POST-PROCESSING: Clear shot_type='serve' if serve_number filter exists ===
+        # CRITICAL: serve_number is POINT-LEVEL metadata (what serve # the point was played on)
+        # shot_type='serve' is a SHOT-LEVEL filter (filters to only serve shots)
+        # These are incompatible! When asking "points on 2nd serve", we want:
+        # - ALL points where serve_number=2 (used the 2nd serve)
+        # - NOT just the serve shot itself
+        # So if serve_number is present, remove shot_type='serve' from tree filters
+        filters = classification.get('filters', {})
+        if filters.get('serve_number') is not None and filters.get('shot_type') == 'serve':
+            serve_ordinal = "1st" if filters['serve_number'] == 1 else "2nd"
+            print(f"[LLM-PARSE] CRITICAL: Removing shot_type='serve' because serve_number={filters['serve_number']} is present")
+            print(f"[LLM-PARSE]   serve_number is point metadata, shot_type='serve' would filter to only serve shots")
+            print(f"[LLM-PARSE]   We want ALL points on {serve_ordinal} serve, not just the serve shot!")
+            del filters['shot_type']
+            classification['filters'] = filters
+        
         return classification
     
     def ask_question(self, question: str, top_k: int = None) -> str:
@@ -14510,6 +17623,29 @@ Return ONLY the JSON:"""
         complexity_labels = {1: "SIMPLE (2.5 Flash)", 2: "MODERATE (3 Flash)", 3: "COMPLEX (3 Flash)"}
         print(f"[MODEL-TIER] Complexity: {complexity_labels.get(complexity, 'UNKNOWN')} | Model: {model_config['model_name']} | Temp: {model_config.get('temperature', 0.7)}")
         
+        # =====================================================================
+        # QUERY PLAN MODE (primary intelligent routing)
+        # =====================================================================
+        # Query Plan LLM determines the optimal operation structure:
+        # - When to use tree filtering before narrative
+        # - Multiple conditions combined
+        # - Stats + patterns together
+        # - Complex multi-filter analysis
+        use_query_plan = self._should_use_query_plan(question, classification, llm_parse)
+        
+        if use_query_plan:
+            print("[QUERY-PLAN] Using Query Plan architecture for multi-operation query")
+            query_plan = self._generate_query_plan(question, classification)
+            
+            if query_plan and query_plan.get('query_plan'):
+                for i, op in enumerate(query_plan['query_plan']):
+                    print(f"[QUERY-PLAN]   Op {op.get('id', i)}: {op.get('route')} | filters={op.get('filters', {})} | metrics={op.get('metrics', [])}")
+                
+                answer = self._execute_query_plan(question, query_plan, classification, top_k)
+                self.last_answer = answer
+                self.last_analysis = None
+                return answer
+        
         group_by = classification.get('group_by')
         secondary_group_by = classification.get('secondary_group_by')
         tertiary_group_by = classification.get('tertiary_group_by')
@@ -14534,19 +17670,37 @@ Return ONLY the JSON:"""
         print(f"[ROUTING] Total Dimensions: {total_dimensions} (filters: {active_filters}, groups: {group_count})")
         
         # =====================================================================
-        # INTELLIGENT ROUTING (Two-Level System)
+        # INTELLIGENT ROUTING (Three-Level System)
         # =====================================================================
+        # LEVEL 0: HYBRID DETECTION
+        #   - Tree-filterable condition + shot question â†' Tree filter then Narrative
+        #   - Needed when shot stats aren't pre-computed for specific filters
+        #
         # LEVEL 1: Query Type Detection
-        #   - SHOT-LEVEL: direction, shot_type filters â†’ Embeddings (pre-computed)
-        #   - POINT-LEVEL: situation, serve, role filters â†’ Tree (point aggregation)
+        #   - SHOT-LEVEL: direction, shot_type filters â†' Embeddings (pre-computed)
+        #   - POINT-LEVEL: situation, serve, role filters â†' Tree (point aggregation)
         #
         # LEVEL 2: Within Point-Level
-        #   1. NARRATIVE â†’ LLM identified descriptive/strategic
-        #   2. CHAIN LOGIC â†’ Shot A â†’ Shot B patterns
-        #   3. ANALYTICAL â†’ Taxonomy/tree analysis
+        #   1. NARRATIVE â†' LLM identified descriptive/strategic
+        #   2. CHAIN LOGIC â†' Shot A â†' Shot B patterns
+        #   3. ANALYTICAL â†' Taxonomy/tree analysis
         # =====================================================================
         
         question_lower = question.lower()
+        
+        # === LEVEL 0: HYBRID ROUTING (Tree Filter â†' Narrative Analysis) ===
+        # Hybrid is needed when:
+        # 1. Query has tree-filterable condition (set, point_score, situation+shots, etc.)
+        # 2. AND requires shot-level analysis (directions, shot counting, patterns)
+        # 3. AND the combination is NOT pre-computed in NL file
+        hybrid_result = self._check_hybrid_routing(question, classification, filters)
+        if hybrid_result['needs_hybrid']:
+            print(f"[HYBRID] Detected: {hybrid_result['reason']}")
+            print(f"[HYBRID] Tree filters: {hybrid_result['tree_filters']}, Shot analysis: {hybrid_result['shot_trigger']}")
+            answer = self._handle_hybrid_query(question, classification, hybrid_result, top_k)
+            self.last_answer = answer
+            self.last_analysis = None
+            return answer
         
         # === LEVEL 1: SHOT-LEVEL vs POINT-LEVEL ROUTING ===
         is_shot_level_query = self._is_shot_level_query(question, classification)
