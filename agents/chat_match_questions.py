@@ -222,6 +222,43 @@ class TennisChatAgentEmbeddingQALocal:
         'game_number',    # game number overall
         'game_number_in_set',  # game number within set
         'point_number_range',  # (min, max) tuple for temporal/segment analysis
+        'player',         # specific player (when not "both")
+    }
+    
+    # SHOT-LEVEL ATTRIBUTES - These are NOT tree dimensions, must NOT be in filters
+    # These are attributes of individual shots within rallies, not point-level metadata
+    SHOT_LEVEL_FIELDS = {
+        'direction',      # crosscourt, down_the_line, inside_out, inside_in
+        'shot_type',      # forehand, backhand (when used as filter, not grouping)
+        'shot_modifier',  # slice, topspin, approach, volley
+        'depth',          # shallow, deep, very_deep
+        'shot_number',    # position in rally (1st shot, 2nd shot, etc.)
+        'error_location', # where error was hit
+        # New taxonomy fields (not yet used by tree)
+        'shot_phase',     # serve, return, rally, net
+        'contact_type',   # groundstroke, volley, half_volley, overhead
+        'spin',           # slice, flat, topspin
+        'intent',         # approach, drop_shot, lob, passing_shot, winner_attempt
+        'location',       # baseline, mid_court, net, service_line
+    }
+    
+    # GROUPING FIELDS - Top-level only, never in filters
+    GROUPING_FIELDS = {
+        'group_by',
+        'secondary_group_by',
+        'tertiary_group_by',
+        'n_dimensional',
+    }
+    
+    # COMPARISON STRUCTURES - Top-level only
+    COMPARISON_FIELDS = {
+        'set_comparison',
+        'situation_comparison',
+        'set_group_a',
+        'set_group_b',
+        'situation_group_a',
+        'situation_group_b',
+        'situation_group',
     }
     
     # TREE-SUPPORTED METRICS - What the tree can compute
@@ -229,6 +266,7 @@ class TennisChatAgentEmbeddingQALocal:
     TREE_SUPPORTED_METRICS = {
         # Basic point outcomes
         'points_won',
+        'points_count',         # Total count of filtered points (denominator)
         'win_percentage',
         # Serve metrics
         'first_serve_pct',
@@ -236,13 +274,32 @@ class TennisChatAgentEmbeddingQALocal:
         'second_serve_win_pct',
         'aces',
         'double_faults',
+        'service_winners',      # Winners on serve (ace or service winner)
+        'serve_points_won_pct', # Alias for first_serve_win_pct + second_serve_win_pct combined
         # Return metrics
         'return_points_won',
         'return_win_pct',
+        'return_points_won_pct',  # Alias for return_win_pct
+        'return_winners',       # Winners hit by returner
         # Situation metrics
         'break_points_won',
         'break_points_saved',
         'break_point_conversion',
+        'break_point_saves',    # Alias for break_points_saved
+        'game_point_conversion',
+        'game_point_saves',
+        'set_point_conversion',
+        'match_point_conversion',
+        'deuce_points_won',
+        # Rally metrics
+        'avg_rally_length',
+        'short_rally_win_pct',  # Win% on rallies 0-4 shots
+        'long_rally_win_pct',   # Win% on rallies 7+ shots
+        # Net metrics
+        'net_points_won',
+        'net_points_won_pct',
+        'net_approaches',
+        'volley_winners',
         # Shot outcomes (point-ending)
         'winners',
         'unforced_errors',
@@ -420,6 +477,121 @@ class TennisChatAgentEmbeddingQALocal:
             'numerator': 'outcome == forced_error',
             'denominator': None,
             'perspective': 'point_winner',  # Winner forced the error
+            'fallback': 'narrative',
+        },
+        # Added metrics from VAGUE_TERM_MAP
+        'points_count': {
+            'required_fields': [],
+            'numerator': 'all_filtered_points',
+            'denominator': None,  # Count metric
+            'perspective': 'both',
+        },
+        'service_winners': {
+            'required_fields': ['outcome', 'server', 'winning_shot'],
+            'numerator': '(outcome == ace OR winning_shot == service_winner) AND role == server',
+            'denominator': None,
+            'perspective': 'server',
+        },
+        'serve_points_won_pct': {
+            'required_fields': ['point_winner', 'server'],
+            'numerator': 'point_winner == server',
+            'denominator': 'all_service_points',
+            'perspective': 'server',
+        },
+        'return_points_won_pct': {
+            'required_fields': ['point_winner', 'returner'],
+            'numerator': 'point_winner == returner',
+            'denominator': 'all_return_points',
+            'perspective': 'returner',
+            'alias_for': 'return_win_pct',
+        },
+        'return_winners': {
+            'required_fields': ['outcome', 'returner', 'point_winner'],
+            'numerator': 'outcome == winner AND point_winner == returner',
+            'denominator': None,
+            'perspective': 'returner',
+        },
+        'break_point_saves': {
+            'required_fields': ['situation', 'point_winner', 'server'],
+            'numerator': 'situation == break_point AND point_winner == server',
+            'denominator': 'all_break_points',
+            'perspective': 'server',
+            'alias_for': 'break_points_saved',
+        },
+        'game_point_conversion': {
+            'required_fields': ['situation', 'point_winner', 'server'],
+            'numerator': 'situation == game_point AND point_winner == server',
+            'denominator': 'all_game_points',
+            'perspective': 'server',
+        },
+        'game_point_saves': {
+            'required_fields': ['situation', 'point_winner', 'returner'],
+            'numerator': 'situation == game_point AND point_winner == returner',
+            'denominator': 'all_game_points',
+            'perspective': 'returner',
+        },
+        'set_point_conversion': {
+            'required_fields': ['situation', 'point_winner'],
+            'numerator': 'situation == set_point AND point_winner == player_with_set_point',
+            'denominator': 'all_set_points',
+            'perspective': 'both',
+        },
+        'match_point_conversion': {
+            'required_fields': ['situation', 'point_winner'],
+            'numerator': 'situation == match_point AND point_winner == player_with_match_point',
+            'denominator': 'all_match_points',
+            'perspective': 'both',
+        },
+        'deuce_points_won': {
+            'required_fields': ['situation', 'point_winner'],
+            'numerator': 'situation == deuce AND point_winner == player',
+            'denominator': 'all_deuce_points',
+            'perspective': 'both',
+        },
+        'avg_rally_length': {
+            'required_fields': ['rally_length'],
+            'numerator': 'sum(rally_length)',
+            'denominator': 'count(points)',
+            'perspective': 'both',
+        },
+        'short_rally_win_pct': {
+            'required_fields': ['rally_length', 'point_winner'],
+            'numerator': 'rally_length <= 4 AND point_winner == player',
+            'denominator': 'rally_length <= 4',
+            'perspective': 'both',
+        },
+        'long_rally_win_pct': {
+            'required_fields': ['rally_length', 'point_winner'],
+            'numerator': 'rally_length >= 7 AND point_winner == player',
+            'denominator': 'rally_length >= 7',
+            'perspective': 'both',
+        },
+        'net_points_won': {
+            'required_fields': ['at_net', 'point_winner'],
+            'numerator': 'at_net == True AND point_winner == player',
+            'denominator': None,
+            'perspective': 'both',
+            'fallback': 'narrative',  # at_net detection may be unreliable
+        },
+        'net_points_won_pct': {
+            'required_fields': ['at_net', 'point_winner'],
+            'numerator': 'at_net == True AND point_winner == player',
+            'denominator': 'at_net == True',
+            'perspective': 'both',
+            'fallback': 'narrative',
+        },
+        'net_approaches': {
+            'required_fields': ['at_net'],
+            'numerator': 'at_net == True',
+            'denominator': None,
+            'perspective': 'both',
+            'fallback': 'narrative',
+        },
+        'volley_winners': {
+            'required_fields': ['winning_shot', 'outcome'],
+            'numerator': 'winning_shot contains volley AND outcome == winner',
+            'denominator': None,
+            'perspective': 'point_winner',
             'fallback': 'narrative',
         },
     }
@@ -1159,6 +1331,124 @@ class TennisChatAgentEmbeddingQALocal:
             'aggregate_level': 'set',
             'display_type': 'count',
             'label': 'Sets Won'
+        },
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # NEWLY ADDED METRICS (from VAGUE_TERM_MAP audit)
+        # ═══════════════════════════════════════════════════════════════════════
+        'points_count': {
+            'player_role': 'both',
+            'total_filter': 'always',
+            'count_filter': 'always',
+            'display_type': 'count',
+            'label': 'Total Points'
+        },
+        'serve_points_won_pct': {
+            'player_role': 'server',
+            'total_filter': 'always',
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Serve Points Won %'
+        },
+        'return_points_won': {
+            'player_role': 'returner',
+            'total_filter': 'always',
+            'count_filter': 'won',
+            'display_type': 'points_won',
+            'label': 'Return Points Won'
+        },
+        'return_win_pct': {
+            'player_role': 'returner',
+            'total_filter': 'always',
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Return Win %'
+        },
+        'break_points_won': {
+            'player_role': 'returner',
+            'total_filter': 'always',  # Tree already filters to break points
+            'count_filter': 'won',
+            'display_type': 'points_won',
+            'label': 'Break Points Won'
+        },
+        'break_points_saved': {
+            'player_role': 'server',
+            'total_filter': 'always',  # Tree already filters to break points
+            'count_filter': 'won',
+            'display_type': 'points_won',
+            'label': 'Break Points Saved'
+        },
+        'game_point_conversion': {
+            'player_role': 'server',
+            'total_filter': 'always',  # Tree filters to game_point situation
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Game Point Conversion %'
+        },
+        'game_point_saves': {
+            'player_role': 'returner',
+            'total_filter': 'always',  # Tree filters to game_point situation
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Game Point Saves %'
+        },
+        'set_point_conversion': {
+            'player_role': 'both',
+            'total_filter': 'always',  # Tree filters to set_point situation
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Set Point Conversion %'
+        },
+        'match_point_conversion': {
+            'player_role': 'both',
+            'total_filter': 'always',  # Tree filters to match_point situation
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Match Point Conversion %'
+        },
+        'deuce_points_won': {
+            'player_role': 'both',
+            'total_filter': 'always',  # Tree filters to deuce situation
+            'count_filter': 'won',
+            'display_type': 'points_won',
+            'label': 'Deuce Points Won'
+        },
+        'avg_rally_length': {
+            'player_role': 'both',
+            'total_filter': 'always',
+            'count_filter': 'average',
+            'display_type': 'average',
+            'label': 'Avg Rally Length'
+        },
+        'short_rally_win_pct': {
+            'player_role': 'both',
+            'total_filter': 'short_rally',  # rally_length <= 4
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Short Rally Win % (0-4 shots)'
+        },
+        'long_rally_win_pct': {
+            'player_role': 'both',
+            'total_filter': 'long_rally',  # rally_length >= 7
+            'count_filter': 'won',
+            'display_type': 'per_player_pct',
+            'label': 'Long Rally Win % (7+ shots)'
+        },
+        'net_points_won_pct': {
+            'player_role': 'performer',
+            'total_filter': 'at_net',
+            'count_filter': 'won',
+            'keywords': ['volley', 'at net', 'approach'],
+            'display_type': 'per_player_pct',
+            'label': 'Net Points Won %'
+        },
+        'volley_winners': {
+            'player_role': 'winner',
+            'total_filter': 'always',
+            'count_filter': 'on_match',
+            'keywords': ['volley', 'winner'],
+            'display_type': 'count',
+            'label': 'Volley Winners'
         },
     }
     
@@ -6479,7 +6769,7 @@ class TennisChatAgentEmbeddingQALocal:
                     for target_chunk in target_chunks:
                         chunk_section = target_chunk['metadata']['section']
                         if not any(chunk_section == c['metadata']['section'] for c in filtered_chunks):
-                        filtered_chunks.insert(0, target_chunk)
+                            filtered_chunks.insert(0, target_chunk)
                 
                 direction_outcome_fix_applied = True
             
@@ -7095,7 +7385,8 @@ class TennisChatAgentEmbeddingQALocal:
         # Check both query text AND explicit set_filter parameter
         elif not multiple_sets:  # Only run single-set logic if NOT a multi-set comparison
             set_number = set_filter or self._detect_set_reference(query)
-            if set_number and hasattr(self, 'set_mapping') and set_number in self.set_mapping:
+            # Skip if set_number is a list (set comparison with multiple sets)
+            if set_number and not isinstance(set_number, list) and hasattr(self, 'set_mapping') and set_number in self.set_mapping:
                 target_set_score = self.set_mapping[set_number]
                 
                 # Generate ALL possible score patterns for this set
@@ -8548,27 +8839,28 @@ Answer:"""
         
         # Direct detection for specific situations (if no synonym matched)
         if not situation_found:
-        if 'break point' in query_lower or 'breakpoint' in query_lower or 'break points' in query_lower:
-            filters['situation'] = 'break_point'
-            print(f"[DETECT-FILTERS] *** FOUND break_point ***")
-        elif 'game point' in query_lower or 'game points' in query_lower:
-            filters['situation'] = 'game_point'
-            print(f"[DETECT-FILTERS] *** FOUND game_point ***")
-        elif 'set point' in query_lower or 'set points' in query_lower:
-            filters['situation'] = 'set_point'
-            print(f"[DETECT-FILTERS] *** FOUND set_point ***")
-        elif 'match point' in query_lower or 'match points' in query_lower:
-            filters['situation'] = 'match_point'
-            print(f"[DETECT-FILTERS] *** FOUND match_point ***")
-        elif ('tiebreak' in query_lower or 'tie-break' in query_lower or 'tie break' in query_lower) and 'tiebreak-level' not in query_lower and 'tiebreak level' not in query_lower:
-            # Exclude metaphorical uses like "tiebreak-level clutch"
-            filters['situation'] = 'tiebreak'
-            print(f"[DETECT-FILTERS] *** FOUND tiebreak ***")
-        elif 'deuce' in query_lower and 'court' not in query_lower:
-            filters['situation'] = 'deuce'
-            print(f"[DETECT-FILTERS] *** FOUND deuce ***")
-        else:
-            print(f"[DETECT-FILTERS] No direct situation match")
+            if 'break point' in query_lower or 'breakpoint' in query_lower or 'break points' in query_lower:
+                filters['situation'] = 'break_point'
+                print(f"[DETECT-FILTERS] *** FOUND break_point ***")
+            elif 'game point' in query_lower or 'game points' in query_lower:
+                filters['situation'] = 'game_point'
+                print(f"[DETECT-FILTERS] *** FOUND game_point ***")
+            elif 'set point' in query_lower or 'set points' in query_lower:
+                filters['situation'] = 'set_point'
+                print(f"[DETECT-FILTERS] *** FOUND set_point ***")
+            elif 'match point' in query_lower or 'match points' in query_lower:
+                filters['situation'] = 'match_point'
+                print(f"[DETECT-FILTERS] *** FOUND match_point ***")
+            elif ('tiebreak' in query_lower or 'tie-break' in query_lower or 'tie break' in query_lower) and 'tiebreak-level' not in query_lower and 'tiebreak level' not in query_lower:
+                # Exclude metaphorical uses like "tiebreak-level clutch"
+                filters['situation'] = 'tiebreak'
+                print(f"[DETECT-FILTERS] *** FOUND tiebreak ***")
+            elif 'deuce' in query_lower and 'court' not in query_lower and 'side' not in query_lower:
+                # Only match "deuce" as situation (40-40), not "deuce side" (court location)
+                filters['situation'] = 'deuce'
+                print(f"[DETECT-FILTERS] *** FOUND deuce ***")
+            else:
+                print(f"[DETECT-FILTERS] No direct situation match")
         
         # === POINT SCORE FILTER (e.g., "at 30-30", "at 15-40") ===
         # Detect specific point scores like "30-30", "15-40", "40-AD"
@@ -9713,28 +10005,32 @@ Answer:"""
                 actual_point_score = meta.get('point_score', '')
                 actual_normalized = self._normalize_point_score(actual_point_score)
                 
+                # Helper to check if point score matches (exact match on last part of score string)
+                def _point_score_matches(target_score: str, actual_normalized: str, full_score: str) -> bool:
+                    # Primary: exact match on normalized point score
+                    if target_score == actual_normalized:
+                        return True
+                    # Fallback: extract last part of full score (e.g., "0-0 1-1 0-40" -> "0-40")
+                    if full_score:
+                        score_parts = full_score.strip().split()
+                        if score_parts:
+                            last_part = self._normalize_point_score(score_parts[-1])
+                            return target_score == last_part
+                    return False
+                
                 # Handle list values (OR logic) vs single value
                 if isinstance(value, list):
                     # OR logic: matches ANY score in the list
                     passes_filter = False
                     for score_val in value:
                         value_normalized = self._normalize_point_score(score_val)
-                        if value_normalized == actual_normalized:
+                        if _point_score_matches(value_normalized, actual_normalized, score):
                             passes_filter = True
                             break
-                        # Fallback: check if the score string contains this point score pattern
-                        if not passes_filter and score:
-                            if value_normalized in score.upper():
-                                passes_filter = True
-                                break
                 else:
                     # Single value: exact match
                     value_normalized = self._normalize_point_score(value)
-                    passes_filter = (value_normalized == actual_normalized)
-                    
-                    # Also check if the score string contains the point score pattern
-                    if not passes_filter and score:
-                        passes_filter = value_normalized in score.upper()
+                    passes_filter = _point_score_matches(value_normalized, actual_normalized, score)
             
             elif dimension == 'role':
                 # CRITICAL: Check player from BOTH filters AND classification (query planner may not include it in filters)
@@ -9790,40 +10086,66 @@ Answer:"""
                 # For shot-based groupings (shot_type/direction/etc.), use metric's player_role to determine who to filter by
                 # "Sinner's forehand winners" â†’ player_role='winner' â†’ filter to points Sinner won
                 # "Sinner's backhand errors" â†’ player_role='error' â†’ filter to points where Sinner hit the error
-                elif group_by in ['shot_type', 'direction', 'shot_modifier', 'depth', 'court_zone', 'shot_number']:
-                    # Get the metric's player_role from CLASS CONSTANT (single source of truth)
-                    primary_metric = metrics[0] if metrics else None
+                # GENERIC: For ALL other cases (including shot-level groupings), use metric config
+                # NO HARDCODED LISTS - driven by METRIC_CONFIG and count_filter
+                else:
+                    # Get the metric's config to determine how to interpret "player" filter
+                    # CONFIG-DRIVEN: Use count_filter + player_role to determine player field
+                    primary_metric = metrics[0] if metrics else 'win_percentage'  # Default
                     metric_config = TennisChatAgentEmbeddingQALocal.METRIC_CONFIG.get(primary_metric, {})
                     player_role = metric_config.get('player_role', 'both')
+                    count_filter = metric_config.get('count_filter', 'always')
                     
-                    # GENERIC: Use ROLE_CONFIG to determine which player field to check
-                    role_config = self.ROLE_CONFIG.get(player_role, {})
-                    player_field = role_config.get('player_field', '')
+                    # CRITICAL DECISION LOGIC:
+                    # count_filter='won' → filter to points player WON (point_winner)
+                    # count_filter='lost' → filter to points player LOST
+                    # count_filter='always' OR player_role='both' → points player was INVOLVED in
+                    # player_role!='both' → use ROLE_CONFIG to get specific player_field
                     
-                    if player_field:
-                        # Map player_field to actual player value from metadata/context
-                        field_to_player = {
-                            'server': server,
-                            'returner': returner,
-                            'point_winner': point_winner,
-                            'error_player': point_data.get('error_player', '')  # CRITICAL: error_player stored in point_data, not meta
-                        }
-                        target_player = field_to_player.get(player_field, '')
-                        passes_filter = self._names_match_robust(value, target_player)
+                    player_field_used = None
+                    
+                    # PRIORITY 1: Check count_filter (most specific)
+                    if count_filter == 'won':
+                        # "Points won", "Win %", "Effectiveness" → point_winner
+                        passes_filter = self._names_match_robust(value, point_winner)
+                        player_field_used = 'point_winner'
+                    elif count_filter == 'lost':
+                        # "Points lost" → opposite of point_winner (but player was involved)
+                        passes_filter = not self._names_match_robust(value, point_winner) and (
+                            self._names_match_robust(value, server) or self._names_match_robust(value, returner)
+                        )
+                        player_field_used = 'not_point_winner'
+                    elif player_role and player_role != 'both':
+                        # PRIORITY 2: Check player_role for specific field
+                        role_config = self.ROLE_CONFIG.get(player_role, {})
+                        player_field = role_config.get('player_field', '')
                         
-                        # DEBUG: Show player matching for first few points
-                        point_num = point_data.get('point_number', '?')
-                        if not hasattr(self, '_player_filter_debug_count'):
-                            self._player_filter_debug_count = 0
-                        if self._player_filter_debug_count < 5:
-                            self._player_filter_debug_count += 1
-                            print(f"[PLAYER-FILTER-DEBUG] Point {point_num} | Filter: '{value}' | player_field: {player_field} | target_player: '{target_player}' | Match: {passes_filter}")
+                        if player_field:
+                            field_to_player = {
+                                'server': server,
+                                'returner': returner,
+                                'point_winner': point_winner,
+                                'error_player': point_data.get('error_player', '')
+                            }
+                            target_player = field_to_player.get(player_field, '')
+                            passes_filter = self._names_match_robust(value, target_player)
+                            player_field_used = player_field
+                        else:
+                            # Fallback: points involved in
+                            passes_filter = self._names_match_robust(value, server) or self._names_match_robust(value, returner)
+                            player_field_used = 'involved(fallback)'
                     else:
-                        # player_role='both' or unknown â†’ filter to points player was involved in
+                        # DEFAULT: count_filter='always' or player_role='both' → points player was involved in
                         passes_filter = self._names_match_robust(value, server) or self._names_match_robust(value, returner)
-                # Otherwise, check if player is involved in either role
-                else:
-                    passes_filter = self._names_match_robust(value, server) or self._names_match_robust(value, returner)
+                        player_field_used = 'involved'
+                    
+                    # DEBUG: Show player matching logic for first few points
+                    point_num = point_data.get('point_number', '?')
+                    if not hasattr(self, '_player_filter_debug_count'):
+                        self._player_filter_debug_count = 0
+                    if self._player_filter_debug_count < 5:
+                        self._player_filter_debug_count += 1
+                        print(f"[PLAYER-FILTER-DEBUG] Point {point_num} | player='{value}' | metric='{primary_metric}' | count_filter='{count_filter}' | player_field='{player_field_used}' | Match: {passes_filter}")
             
             # For grouping dimensions (when used as filter)
             elif dimension == 'serve_direction':
@@ -13867,35 +14189,151 @@ Answer:"""
         """
         Determine if the query should use Query Plan architecture.
         
-        PHILOSOPHY: Use Query Plan for ANY non-trivial query. Let the LLM decide structure.
-        Only skip Query Plan for the simplest single-stat, single-filter questions.
+        PHILOSOPHY: Use the CLASSIFICATION to determine complexity.
+        - Simple queries → let existing narrative routing infrastructure handle it
+        - Complex queries (comparisons, multi-operation) → Query Plan
         
-        The Query Plan LLM is smart - trust it to parse complex questions and generate
-        the right operations. Don't try to detect every pattern here.
+        The existing narrative routing handles chunk selection, prioritization, etc.
+        Query Plan is for when we need MULTIPLE operations or tree filtering.
         """
         question_lower = question.lower()
         
-        # ONLY skip Query Plan for the most trivial questions
-        # Everything else goes to the Query Plan LLM to figure out
+        # Extract classification fields (the classification ALREADY knows the complexity)
+        query_type = classification.get('query_type', 'narrative')
+        analysis_type = classification.get('analysis_type', '')
+        metric_clarity = classification.get('metric_clarity', 'vague')
         
-        # Check if this is a simple single-stat query with at most one filter
-        metrics_parsed = llm_parse.get('metrics_parsed', []) if llm_parse else []
-        category = classification.get('category', 'narrative')
+        # Comparison structures that REQUIRE Query Plan (parallel operations)
+        set_comparison = classification.get('set_comparison') or {}
+        situation_comparison = classification.get('situation_comparison')
         
-        # Simple = analytical + single metric + no comparison words
-        is_simple_analytical = (
-            category == 'analytical' and
-            len(metrics_parsed) <= 1 and
-            '?' not in question_lower[5:]  # Not a complex question
+        # Grouping complexity
+        group_by = classification.get('group_by', '')
+        secondary_group_by = classification.get('secondary_group_by', '')
+        n_dimensional = classification.get('n_dimensional', False)
+        
+        # Filters that need tree processing
+        filters = classification.get('filters', {})
+        situation = filters.get('situation') or classification.get('situation')
+        set_filter = filters.get('set') or classification.get('set_filter')
+        
+        # Chain/momentum queries
+        chain_logic = classification.get('chain_logic')
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # SAFETY NET #1: Temporal patterns that ALWAYS need Query Plan
+        # (Even if classification misses the filter, we catch it here)
+        # ═══════════════════════════════════════════════════════════════════════
+        temporal_indicators = [
+            'after set', 'before set', 'later in the match', 'early in the match',
+            'as the match went on', 'as the match progressed', 'by the end',
+            'late in the match', 'early match', 'late match',
+            'in sets 3', 'in sets 4', 'in sets 1', 'sets 3-5', 'sets 4-5',
+            'first two sets', 'last two sets', 'final two sets',
+            'from set 1 to set 5', 'across sets', 'over the course',
+            'did he change', 'did she change', 'did they change',
+            'did he improve', 'did she improve', 'improvement',
+            'adjustment', 'tactical shift', 'strategy change'
+        ]
+        has_temporal_pattern = any(ind in question_lower for ind in temporal_indicators)
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # SAFETY NET #2: Shot-level queries ALWAYS need Query Plan
+        # CONFIG-DRIVEN: Check if grouping by any SHOT_LEVEL_FIELD (not hardcoded keywords!)
+        # ═══════════════════════════════════════════════════════════════════════
+        is_shot_level_grouping = group_by in self.SHOT_LEVEL_FIELDS
+        
+        # Also check if ANY shot-level field exists in classification (not as a filter, but as context)
+        has_shot_level_context = any([
+            classification.get(field) for field in self.SHOT_LEVEL_FIELDS
+        ])
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # REQUIRE Query Plan - these NEED multiple operations or tree filtering
+        # ═══════════════════════════════════════════════════════════════════════
+        
+        # 1. Set comparisons (early vs late, set A vs set B)
+        has_set_comparison = bool(set_comparison.get('set_a') or set_comparison.get('set_b'))
+        
+        # 2. Situation comparisons
+        has_situation_comparison = bool(situation_comparison)
+        
+        # 3. Multi-dimensional analysis
+        is_multi_dimensional = n_dimensional or (group_by and secondary_group_by)
+        
+        # 4. Complex analysis types that need structure
+        complex_analysis_types = ['2d_cross_tab', 'chain', 'momentum']
+        is_complex_analysis = analysis_type in complex_analysis_types
+        
+        # 5. Comparison with specific filter (needs tree)
+        # e.g., "Compare break point performance in Set 1 vs Set 5"
+        is_filtered_comparison = (
+            analysis_type == 'comparison' and
+            (situation or set_filter) and
+            has_set_comparison
         )
         
-        # Trigger Query Plan for basically everything except trivial queries
-        should_use = not is_simple_analytical
+        # ═══════════════════════════════════════════════════════════════════════
+        # SKIP Query Plan - let narrative infrastructure handle these
+        # ═══════════════════════════════════════════════════════════════════════
+        
+        # Pure narrative questions (strategic, tactical, descriptive)
+        # BUT NOT if there's a temporal pattern (needs filtering)
+        is_pure_narrative = (
+            query_type == 'narrative' and 
+            not situation and 
+            not set_filter and
+            not has_temporal_pattern  # Safety net!
+        )
+        
+        # Simple analytical with clear metric and no comparisons
+        is_simple_analytical = (
+            query_type == 'analytical' and
+            metric_clarity == 'clear' and
+            not has_set_comparison and
+            not has_situation_comparison and
+            not is_multi_dimensional and
+            not has_temporal_pattern and  # Safety net!
+            analysis_type in ('count', 'percentage', '', None)
+        )
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # DECISION
+        # ═══════════════════════════════════════════════════════════════════════
+        
+        needs_query_plan = (
+            has_set_comparison or
+            has_situation_comparison or
+            is_multi_dimensional or
+            is_complex_analysis or
+            is_filtered_comparison or
+            has_temporal_pattern or         # Safety net #1: temporal
+            is_shot_level_grouping or       # Safety net #2: shot-level grouping (CONFIG-DRIVEN)
+            has_shot_level_context          # Safety net #3: shot-level context exists
+        )
+        
+        skip_query_plan = is_pure_narrative or is_simple_analytical
+        
+        # Final decision: use Query Plan unless we're confident it's simple
+        should_use = needs_query_plan or (not skip_query_plan)
         
         if should_use:
-            print(f"[QUERY-PLAN] Using Query Plan (non-trivial query)")
+            reasons = []
+            if has_set_comparison: reasons.append("set_comparison")
+            if has_situation_comparison: reasons.append("situation_comparison")
+            if is_multi_dimensional: reasons.append("multi_dimensional")
+            if is_complex_analysis: reasons.append(f"complex_analysis({analysis_type})")
+            if is_filtered_comparison: reasons.append("filtered_comparison")
+            if has_temporal_pattern: reasons.append("temporal_pattern")
+            if is_shot_level_grouping: reasons.append(f"shot_level_grouping({group_by})")
+            if has_shot_level_context: reasons.append("shot_level_context")
+            if not reasons: reasons.append("non-trivial")
+            print(f"[QUERY-PLAN] Using Query Plan ({', '.join(reasons)})")
         else:
-            print(f"[QUERY-PLAN] Skipping Query Plan (simple single-stat query)")
+            if is_pure_narrative:
+                print(f"[QUERY-PLAN] Skipping Query Plan (pure narrative → existing routing)")
+            elif is_simple_analytical:
+                print(f"[QUERY-PLAN] Skipping Query Plan (simple analytical → existing routing)")
         
         return should_use
     
@@ -14133,6 +14571,34 @@ RULE 9: CRITICAL - If group_by is NOT in TREE_LEVEL_DIMENSIONS, use HYBRID:
   - Tree operation filters to relevant points (e.g., role=returner for return_depth)
   - Narrative operation analyzes point descriptions to extract shot-level data
 
+RULE 10: CRITICAL - Handling ANY "*_group*" Fields in Classification:
+  - NEVER use ANY field name containing "_group" as a filter dimension
+  - Valid filter fields are ONLY: {supported_filters}
+  - TRANSLATION RULES:
+    
+    A. situation_group_a / situation_group_b (comparisons):
+       - situation_group_a="break_point" → Op A: filters={{"situation": "break_point"}}
+       - situation_group_b="non_break_point" → Op B: filters={{"situation": "non_break_point"}}
+       - NOT filters={{"situation_group_a": ...}} or filters={{"situation_group_b": ...}}
+    
+    B. set_group_a / set_group_b (set comparisons):
+       - set_group_a=[1, 2] → Op A: filters={{"set": [1, 2]}}
+       - set_group_b=[3, 4, 5] → Op B: filters={{"set": [3, 4, 5]}}
+       - NOT filters={{"set_group_a": ...}} or filters={{"set_group_b": ...}}
+    
+    C. situation_group (multiple situations):
+       - situation_group=["break_point", "deuce"] → filters={{"situation": ["break_point", "deuce"]}}
+       - NOT filters={{"situation_group": ...}}
+  
+  - REMEMBER: Extract the VALUES from *_group* fields and use the base dimension name (set, situation, etc.)
+
+RULE 11: CRITICAL - ALWAYS Include Player Filter in Tree Operations:
+  - If "player" is specified in classification (e.g., "player": "Jannik Sinner" or "Daniil Medvedev"), you MUST include it in EVERY tree operation filter
+  - This applies to ALL query types: analytical, hybrid, narrative with tree filtering
+  - Example: If player="Daniil Medvedev" and you're filtering to sets [3,4,5], the filter MUST be {{"set": [3,4,5], "player": "Daniil Medvedev"}}
+  - The ONLY exception is when player="both" (comparing both players) → then do NOT include player in filters
+  - DO NOT filter player in tree operations if player="both" - the tree will aggregate by player automatically
+
 ════════════════════════════════════════════════════════════════════════════════════════════
 EXAMPLES - COPY THESE PATTERNS
 ════════════════════════════════════════════════════════════════════════════════════════════
@@ -14308,6 +14774,20 @@ Q: "First 100 points vs last 100 points - what changed most?"
   "synthesis_instructions": "Compare early match (A) vs late match (B) stats. Identify biggest differences in win%, aces, errors for each player."
 }}
 
+Q: "Did Medvedev stop going down the line late in the match?"
+PARSED CLASSIFICATION: {{"player": "Daniil Medvedev", "direction": "down_the_line", "set_comparison": {{"set_a": [1, 2], "set_b": [3, 4, 5]}}}}
+EXPLANATION: Hybrid query - tree filters to player's points in each set group, narrative analyzes down-the-line shots in those points.
+CRITICAL: Player "Daniil Medvedev" MUST be included in tree filters (RULE 11)!
+{{
+  "query_plan": [
+    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"set": [1, 2], "player": "Daniil Medvedev"}}, "metrics": []}},
+    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "chunk_retrieval": true, "chunk_query": "down the line shots direction"}},
+    {{"id": "C", "route": "tree", "op_type": "tree_filter_only", "filters": {{"set": [3, 4, 5], "player": "Daniil Medvedev"}}, "metrics": []}},
+    {{"id": "D", "route": "narrative", "op_type": "narrative_describe", "point_source": "C", "chunk_retrieval": true, "chunk_query": "down the line shots direction"}}
+  ],
+  "synthesis_instructions": "Operation A filters to Medvedev's points in Sets 1-2. B analyzes down-the-line shots in those points. C filters to Sets 3-5. D analyzes down-the-line in those. Compare frequency/patterns between early vs late sets."
+}}
+
 Q: "Did Sinner start returning deeper later, or was it constant?"
 PARSED CLASSIFICATION: {{"filters": {{"role": "returner"}}, "group_by": "sets"}}
 EXPLANATION: TREND question about return depth. Get ALL return points via tree, then narrative analyzes the POINT DESCRIPTIONS to extract depth patterns per set.
@@ -14437,25 +14917,40 @@ CRITICAL: Use the filters, metrics, and groupings from PARSED CLASSIFICATION in 
 
 Return ONLY valid JSON (no markdown, no explanation):"""
 
-        # Format the classification for the LLM - include ALL shot-level fields
+        # Format the classification for the LLM - include ALL fields that affect routing
         import json
         filters = classification.get('filters', {})
         classification_json = json.dumps({
+            # Core query structure
             'filters': filters,
             'metrics': classification.get('metrics', []),
             'metric_filters': classification.get('metric_filters', {}),
+            'player': filters.get('player'),  # Now always in filters after normalization
+            'query_category': classification.get('query_category'),
+            'analysis_type': classification.get('analysis_type'),
+            
+            # Grouping (all dimensions)
             'group_by': classification.get('group_by'),
             'secondary_group_by': classification.get('secondary_group_by'),
-            'player': filters.get('player') or classification.get('player'),
-            'query_category': classification.get('query_category'),
-            # CRITICAL: Include shot-level fields so planner knows to use narrative
+            'tertiary_group_by': classification.get('tertiary_group_by'),
+            'n_dimensional': classification.get('n_dimensional'),
+            
+            # Shot-level fields (trigger narrative/hybrid)
             'shot_type': classification.get('shot_type') or filters.get('shot_type'),
             'direction': classification.get('direction') or filters.get('direction'),
             'shot_modifier': classification.get('shot_modifier') or filters.get('shot_modifier'),
-            # CRITICAL: Include situation_group for multi-situation queries (clutch, pressure, big points)
+            
+            # Multi-entity comparisons
             'situation_group': filters.get('situation_group'),
+            'set_group_a': filters.get('set_group_a'),
+            'set_group_b': filters.get('set_group_b'),
+            'situation_group_a': filters.get('situation_group_a'),
+            'situation_group_b': filters.get('situation_group_b'),
+            
+            # Other context
             'rally_length': filters.get('rally_length'),
             'set': filters.get('set'),
+            'chain_logic': filters.get('chain_logic'),
         }, indent=2)
         
         prompt = prompt.format(
@@ -14501,7 +14996,7 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             # Fallback: simple single-operation plan based on classification
             return self._fallback_query_plan(question, classification)
     
-    def _validate_query_plan(self, query_plan: Dict) -> tuple:
+    def _validate_query_plan(self, query_plan: Dict, question: str = "") -> tuple:
         """
         Validate a query plan for correctness before execution.
         
@@ -14511,10 +15006,13 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         3. Filters use TREE_LEVEL_DIMENSIONS
         4. Metrics are in TREE_SUPPORTED_METRICS
         5. Total operations within limit
+        6. CRITICAL: Narrative ops have grounding (chunk_query OR point_source)
+        7. CRITICAL: Comparison questions have multiple ops
         
         Returns: (is_valid, errors_list)
         """
         errors = []
+        warnings = []
         operations = query_plan.get('query_plan', [])
         
         if not operations:
@@ -14528,6 +15026,8 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         
         # Track operation IDs
         defined_ops = set()
+        tree_ops_count = 0
+        narrative_ops_count = 0
         
         for op in operations:
             op_id = op.get('id', '')
@@ -14538,15 +15038,24 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             if route not in valid_routes:
                 errors.append(f"Op {op_id}: Invalid route '{route}' (must be {valid_routes})")
             
-            # Track defined ops
+            # Track defined ops and counts
             defined_ops.add(op_id)
+            if route == 'tree':
+                tree_ops_count += 1
+            elif route == 'narrative':
+                narrative_ops_count += 1
             
             # Check tree-specific validation
             if route == 'tree':
                 # Check filters use valid dimensions
                 filters = op.get('filters', {})
                 for dim in filters.keys():
-                    if dim not in self.TREE_LEVEL_DIMENSIONS:
+                    # Skip 'player' - it's context, not a filter dimension
+                    if dim == 'player':
+                        continue
+                    # Normalize: "sets" -> "set" for validation
+                    normalized_dim = 'set' if dim == 'sets' else dim
+                    if normalized_dim not in self.TREE_LEVEL_DIMENSIONS:
                         errors.append(f"Op {op_id}: Filter '{dim}' not in TREE_LEVEL_DIMENSIONS")
                 
                 # Check metrics are supported
@@ -14560,16 +15069,78 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                         req = self.METRIC_REQUIREMENTS[metric]
                         if req.get('fallback') == 'narrative':
                             # This metric may not be reliable from tree
-                            errors.append(f"Op {op_id}: Metric '{metric}' may need narrative fallback")
+                            warnings.append(f"Op {op_id}: Metric '{metric}' may need narrative fallback")
             
-            # Check narrative dependencies
+            # Check narrative-specific validation
             if route == 'narrative':
                 point_source = op.get('point_source')
+                chunk_query = op.get('chunk_query')
+                chunk_retrieval = op.get('chunk_retrieval', False)
+                
+                # CRITICAL FIX #1: Narrative must have grounding
+                # Every narrative op MUST have either:
+                # - chunk_query (for standalone narrative retrieval)
+                # - point_source (for hybrid analysis of filtered points)
+                has_chunk_grounding = chunk_retrieval and chunk_query
+                has_point_grounding = point_source is not None
+                
+                if not has_chunk_grounding and not has_point_grounding:
+                    errors.append(f"Op {op_id}: Narrative MUST have chunk_query OR point_source (no grounding = hallucination risk)")
+                
+                # Check point_source references valid op
                 if point_source and point_source not in defined_ops:
                     errors.append(f"Op {op_id}: point_source '{point_source}' references undefined operation")
         
-        is_valid = len(errors) == 0 or all('may need' in e for e in errors)  # Warnings are OK
-        return is_valid, errors
+        # CRITICAL FIX #3: Comparison questions should have multiple ops
+        if question:
+            question_lower = question.lower()
+            comparison_indicators = [
+                'compare', ' vs ', 'versus', 'better than', 'worse than',
+                'difference between', 'compared to', 'or ', ' vs.'
+            ]
+            is_comparison_question = any(ind in question_lower for ind in comparison_indicators)
+            
+            # If comparison language but only one tree op, warn
+            # (Could be valid for player comparisons which are handled by group_by)
+            if is_comparison_question and tree_ops_count == 1 and narrative_ops_count == 0:
+                # Check if it's a player comparison (which uses group_by, not multiple ops)
+                is_player_comparison = any(word in question_lower for word in [
+                    'each player', 'both players', 'who ', 'which player'
+                ])
+                if not is_player_comparison:
+                    warnings.append(f"Comparison question but only 1 tree op - may need multiple ops for proper comparison")
+        
+        # === SHOT-LEVEL AGGREGATION WARNING ===
+        # Detect if question asks to aggregate shot-level data (group by direction/shot_type)
+        # These questions are fundamentally unsupported by tree - need precomputed narrative stats
+        shot_level_grouping_detected = False
+        for op in operations:
+            route = op.get('route')
+            filters = op.get('filters', {})
+            
+            # Check if any op tries to use shot-level fields as filters (which tree can't handle)
+            for field in self.SHOT_LEVEL_FIELDS:
+                if field in filters:
+                    shot_level_grouping_detected = True
+                    break
+        
+        if shot_level_grouping_detected or 'most successful' in question.lower() or 'best pattern' in question.lower():
+            # Check if question asks for ranking/comparison of shot patterns
+            pattern_comparison_terms = ['most successful', 'best pattern', 'which pattern', 'better', 'more effective']
+            if any(term in question.lower() for term in pattern_comparison_terms):
+                warnings.append(
+                    "⚠️ SHOT-LEVEL AGGREGATION: This question requires counting/ranking individual shots by direction/type. "
+                    "The tree cannot aggregate shot-level data (only point-level). "
+                    "Answer will rely on precomputed stats from narrative chunks or qualitative analysis from point descriptions. "
+                    "If narrative chunks don't contain the specific breakdown, the answer may be incomplete or inferred from examples."
+                )
+        
+        # Combine errors and warnings
+        all_issues = errors + warnings
+        
+        # Valid if no hard errors (warnings are OK)
+        is_valid = len(errors) == 0
+        return is_valid, all_issues
     
     def _fallback_query_plan(self, question: str, classification: Dict) -> Dict:
         """
@@ -14586,8 +15157,13 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         # SHOT-LEVEL = group_by is NOT in TREE_LEVEL_DIMENSIONS (use config, not hardcoded lists!)
         # These are shot-level attributes that require analyzing point descriptions
         
+        # Normalize group_by: "sets" -> "set" (plural to singular for dimension check)
+        normalized_group_by = group_by
+        if group_by == 'sets':
+            normalized_group_by = 'set'
+        
         # Check if group_by is a shot-level attribute (not in tree dimensions)
-        is_grouping_shot_level = group_by and group_by not in self.TREE_LEVEL_DIMENSIONS
+        is_grouping_shot_level = normalized_group_by and normalized_group_by not in self.TREE_LEVEL_DIMENSIONS
         
         # Check if any shot attributes are specified
         has_shot_attributes = any([shot_type, direction, shot_modifier])
@@ -14628,12 +15204,12 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         # DEFAULT: TREE with valid filters only
         tree_filters = {k: v for k, v in filters.items() 
                        if v is not None and k in self.TREE_LEVEL_DIMENSIONS}
-            return {
-                "query_plan": [
+        return {
+            "query_plan": [
                 {"id": "A", "route": "tree", "filters": tree_filters, "metrics": metrics}
-                ],
-                "synthesis_instructions": "Report stats from tree analysis"
-            }
+            ],
+            "synthesis_instructions": "Report stats from tree analysis"
+        }
     
     def _execute_query_plan(self, question: str, query_plan: Dict, classification: Dict, top_k: int = None) -> str:
         """
@@ -14661,8 +15237,8 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         if not operations:
             return "No operations in query plan."
         
-        # VALIDATE PLAN before execution
-        is_valid, validation_errors = self._validate_query_plan(query_plan)
+        # VALIDATE PLAN before execution (pass question for comparison detection)
+        is_valid, validation_errors = self._validate_query_plan(query_plan, question)
         if not is_valid:
             print(f"[QUERY-PLAN] Validation failed: {validation_errors}")
             # Try to regenerate once
@@ -14720,6 +15296,23 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                 point_source = op.get('point_source')
                 source_points = filtered_points_by_id.get(point_source, []) if point_source else []
                 
+                # CRITICAL FIX #2: Abort hybrid narrative when tree returns 0 points
+                # This prevents confident answers based on unrelated match-wide data
+                if point_source and len(source_points) == 0:
+                    print(f"[QUERY-PLAN] ABORT: Narrative op {op_id} has point_source={point_source} but 0 points matched filters")
+                    result = {
+                        'operation_id': op_id,
+                        'op_type': op_type,
+                        'aborted': True,
+                        'abort_reason': f"No points matched filters from source operation {point_source}",
+                        'point_texts': [],
+                        'chunks': [],
+                        'confidence': 'none',
+                        'limitations': [f"ABORTED: No data available for this filter combination"]
+                    }
+                    results[op_id] = result
+                    continue  # Skip to next operation - do NOT execute narrative
+                
                 # Use operation-specific top_k if provided, otherwise use query-level top_k
                 op_top_k = op.get('top_k', top_k)
                 result = self._execute_narrative_operation(op, classification, source_points, op_top_k)
@@ -14764,7 +15357,11 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         # CRITICAL: Get player context from original classification for role filtering
         # But DON'T put player in operation filters - that breaks metric computation for grouped queries
         original_filters = classification.get('filters', {})
-        player_context = original_filters.get('player') or classification.get('player')
+        player_context = filters.get('player') or original_filters.get('player') or classification.get('player')
+        
+        # CRITICAL FIX: Strip 'player' from filters if Query Plan LLM incorrectly added it
+        # 'player' is NOT a filter dimension - it's context for role/winner matching
+        filters = {k: v for k, v in filters.items() if k != 'player'}
         
         # Set operation filters but preserve player at classification level for role filtering
         temp_classification['filters'] = filters
@@ -15009,8 +15606,19 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         all_points = []
         all_limitations = []
         
+        # Track if any operations were aborted
+        aborted_ops = []
+        
         for op_id, result in results.items():
             if isinstance(result, dict):
+                # Check for aborted operations first
+                if result.get('aborted'):
+                    aborted_ops.append(op_id)
+                    context_parts.append(f"\n=== Operation {op_id} (ABORTED) ===")
+                    context_parts.append(f"Reason: {result.get('abort_reason', 'No data matched filters')}")
+                    all_limitations.append(f"Op {op_id}: ABORTED - {result.get('abort_reason', 'insufficient data')}")
+                    continue  # Skip to next operation
+                
                 # Extract structured metadata
                 confidence = result.get('confidence', 'unknown')
                 limitations = result.get('limitations', [])
@@ -15029,15 +15637,40 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                     player1 = result.get('player1_name', 'Player 1')
                     player2 = result.get('player2_name', 'Player 2')
                     
+                    # Get total points for clarity
+                    total_points_in_category = result.get('total_points', 0)
+                    
                     for metric, player_data in result.get('per_player_metrics', {}).items():
                         p1_count = player_data.get('player1', {}).get('count', 0)
                         p1_total = player_data.get('player1', {}).get('total', 0)
                         p2_count = player_data.get('player2', {}).get('count', 0)
                         p2_total = player_data.get('player2', {}).get('total', 0)
                         
-                        context_parts.append(f"{metric}:")
-                        context_parts.append(f"  {player1}: {p1_count} (out of {p1_total})")
-                        context_parts.append(f"  {player2}: {p2_count} (out of {p2_total})")
+                        # Check display_type from METRIC_CONFIG to determine formatting
+                        metric_config = self.METRIC_CONFIG.get(metric, {})
+                        display_type = metric_config.get('display_type', 'percentage')
+                        
+                        # CRITICAL: For points_won-type metrics (display_type='points_won'), make it explicit these are WINS
+                        # These represent absolute win counts with per-player denominators for percentages
+                        points_won_metrics = ['points_won', 'win_percentage', 'return_points_won', 
+                                             'break_points_won', 'break_points_saved', 'deuce_points_won']
+                        
+                        if display_type == 'count':
+                            # Count metrics (aces, errors, winners) - just show raw counts, no denominators
+                            context_parts.append(f"{metric}:")
+                            context_parts.append(f"  {player1}: {p1_count}")
+                            context_parts.append(f"  {player2}: {p2_count}")
+                        elif metric in points_won_metrics:
+                            # Points won metrics - use per-player totals for percentage calculation
+                            # total_points_in_category is the sum across both players and should NOT be used as denominator
+                            context_parts.append(f"Points WON by each player (total {total_points_in_category} points in this category):")
+                            context_parts.append(f"  {player1}: {p1_count} won out of {p1_total} ({round(100*p1_count/p1_total,1) if p1_total > 0 else 0}%)")
+                            context_parts.append(f"  {player2}: {p2_count} won out of {p2_total} ({round(100*p2_count/p2_total,1) if p2_total > 0 else 0}%)")
+                        else:
+                            # Percentage metrics - show with denominators
+                            context_parts.append(f"{metric}:")
+                            context_parts.append(f"  {player1}: {p1_count} (out of {p1_total})")
+                            context_parts.append(f"  {player2}: {p2_count} (out of {p2_total})")
                     
                     if limitations:
                         context_parts.append(f"Limitations: {', '.join(limitations)}")
@@ -15105,7 +15738,7 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             
             needs_full_analysis = (
                 analysis_type == 'trend' or
-                group_by == 'sets' or
+                group_by in ('sets', 'set') or  # Handle both plural and singular
                 'depth' in question_lower or
                 'placement' in question_lower or
                 'direction' in question_lower or
@@ -15120,16 +15753,10 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                 aggregated_stats = self._compute_point_aggregations(all_points, classification)
                 print(f"[SYNTHESIS] Full point analysis for trend/pattern question")
             
-            # Provide sample points for context
-            sample_size = min(30, len(all_points))
-            if len(all_points) > sample_size:
-                step = len(all_points) // sample_size
-                sample_points = all_points[::step][:sample_size]
-            else:
-                sample_points = all_points
-            
+            # NO SAMPLING - Pass ALL points for maximum accuracy
+            # User preference: accuracy > speed
             point_texts = []
-            for pt in sample_points:
+            for pt in all_points:
                 point_num = pt.get('point_number', '?')
                 server = pt.get('server', '?')
                 score = pt.get('score', '?')
@@ -15138,10 +15765,22 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                 point_winner = pt.get('point_winner', '?')
                 point_texts.append(f"Point {point_num} [Set {set_num} | {server} serving at {score}]: {description} [Won by: {point_winner}]")
             point_context = "\n\n".join(point_texts)
-            print(f"[SYNTHESIS] Analyzed ALL {len(all_points)} points, showing {len(sample_points)} samples")
+            print(f"[SYNTHESIS] Passing ALL {len(all_points)} point descriptions to LLM (no sampling)")
         
         # Build limitations summary for LLM
         limitations_text = "\n".join(all_limitations) if all_limitations else "None"
+        
+        # CRITICAL: Check if all operations were aborted or yielded no data
+        # If so, return a clear "insufficient data" message instead of hallucinating
+        if aborted_ops:
+            non_aborted_results = [r for op_id, r in results.items() if not r.get('aborted')]
+            if not non_aborted_results:
+                # ALL operations were aborted - cannot answer
+                abort_reasons = [results[op_id].get('abort_reason', 'No data') for op_id in aborted_ops]
+                return f"I cannot answer this question with the available data.\n\n**Reason:** {'; '.join(set(abort_reasons))}\n\nThis typically happens when the filters in your question (e.g., specific set, situation, or shot type combination) don't match any points in the match data. Try broadening your question or asking about a different filter combination."
+            elif not all_points and not any(r.get('chunks') for r in non_aborted_results if isinstance(r, dict)):
+                # Some ops ran but yielded no usable data
+                return f"I found limited data for this query.\n\n**Issue:** {limitations_text}\n\nThe specific combination of filters may not have enough data points for reliable analysis. Consider asking about broader conditions or different metrics."
         
         # Synthesize with LLM
         prompt = f"""You are a tennis analyst synthesizing query results.
@@ -15174,6 +15813,14 @@ DATA SOURCE HIERARCHY (CRITICAL):
 2. For point-level metrics (points won, win %, aces, double faults):
    - PRIMARY SOURCE: Tree operation results with exact counts
    - NEVER calculate these yourself
+   - CRITICAL: When you see "Player1 won: X (out of Y total points)", X is the number WON, not the total number of points in that category
+   - LANGUAGE PRECISION FOR SITUATION POINTS (CRITICAL):
+     * NEVER say "Player won X set points" or "Player won X break points"
+     * In tennis, "winning a set point" means CONVERTING it - you can only win 3 set points max in best-of-5
+     * The data shows who won POINTS THAT OCCURRED during set point situations (mix of for/against)
+     * ALWAYS say: "Player won X of Y points in [situation] situations" or "X points when [situation] was at stake"
+     * CORRECT: "Sinner won 6 of 8 points when a set point was at stake"
+     * WRONG: "Sinner won 6 set points" (impossible - sounds like 6 conversions)
    
 3. Reference chunks are SUPPLEMENTARY context only
    - If a chunk says "Match-wide totals" but the question asks about Set 3, DO NOT use that chunk
@@ -15188,12 +15835,28 @@ RULES (CRITICAL):
 - If any operation has low confidence or small sample size, explicitly mention this caveat
 - If sample size < 7 points, avoid strong tactical claims like "dominated" or "struggled"
 - Be concise but complete
+- SURFACE NEGATIVE EVIDENCE: If no meaningful difference is observed, SAY SO explicitly
+  - "No significant difference was observed between X and Y"
+  - "The data shows similar performance in both conditions"
+  - Silence ≠ neutrality — explicitly state when there's nothing notable
+- SET POINT / BREAK POINT LANGUAGE (CRITICAL):
+  - You CANNOT win more than 3 set points in a best-of-5 match (one per set)
+  - When you see "Sinner won 6 (out of 8)" for set_point situation:
+    * This means: 6 of 8 points that occurred DURING set point situations
+    * NOT: 6 set point conversions (impossible)
+  - ALWAYS phrase as: "won X of Y points when [situation] was at stake"
+  - NEVER phrase as: "won X set points" or "won X break points"
+- SITUATION LANGUAGE: For questions about "big points" or multiple situations combined:
+  - Say "won X of Y points in [situation] situations" not "won X [situation]"
+  - Example: "Sinner won 6 of 8 points in set point situations" (correct)
+  - NOT: "Sinner won 6 set points" (misleading - sounds like conversions)
 
 FORBIDDEN:
 - Do NOT calculate percentages yourself - only report what tree operations computed
 - Do NOT invent counts - if winners/errors not in tree results, say "detailed breakdown not available"
 - Do NOT extrapolate from small samples to general patterns
 - Do NOT use match-wide totals when the question asks about a specific set/situation
+- Do NOT imply differences when the data shows none - be honest about null results
 
 Answer:"""
 
@@ -15214,10 +15877,9 @@ Answer:"""
         # Add debug section showing filtered points (controlled by DEBUG flag)
         if self.DEBUG_SHOW_POINTS and all_points:
             debug_section = f"\n\n**DEBUG: Filtered Points ({len(all_points)} total)**\n"
-            for i, pt in enumerate(all_points[:20], 1):
+            # NO SAMPLING - Show ALL points for maximum transparency
+            for i, pt in enumerate(all_points, 1):
                 debug_section += self._format_debug_point(pt, i)
-            if len(all_points) > 20:
-                debug_section += f"\n... and {len(all_points) - 20} more points"
             answer += debug_section
         elif all_points and not self.DEBUG_SHOW_POINTS:
             # Production mode: just show count and filters
@@ -15701,8 +16363,7 @@ Answer:"""
             description = pt.get('point_text', pt.get('description', ''))[:100]
             print(f"Point {point_num} [Server: {server} | Score: {score}] -> Won by: {point_winner}")
             print(f"  {description}...")
-        if len(filtered_points) > 20:
-            print(f"  ... and {len(filtered_points) - 20} more points")
+        # NO SAMPLING - All points shown above
         print("=" * 100)
         
         # CRITICAL: Append point details to ANSWER so user can see them in UI (not just console)
@@ -16069,7 +16730,7 @@ Answer:"""
             
             # Server set point: has threshold-1+ points AND leading by 1+
             if server_tb_pts >= (threshold - 1) and server_tb_pts > returner_tb_pts:
-            return True
+                return True
             
             # Returner set point: has threshold-1+ points AND leading by 1+
             if returner_tb_pts >= (threshold - 1) and returner_tb_pts > server_tb_pts:
@@ -16688,6 +17349,115 @@ Return ONLY the JSON:"""
         except Exception as e:
             print(f"[LLM-PARSE] Error parsing query: {e}")
             return None
+    
+    def _normalize_and_validate_classification(self, classification: Dict) -> Dict:
+        """
+        GATEKEEPER FUNCTION: Enforce canonical field placement.
+        
+        This ensures all fields live in their correct locations:
+        - Tree dimensions → classification['filters']
+        - Shot-level fields → classification (top-level) or metric_filters (NOT filters)
+        - Grouping fields → classification (top-level only)
+        - Comparison structures → classification (top-level only)
+        
+        Returns classification with repairs applied + adds 'schema_repairs' for debugging.
+        """
+        repairs = []
+        warnings = []
+        
+        # Ensure filters dict exists
+        if 'filters' not in classification:
+            classification['filters'] = {}
+            repairs.append("Created missing filters dict")
+        
+        filters = classification['filters']
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # RULE A: Tree dimensions MUST be in filters (if they exist anywhere)
+        # ═══════════════════════════════════════════════════════════════════════
+        for dim in self.TREE_LEVEL_DIMENSIONS:
+            # Check if dimension is at top-level but not in filters
+            if dim in classification and dim not in ['player']:  # player handled separately
+                value = classification[dim]
+                if value is not None:
+                    # Move to filters
+                    if dim not in filters or filters[dim] != value:
+                        filters[dim] = value
+                        repairs.append(f"Moved '{dim}={value}' into filters")
+        
+        # Special handling for player (only if not "both")
+        player = classification.get('player')
+        if player and player not in ['both', None, '']:
+            if 'player' not in filters or filters['player'] != player:
+                filters['player'] = player
+                repairs.append(f"Moved 'player={player}' into filters")
+        elif player == 'both' and 'player' in filters:
+            # Remove player from filters if it's "both" (tree aggregates automatically)
+            del filters['player']
+            repairs.append("Removed 'player=both' from filters (tree will aggregate)")
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # RULE B: Shot-level fields must NOT be in filters
+        # ═══════════════════════════════════════════════════════════════════════
+        for field in self.SHOT_LEVEL_FIELDS:
+            if field in filters:
+                value = filters[field]
+                del filters[field]
+                # Move to top-level (unless it's already there)
+                if field not in classification:
+                    classification[field] = value
+                repairs.append(f"Removed shot-level '{field}' from filters → moved to top-level")
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # RULE C: Grouping fields must NOT be in filters
+        # ═══════════════════════════════════════════════════════════════════════
+        for field in self.GROUPING_FIELDS:
+            if field in filters:
+                value = filters[field]
+                del filters[field]
+                if field not in classification:
+                    classification[field] = value
+                repairs.append(f"Moved grouping field '{field}' from filters to top-level")
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # RULE D: Comparison structures must NOT be in filters
+        # ═══════════════════════════════════════════════════════════════════════
+        for field in self.COMPARISON_FIELDS:
+            if field in filters:
+                value = filters[field]
+                del filters[field]
+                if field not in classification:
+                    classification[field] = value
+                repairs.append(f"Moved comparison field '{field}' from filters to top-level")
+        
+        # ═══════════════════════════════════════════════════════════════════════
+        # VALIDATION: Check filters only contain tree dimensions
+        # ═══════════════════════════════════════════════════════════════════════
+        for key in list(filters.keys()):
+            if key not in self.TREE_LEVEL_DIMENSIONS:
+                warnings.append(f"Unknown filter '{key}' not in TREE_LEVEL_DIMENSIONS - leaving in place")
+        
+        # Update filters
+        classification['filters'] = filters
+        
+        # Add repair log for debugging
+        if repairs or warnings:
+            classification['_schema_repairs'] = {
+                'repairs': repairs,
+                'warnings': warnings
+            }
+            
+            # Print for immediate debugging
+            if repairs:
+                print(f"[SCHEMA-REPAIR] Applied {len(repairs)} fix(es):")
+                for repair in repairs:
+                    print(f"  - {repair}")
+            if warnings:
+                print(f"[SCHEMA-WARNING] {len(warnings)} warning(s):")
+                for warning in warnings:
+                    print(f"  - {warning}")
+        
+        return classification
     
     def _apply_llm_parse_to_classification(self, classification: Dict, llm_parse: Dict, original_question: str = None) -> Dict:
         """Apply LLM parsing results to the classification."""
@@ -17329,12 +18099,14 @@ Return ONLY the JSON:"""
         
         # Handle set comparison
         if llm_parse.get('set_comparison'):
+            classification['set_comparison'] = llm_parse['set_comparison']  # CRITICAL: Pass to _should_use_query_plan
             classification['group_by'] = 'set_groups'
             classification['filters']['set_group_a'] = llm_parse['set_comparison'].get('set_a', [])
             classification['filters']['set_group_b'] = llm_parse['set_comparison'].get('set_b', [])
         
         # Handle situation comparison (tiebreak vs rest of match)
         if llm_parse.get('situation_comparison'):
+            classification['situation_comparison'] = llm_parse['situation_comparison']  # CRITICAL: Pass to _should_use_query_plan
             classification['group_by'] = 'situation'
             situation_a = llm_parse['situation_comparison'].get('situation_a')
             situation_b = llm_parse['situation_comparison'].get('situation_b')
@@ -17356,6 +18128,12 @@ Return ONLY the JSON:"""
         # Skip if it's being grouped (e.g., "Shallow vs Deep returns")
         if llm_parse.get('depth') and 'depth' not in grouped_dimensions:
             classification['filters']['depth'] = llm_parse['depth']
+        
+        # Handle query_type and metric_clarity for routing decisions
+        if llm_parse.get('query_type'):
+            classification['query_type'] = llm_parse['query_type']
+        if llm_parse.get('metric_clarity'):
+            classification['metric_clarity'] = llm_parse['metric_clarity']
         
         # Handle analysis_type for specialized routing
         if llm_parse.get('analysis_type'):
@@ -17569,6 +18347,13 @@ Return ONLY the JSON:"""
             print(f"[LLM-PARSE]   We want ALL points on {serve_ordinal} serve, not just the serve shot!")
             del filters['shot_type']
             classification['filters'] = filters
+        
+        # === FINAL STEP: Normalize and validate ALL field placement ===
+        # This gatekeeper function enforces the canonical schema:
+        # - Tree dimensions → filters
+        # - Shot-level fields → top-level (NOT filters)
+        # - Grouping/comparison → top-level only
+        classification = self._normalize_and_validate_classification(classification)
         
         return classification
     
