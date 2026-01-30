@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 
 import json
 import os
@@ -19,7 +19,7 @@ class TennisChatAgentEmbeddingQALocal:
     """
     
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-    # VAGUE TERM â†’ METRIC MAPPING SYSTEM
+    # VAGUE TERM -> METRIC MAPPING SYSTEM
     # Converts "vague" analytical terms into computable metric bundles
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
@@ -205,6 +205,24 @@ class TennisChatAgentEmbeddingQALocal:
     }
     
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # ONE-SHOT-PER-POINT TYPES - Shot types that occur exactly once per point
+    # These use point metadata and don't require rally parsing
+    #
+    # NOTE: METRIC_CONFIG['player_role'] indicates which shot type a metric uses:
+    #   player_role='server' → metric about THE SERVE (uses serve_info metadata)
+    #   player_role='returner' → metric about THE RETURN (uses return_info metadata)
+    #   player_role='winner' → metric about THE WINNING SHOT (uses winning_shot metadata)
+    #   player_role='error' → metric about THE ERROR SHOT (uses winning_shot metadata)
+    #   player_role='performer' or 'both' → rally analysis (requires parsing multiple shots)
+    #
+    # "player_role" is a misnomer - it actually indicates DATA SOURCE (which shot type)
+    ONE_SHOT_TYPES = {
+        'server',    # SERVE shot - one per point
+        'returner',  # RETURN shot - one per point
+        'winner',    # WINNING shot - one per point
+        'error'      # ERROR shot - one per point (also uses winning_shot metadata)
+    }
+    
     # TREE-LEVEL DIMENSIONS - Filters handled by tree (point-level metadata)
     # Used for: tree traversal, hybrid routing detection, filter promotion
     # Add new dimensions here to automatically support them throughout
@@ -213,7 +231,9 @@ class TennisChatAgentEmbeddingQALocal:
         'set',            # set number
         'point_score',    # 30-30, 15-40, etc.
         'serve_number',   # 1st or 2nd serve
-        'serve_target',   # wide, body, T
+        'serve_target',   # wide, body, T (serve that was in play)
+        'serve_direction', # same as serve_target
+        'return_depth',   # shallow, deep, very_deep (ONE per return point - in metadata)
         'court_side',     # deuce, ad
         'court_zone',     # net, baseline
         'rally_length',   # number of shots in rally
@@ -223,6 +243,10 @@ class TennisChatAgentEmbeddingQALocal:
         'game_number_in_set',  # game number within set
         'point_number_range',  # (min, max) tuple for temporal/segment analysis
         'player',         # specific player (when not "both")
+        'winning_shot_type',  # forehand, backhand, volley (shot that ended point - in metadata)
+        'winning_shot_direction',  # crosscourt, DTL (direction of winning shot - in metadata)
+        'winning_shot_outcome',  # winner, unforced_error, forced_error, ace, double_fault
+        'serve_plus_one_type',  # forehand, backhand, none (shot after serve - in metadata)
     }
     
     # SHOT-LEVEL ATTRIBUTES - These are NOT tree dimensions, must NOT be in filters
@@ -267,6 +291,7 @@ class TennisChatAgentEmbeddingQALocal:
         # Basic point outcomes
         'points_won',
         'points_count',         # Total count of filtered points (denominator)
+        'points_played',        # Alias for points_count (LLM sometimes generates this)
         'win_percentage',
         # Serve metrics
         'first_serve_pct',
@@ -619,12 +644,12 @@ class TennisChatAgentEmbeddingQALocal:
     SITUATION_CONFIG = {
         'break_point': {
             'detection_method': '_is_break_point_score',
-            'score_patterns': ['0-40', '15-40', '30-40', 'AD-OUT'],
+            'score_patterns': ['0-40', '15-40', '30-40', '40-AD', 'AD-OUT'],  # AD-OUT normalized to AD-40, but keep for reference
             'role_context': 'returner_advantage',
         },
         'game_point': {
             'detection_method': '_is_game_point_score',
-            'score_patterns': ['40-0', '40-15', '40-30', 'AD-IN'],
+            'score_patterns': ['40-0', '40-15', '40-30', 'AD-40', 'AD-IN'],  # AD-IN normalized to 40-AD, but keep for reference
             'role_context': 'server_advantage',
         },
         'set_point': {
@@ -657,22 +682,34 @@ class TennisChatAgentEmbeddingQALocal:
         'aliases': {
             # Common alternative representations
             'DEUCE': '40-40',
-            'ALL': None,  # Special marker: "30-all" â†’ use first value repeated
+            'ALL': None,  # Special marker: "30-all" â†' use first value repeated
             'ADVANTAGE': 'AD',
             'ADV': 'AD',
             'A': 'AD',
+            # Handle AD-OUT and AD-IN formats (tennis terminology)
+            'AD-OUT': 'AD-40',  # Advantage server (game point) = AD-40
+            'AD_OUT': 'AD-40',
+            'ADOUT': 'AD-40',
+            'AD-IN': '40-AD',   # Advantage returner (break point) = 40-AD
+            'AD_IN': '40-AD',
+            'ADIN': '40-AD',
+            # Handle OUT and IN as individual values (for parsing)
+            'OUT': '40',  # When used with AD: "AD-OUT" means server at AD, returner at 40
+            'IN': 'AD',   # When used with 40: "40-AD" means server at 40, returner at AD
         },
         'patterns': {
             # Regex patterns for detecting point scores in queries
             # Use \u2013 for en dash to support both hyphen and en dash in user input
-            'standard': r'(?:at\s+|when\s+)?(\d{1,2})[-\u2013](\d{1,2}|AD|all)',
-            'with_context': r'(?:at\s+|when\s+)?(\d{1,2})[-\u2013](\d{1,2}|AD|all)(?:\s+(?:points?|score))?',
+            # Added OUT and IN to support AD-OUT and AD-IN formats
+            'standard': r'(?:at\s+|when\s+)?(\d{1,2}|AD)[-\u2013](\d{1,2}|AD|all|OUT|IN)',
+            'with_context': r'(?:at\s+|when\s+)?(\d{1,2}|AD)[-\u2013](\d{1,2}|AD|all|OUT|IN)(?:\s+(?:points?|score))?',
         },
         'normalization_rules': {
             # How to normalize point scores for comparison
             'uppercase': True,
             'deuce_to_40_40': True,
             'handle_en_dash': True,  # Convert en dash to hyphen (-)
+            'handle_ad_out_in': True,  # Convert AD-OUT/AD-IN to AD-40/40-AD
         }
     }
     
@@ -705,6 +742,10 @@ class TennisChatAgentEmbeddingQALocal:
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # DOMAIN CONFIGURATION - Maps domains to their properties
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    # SHOT-LEVEL CONFIGURATION - For advanced shot sequence handlers
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    
     DOMAIN_CONFIG = {
         'serve': {
             'role': 'server',
@@ -1457,19 +1498,19 @@ class TennisChatAgentEmbeddingQALocal:
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # 
     # 'per_player_pct': Each player gets their own percentage
-    #   â†’ "Sinner: 58% (7/12), Medvedev: 33% (3/9)"
+    #   -> "Sinner: 58% (7/12), Medvedev: 33% (3/9)"
     #   Used for: first_serve_pct, serve_win_pct, return_pct, net_points_won
     #
     # 'aggregate_pct': Combined percentage across both players
-    #   â†’ "Overall: 47% (10/21)"
+    #   -> "Overall: 47% (10/21)"
     #   Used for: rare, mostly when explicitly combining
     #
     # 'count': Raw count per player
-    #   â†’ "Sinner: 15, Medvedev: 12"
+    #   -> "Sinner: 15, Medvedev: 12"
     #   Used for: aces, winners, errors, double_faults
     #
     # 'points_won': Win/loss distribution with percentages
-    #   â†’ "Sinner: 142 (50%), Medvedev: 141 (50%)"
+    #   -> "Sinner: 142 (50%), Medvedev: 141 (50%)"
     #   Used for: points_won, win_percentage
     # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     
@@ -1561,6 +1602,8 @@ class TennisChatAgentEmbeddingQALocal:
             "DEUCE" -> "40-40"
             "30-30" (en dash) -> "30-30"
             "40-AD" -> "40-AD"
+            "AD-OUT" -> "AD-40"
+            "AD-IN" -> "40-AD"
         """
         if not point_score:
             return ''
@@ -1575,6 +1618,31 @@ class TennisChatAgentEmbeddingQALocal:
         # Uppercase
         if self.POINT_SCORE_CONFIG['normalization_rules']['uppercase']:
             normalized = normalized.upper()
+        
+        # Handle AD-OUT and AD-IN formats first (before individual value replacement)
+        if self.POINT_SCORE_CONFIG['normalization_rules'].get('handle_ad_out_in', False):
+            # Check for full score patterns first
+            if 'AD-OUT' in normalized or 'AD_OUT' in normalized or 'ADOUT' in normalized:
+                normalized = normalized.replace('AD-OUT', 'AD-40').replace('AD_OUT', 'AD-40').replace('ADOUT', 'AD-40')
+            elif 'AD-IN' in normalized or 'AD_IN' in normalized or 'ADIN' in normalized:
+                normalized = normalized.replace('AD-IN', '40-AD').replace('AD_IN', '40-AD').replace('ADIN', '40-AD')
+            else:
+                # Handle individual OUT/IN values in score format (e.g., "AD-OUT" parsed as "AD" and "OUT")
+                # This handles cases where regex extracts them separately
+                import re
+                score_match = re.match(r'(\d+|AD)[-\u2013](OUT|IN)', normalized)
+                if score_match:
+                    p1, p2 = score_match.groups()
+                    if p1 == 'AD' and p2 == 'OUT':
+                        normalized = 'AD-40'
+                    elif p1 == 'AD' and p2 == 'IN':
+                        normalized = '40-AD'
+                    elif p1.isdigit() and p2 == 'OUT':
+                        # e.g., "40-OUT" -> "40-40" (not valid, but handle gracefully)
+                        normalized = f"{p1}-40"
+                    elif p1.isdigit() and p2 == 'IN':
+                        # e.g., "40-IN" -> "40-AD"
+                        normalized = f"{p1}-AD"
         
         # Apply aliases (e.g., DEUCE -> 40-40)
         if self.POINT_SCORE_CONFIG['normalization_rules']['deuce_to_40_40']:
@@ -2192,46 +2260,38 @@ class TennisChatAgentEmbeddingQALocal:
         if "sinner" in question_lower:
             idx = question_lower.find("sinner")
             snippet = question_lower[idx:idx+15]
-            print(f"[FIX-PLAYER-ROLE] Apostrophe debug: '{snippet}' | bytes: {[hex(ord(c)) for c in snippet]}")
-        print(f"[FIX-PLAYER-ROLE] Normalized: '{question_lower[:60]}...' | Current player: {filters.get('player')}")
         
         # Pattern: "[Player]'s return/service games"
         # This indicates the player is the RETURNER/SERVER, not just a filter
         # NOTE: Patterns are ordered from most specific to least specific
         # After normalization, all apostrophes are converted to straight quote '
         patterns = [
-            # "On Sinner's return games" â†’ player=Sinner, role=returner (most specific)
+            # "On Sinner's return games" -> player=Sinner, role=returner (most specific)
             (r"(?:on\s+)?(\w+)'s\s+return\s+(?:games?|points?)", 'returner'),
-            # "On Sinner's service/serve games" â†’ player=Sinner, role=server
+            # "On Sinner's service/serve games" -> player=Sinner, role=server
             (r"(?:on\s+)?(\w+)'s\s+(?:service|serve)\s+(?:games?|points?)", 'server'),
-            # "On Sinner's return" (without games/points) â†’ player=Sinner, role=returner
+            # "On Sinner's return" (without games/points) -> player=Sinner, role=returner
             (r"on\s+(\w+)'s\s+return(?:\s|$|,)", 'returner'),
-            # "On Sinner's serve" (without games/points) â†’ player=Sinner, role=server
+            # "On Sinner's serve" (without games/points) -> player=Sinner, role=server
             (r"on\s+(\w+)'s\s+(?:service|serve)(?:\s|$|,)", 'server'),
-            # "When Sinner returns" â†’ player=Sinner, role=returner
+            # "When Sinner returns" -> player=Sinner, role=returner
             (r"when\s+(\w+)\s+returns?", 'returner'),
-            # "When Sinner serves" â†’ player=Sinner, role=server
+            # "When Sinner serves" -> player=Sinner, role=server
             (r"when\s+(\w+)\s+serves?", 'server'),
-            # "Sinner returning" or "Sinner on return" â†’ player=Sinner, role=returner
+            # "Sinner returning" or "Sinner on return" -> player=Sinner, role=returner
             (r"(\w+)\s+(?:returning|on\s+return)", 'returner'),
-            # "Sinner serving" or "Sinner on serve" â†’ player=Sinner, role=server
+            # "Sinner serving" or "Sinner on serve" -> player=Sinner, role=server
             (r"(\w+)\s+(?:serving|on\s+serve)", 'server'),
         ]
         
         # Debug: Test first pattern explicitly
         test_pattern = r"(?:on\s+)?(\w+)'s\s+return\s+(?:games?|points?)"
         test_match = re.search(test_pattern, question_lower)
-        print(f"[FIX-PLAYER-ROLE] Test match for return pattern: {test_match}")
-        if test_match:
-            print(f"[FIX-PLAYER-ROLE] Test match groups: {test_match.groups()}")
         
-        print(f"[FIX-PLAYER-ROLE] Testing {len(patterns)} patterns...")
         for i, (pattern, role) in enumerate(patterns):
             match = re.search(pattern, question_lower)
-            print(f"[FIX-PLAYER-ROLE] Pattern {i+1} ({role}): match={match is not None}")
             if match:
                 player_name_raw = match.group(1).strip()
-                print(f"[FIX-PLAYER-ROLE] Pattern matched! Found '{player_name_raw}' with role '{role}'")
                 
                 # Try to match against known player names
                 player1 = self.player1 if hasattr(self, 'player1') else None
@@ -2254,11 +2314,10 @@ class TennisChatAgentEmbeddingQALocal:
                     if not current_player or (current_player and current_player.lower() == 'both'):
                         filters['player'] = matched_player
                         filters['role'] = role
-                        print(f"[FIX-PLAYER-ROLE] Detected '{player_name_raw}'s {role} games' -> player={matched_player}, role={role}")
-                    else:
-                        print(f"[FIX-PLAYER-ROLE] Skipping - player already set to '{current_player}'")
+                    # else: Player already set, skip
                 else:
-                    print(f"[FIX-PLAYER-ROLE] Pattern matched but couldn't resolve '{player_name_raw}' to known player (p1={player1}, p2={player2})")
+                    # Pattern matched but couldn't resolve player - continue to next pattern
+                    continue
                 break
         
         classification['filters'] = filters
@@ -2373,7 +2432,7 @@ class TennisChatAgentEmbeddingQALocal:
                         'context': context
                     }
         
-        # Force group_by if term has special grouping (e.g., momentum â†’ by sets)
+        # Force group_by if term has special grouping (e.g., momentum -> by sets)
         if 'group_by' in term_config and not classification.get('group_by'):
             classification['group_by'] = term_config['group_by']
             print(f"[VAGUE-RESOLVE] Forcing group_by: {term_config['group_by']}")
@@ -3698,8 +3757,8 @@ class TennisChatAgentEmbeddingQALocal:
         # === INDICATOR 6: Net points, approaches, net statistics ===
         # Questions about "net points", "approach", "approaching net" are shot-level stats from embeddings
         # Volley routing rule:
-        # - If "volley" is used as a filter (e.g., "all volleys", "volleys hit") â†’ shot-level
-        # - If "volley" is used as a label for the winning shot only (e.g., "volley winners") â†’ point-level
+        # - If "volley" is used as a filter (e.g., "all volleys", "volleys hit") -> shot-level
+        # - If "volley" is used as a label for the winning shot only (e.g., "volley winners") -> point-level
         #   BUT only if the tree explicitly tracks whether the point-ending shot was a volley
         # Safer rule: Unless the tree explicitly tracks point-ending volleys, treat all volley queries as shot-level
         net_keywords = [
@@ -4880,8 +4939,8 @@ class TennisChatAgentEmbeddingQALocal:
         Extract comprehensive game/set information from score string.
         
         Handles scores like:
-        - "0-0 1-2 15-30" â†’ set 1, game 4 in set (1+2+1), game 4 overall
-        - "1-1 3-4 40-30" â†’ set 3, game 8 in set (3+4+1), game 8 + prev sets overall
+        - "0-0 1-2 15-30" -> set 1, game 4 in set (1+2+1), game 4 overall
+        - "1-1 3-4 40-30" -> set 3, game 8 in set (3+4+1), game 8 + prev sets overall
         
         Returns:
             {
@@ -7183,7 +7242,7 @@ class TennisChatAgentEmbeddingQALocal:
                 
                 # Only force the relevant player's chunks
                 if player_mentioned:
-                    # FLIP logic for serve-return questions: if asking about X's serve â†’ need OTHER player's returns
+                    # FLIP logic for serve-return questions: if asking about X's serve -> need OTHER player's returns
                     if is_serve_return_question:
                         # If server is mentioned, get the OTHER player's return stats
                         if player_mentioned.lower() == self.player1.lower():
@@ -7605,7 +7664,7 @@ class TennisChatAgentEmbeddingQALocal:
             elif "total" in q or "overall" in q:
                 return "both"  # Need both serve and return for complete totals
             else:
-                # No keyword â†’ Default = Return side (converted), because that's most common in questions
+                # No keyword -> Default = Return side (converted), because that's most common in questions
                 return f"{player_prefix.replace('serve', 'return')}_statistics"
         
         # --- GAME POINTS (GP) ---
@@ -7629,7 +7688,7 @@ class TennisChatAgentEmbeddingQALocal:
             elif "total" in q or "overall" in q or "each player" in q or "both player" in q:
                 return "both"  # Need both serve and return for complete totals
             else:
-                # No keyword â†’ Default = Serve side (Game Pts won), because that's the most natural reading
+                # No keyword -> Default = Serve side (Game Pts won), because that's the most natural reading
                 return f"{player_prefix}_statistics"
         
         # --- DEUCE POINTS ---
@@ -7641,7 +7700,7 @@ class TennisChatAgentEmbeddingQALocal:
             elif "each player" in q or "both player" in q:
                 return "both"  # Need both serve and return for "each player" questions
             else:
-                # No keyword â†’ Need both, since "deuce points" could mean either. Safest = "both"
+                # No keyword -> Need both, since "deuce points" could mean either. Safest = "both"
                 return "both"
         
         return "unknown"
@@ -7942,7 +8001,7 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
 - Every point ends with: "[Point won by: PLAYER_NAME]"
 - Use this tag to determine who won each point - don't guess!
 - To determine game outcomes: count sequential point winners
-- Example: If Points 204-207 all show "[Point won by: Alcaraz]" â†’ Alcaraz won all 4 points
+- Example: If Points 204-207 all show "[Point won by: Alcaraz]" -> Alcaraz won all 4 points
 
 **RULE #4: Each Shot Shows Who Hit It**
 - The FIRST shot in a point is ALWAYS by the Server (from the header)
@@ -7968,14 +8027,14 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
 
 **RULE #6: TENNIS SET SCORING - CRITICAL FOR SET/GAME QUESTIONS**
 - A set is won by the first player to win 6 games (with a 2-game margin), or 7-6 in a tiebreak
-- IMPORTANT: If a player is leading 5-4 and wins the next game â†’ They win the set 6-4 (NOT 5-5!)
+- IMPORTANT: If a player is leading 5-4 and wins the next game -> They win the set 6-4 (NOT 5-5!)
 - IMPORTANT: If a set is tied 5-5, the next game makes it 6-5 (NOT the end of the set)
-- IMPORTANT: If a player is leading 6-5 and wins the next game â†’ They win the set 7-5
-- IMPORTANT: If a set is tied 6-6 â†’ Tiebreak is played
+- IMPORTANT: If a player is leading 6-5 and wins the next game -> They win the set 7-5
+- IMPORTANT: If a set is tied 6-6 -> Tiebreak is played
 - Examples:
-  * Leading 5-4, break serve â†’ Set ends 6-4 âœ“
-  * Tied 5-5, hold serve â†’ Score becomes 6-5 (set continues) âœ“
-  * Leading 6-5, hold serve â†’ Set ends 7-5 âœ“
+  * Leading 5-4, break serve -> Set ends 6-4 âœ“
+  * Tied 5-5, hold serve -> Score becomes 6-5 (set continues) âœ“
+  * Leading 6-5, hold serve -> Set ends 7-5 âœ“
 
 **RULE #7: MATCH FORMAT SCORING - WHICH SET ARE WE IN?**
 - Best-of-3 matches: First to win 2 sets (men's non-Slams, all women's matches)
@@ -7993,10 +8052,10 @@ IMPORTANT: Do not use emojis in your response. Use plain text only.
 - DO NOT say "the match ended 3-1 after 4 sets" if you see 2-2 scoring!
 
 **CRITICAL EXAMPLE - Tracking Games Through Server Changes:**
-Game 9 ends at: "Score: 0-2 5-3" â†’ Player serving is DOWN 5-3 in games, opponent LEADS 5-3
-Player leading 5-3 LOSES Game 9 â†’ Score becomes 5-4 (still leading, but by less)
-Game 10 starts at: "Score: 2-0 4-5" â†’ Player serving is DOWN 4-5 in games, opponent LEADS 5-4
-Player leading 5-4 WINS Game 10 â†’ Score becomes 6-4 â†’ SET OVER! âœ“
+Game 9 ends at: "Score: 0-2 5-3" -> Player serving is DOWN 5-3 in games, opponent LEADS 5-3
+Player leading 5-3 LOSES Game 9 -> Score becomes 5-4 (still leading, but by less)
+Game 10 starts at: "Score: 2-0 4-5" -> Player serving is DOWN 4-5 in games, opponent LEADS 5-4
+Player leading 5-4 WINS Game 10 -> Score becomes 6-4 -> SET OVER! âœ“
 **DO NOT say "5-5" - when you see the set score jump from "0-2"/"2-0" to "1-2", the set ENDED!**
 
 IMPORTANT INSTRUCTIONS FOR STATISTICAL QUESTIONS:
@@ -8113,8 +8172,8 @@ Always stop at the highest-priority source available. Do not combine across diff
 - Always make the separation explicit ("X on serve, Y on return, Z total")
 
 **General rule of thumb:**
-- Break points â†’ choose one side only (serve or return), depending on the question
-- Game points & Deuce points â†’ always combine serve and return values, and provide a total
+- Break points -> choose one side only (serve or return), depending on the question
+- Game points & Deuce points -> always combine serve and return values, and provide a total
 
 - **If a question asks generally** ("How many X points did a player have/win?") without specifying serve vs. return, assume they want the combined total
 
@@ -8165,12 +8224,12 @@ Always stop at the highest-priority source available. Do not combine across diff
 - **RECOGNIZING CONDITIONAL QUESTIONS**: Look for both explicit and implied conditions:
   - **Explicit**: "after losing key points", "when rallies got longer", "following breaks of serve", "in tight moments"
   - **Implied**: Questions with situational context that require PBP analysis:
-    - "How did the player react under pressure?" â†’ implies pressure points â†’ needs PBP
-    - "Did rally length change in critical games?" â†’ implies game-specific context â†’ needs PBP
-    - "Performance on important points?" â†’ implies key points â†’ needs PBP
-    - "In tight moments?" â†’ implies close scores, pressure situations â†’ needs PBP
-    - "Effectiveness on big points?" â†’ implies key points â†’ needs PBP
-    - "During crucial stages?" â†’ implies specific game/set situations â†’ needs PBP
+    - "How did the player react under pressure?" -> implies pressure points -> needs PBP
+    - "Did rally length change in critical games?" -> implies game-specific context -> needs PBP
+    - "Performance on important points?" -> implies key points -> needs PBP
+    - "In tight moments?" -> implies close scores, pressure situations -> needs PBP
+    - "Effectiveness on big points?" -> implies key points -> needs PBP
+    - "During crucial stages?" -> implies specific game/set situations -> needs PBP
 
 - **MULTI-STEP PROCESS** (YOU MUST FOLLOW THESE STEPS - DO NOT SKIP TO GENERAL STATISTICS):
   1. **Identify the condition**: What is the triggering event? (e.g., "after losing key points", "when rallies got longer", "after breaks of serve")
@@ -8269,11 +8328,11 @@ Always stop at the highest-priority source available. Do not combine across diff
 - Each point explicitly shows "[Point won by: PLAYER_NAME]" - use this to count game outcomes
 - When asked about a specific set, you'll only receive data for that set
 - If you see mixed sets in a chunk, filter by matching score patterns
-- **Example:** Points 204-207 all show "[Point won by: Alcaraz]" at score 0-0, 0-15, 0-30, 0-40 â†’ Alcaraz won 4 straight points â†’ Broke serve â†’ Won set 6-4
+- **Example:** Points 204-207 all show "[Point won by: Alcaraz]" at score 0-0, 0-15, 0-30, 0-40 -> Alcaraz won 4 straight points -> Broke serve -> Won set 6-4
 
 **IMPORTANT DISTINCTION:**
-- "Forehand/Backhand" alone usually means groundstrokes â†’ Use SHOT DIRECTION
-- "Forehand/Backhand side" means all shots from that side â†’ Use SHOT STATISTICS
+- "Forehand/Backhand" alone usually means groundstrokes -> Use SHOT DIRECTION
+- "Forehand/Backhand side" means all shots from that side -> Use SHOT STATISTICS
 
 **SHOT DIRECTION CLARIFICATION:**
 - Inside-out = forehand hit crosscourt from the backhand corner
@@ -8448,7 +8507,7 @@ Answer:"""
                 'handedness': 'left' | 'right' or None  # For direction mapping
             },
             'metrics': ['winners', 'forced_errors', 'induced_fe', 'aces', etc.],
-            'chain': {'from_shot': str, 'to_outcome': str} or None  # For Aâ†’B queries
+            'chain': {'from_shot': str, 'to_outcome': str} or None  # For A->B queries
         }
         """
         query_lower = query.lower()
@@ -8503,14 +8562,14 @@ Answer:"""
         Detect the category of query to route appropriately.
         
         Categories:
-        - 'analytical': Count, percentage, specific stats â†’ PBP parsing
-        - 'comparative': Trends, changes, evolution â†’ PBP + LLM synthesis
-        - 'narrative': Summary, story, what happened â†’ NL retrieval + LLM
+        - 'analytical': Count, percentage, specific stats -> PBP parsing
+        - 'comparative': Trends, changes, evolution -> PBP + LLM synthesis
+        - 'narrative': Summary, story, what happened -> NL retrieval + LLM
         """
         # CRITICAL: Net points routing logic
-        # - General net points questions â†’ narrative
-        # - Serve and volley questions â†’ narrative (net points)
-        # - Questions about specific net shots (volleys, half volleys, overheads, swinging volleys) â†’ analytical
+        # - General net points questions -> narrative
+        # - Serve and volley questions -> narrative (net points)
+        # - Questions about specific net shots (volleys, half volleys, overheads, swinging volleys) -> analytical
         net_points_keywords = ['net points', 'net approaches', 'serve and volley', 'serve-and-volley', 's-and-v', 'at the net', 'net play', 
         'at net', 'net point', 'net points won', 'net points lost', 'net percentage', 'net points won percentage', 'net points percentage', 'net']
         net_shot_keywords = ['volley', 'volleys', 'half volley', 'half volleys', 'half-volley', 'half-volleys', 
@@ -8519,14 +8578,14 @@ Answer:"""
         has_net_points = any(kw in query_lower for kw in net_points_keywords)
         has_net_shots = any(kw in query_lower for kw in net_shot_keywords)
         
-        # If question mentions net points or serve-and-volley â†’ narrative (except if asking about specific net shots)
+        # If question mentions net points or serve-and-volley -> narrative (except if asking about specific net shots)
         if has_net_points or 'serve and volley' in query_lower or 'serve-and-volley' in query_lower:
             # BUT: If asking about specific net shots (volleys, half volleys, overheads), route to analytical
             if has_net_shots and not has_net_points:
-                # Only about net shots, not general net points â†’ analytical
+                # Only about net shots, not general net points -> analytical
                 pass  # Continue to default analytical
             else:
-                # General net points or serve-and-volley â†’ narrative
+                # General net points or serve-and-volley -> narrative
                 return 'narrative'
         
         # CRITICAL: Questions about "returnable" serves must go to narrative
@@ -8614,10 +8673,10 @@ Answer:"""
         Detect how results should be grouped based on inventory values.
         
         Examples:
-        - "by rally length category" â†’ 'rally_length_category'
-        - "in sets 2,4 vs sets 1,3,5" â†’ 'set_groups'
-        - "deuce vs ad court" â†’ 'court_side'
-        - "1st serve vs 2nd serve" â†’ 'serve_number'
+        - "by rally length category" -> 'rally_length_category'
+        - "in sets 2,4 vs sets 1,3,5" -> 'set_groups'
+        - "deuce vs ad court" -> 'court_side'
+        - "1st serve vs 2nd serve" -> 'serve_number'
         """
         inventory = getattr(self, 'match_filter_inventory', {})
         
@@ -8863,15 +8922,15 @@ Answer:"""
                 print(f"[DETECT-FILTERS] No direct situation match")
         
         # === POINT SCORE FILTER (e.g., "at 30-30", "at 15-40") ===
-        # Detect specific point scores like "30-30", "15-40", "40-AD"
+        # Detect specific point scores like "30-30", "15-40", "40-AD", "AD-OUT", "AD-IN"
         # NOTE: For multiple conditions (e.g., "30-30 and deuce combined"), LLM handles via metrics_parsed
         # Use POINT_SCORE_CONFIG for validation and normalization
         point_score_pattern = self.POINT_SCORE_CONFIG['patterns']['with_context']
         point_score_match = re.search(point_score_pattern, query, re.IGNORECASE)
         if point_score_match:
             p1, p2 = point_score_match.groups()
-            # Validate using config
-            valid_scores = set(self.POINT_SCORE_CONFIG['valid_values'] + ['all'])
+            # Validate using config (include OUT and IN for AD-OUT/AD-IN formats)
+            valid_scores = set(self.POINT_SCORE_CONFIG['valid_values'] + ['all', 'OUT', 'IN'])
             valid_scores_lower = {v.lower() for v in valid_scores}
             
             if p1.lower() in valid_scores_lower and p2.lower() in valid_scores_lower:
@@ -8879,15 +8938,13 @@ Answer:"""
                 if p2.lower() == 'all':
                     p2 = p1
                 
-                # Normalize using config rules
-                filters['point_score'] = f"{p1}-{p2}".upper()
+                # Build raw score string for normalization
+                raw_score = f"{p1}-{p2}".upper()
                 
-                # Apply aliases from config (e.g., DEUCE -> 40-40)
-                for alias, replacement in self.POINT_SCORE_CONFIG['aliases'].items():
-                    if replacement and alias in filters['point_score']:
-                        filters['point_score'] = filters['point_score'].replace(alias, replacement)
+                # Normalize using config rules (handles AD-OUT -> AD-40, AD-IN -> 40-AD)
+                filters['point_score'] = self._normalize_point_score(raw_score)
                 
-                print(f"[DETECT-FILTERS] *** FOUND point_score: {filters['point_score']} ***")
+                print(f"[DETECT-FILTERS] *** FOUND point_score: {filters['point_score']} (from raw: {raw_score}) ***")
         
         # === GENERIC ROLE DETECTION (for ANY situation) ===
         # Detect role from keywords - works for break points, game points, set points, etc.
@@ -8900,23 +8957,23 @@ Answer:"""
                 print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with BOTH defensive and offensive keywords - leaving role=None (will show both perspectives)")
             elif has_defensive_kw:
                 filters['role'] = 'server'
-                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with defensive keywords â†’ role='server'")
+                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with defensive keywords -> role='server'")
             elif has_offensive_kw:
                 filters['role'] = 'returner'
-                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with offensive keywords â†’ role='returner'")
+                print(f"[DETECT-FILTERS] Situation '{filters['situation']}' with offensive keywords -> role='returner'")
         
         # === ROLE DETECTION FOR NON-SITUATION QUERIES ===
-        # Service games â†’ role=server, Return games â†’ role=returner
+        # Service games -> role=server, Return games -> role=returner
         if not filters.get('situation') and not filters.get('role'):
             if 'service game' in query_lower or ('service' in query_lower and 'game' in query_lower):
                 filters['role'] = 'server'
-                print(f"[DETECT-FILTERS] Service game query â†’ role='server'")
+                print(f"[DETECT-FILTERS] Service game query -> role='server'")
             elif 'return game' in query_lower or ('return' in query_lower and 'game' in query_lower):
                 filters['role'] = 'returner'
-                print(f"[DETECT-FILTERS] Return game query â†’ role='returner'")
+                print(f"[DETECT-FILTERS] Return game query -> role='returner'")
             elif 'break serve' in query_lower or 'break of serve' in query_lower:
                 filters['role'] = 'returner'
-                print(f"[DETECT-FILTERS] Break serve query â†’ role='returner'")
+                print(f"[DETECT-FILTERS] Break serve query -> role='returner'")
         
         # Set filter - single set (Query Plan will handle multi-set comparisons)
         set_match = re.search(r'(\d)(?:st|nd|rd|th)?\s*set|set\s*(\d)', query_lower)
@@ -9000,11 +9057,11 @@ Answer:"""
                     break
         
         # Rally length filter - detect exact, minimum, or threshold
-        # "beyond 6 shots" / "more than 6" / "over 6" â†’ '>6'
-        # "at least 6 shots" / "6+ shots" / "6 or more shots" â†’ '>=6'
-        # "6 or under/fewer/less shots" â†’ '<=6'
-        # "under 6 shots" / "less than 6" / "fewer than 6" â†’ '<6'
-        # "6 shot rallies" â†’ exact 6
+        # "beyond 6 shots" / "more than 6" / "over 6" -> '>6'
+        # "at least 6 shots" / "6+ shots" / "6 or more shots" -> '>=6'
+        # "6 or under/fewer/less shots" -> '<=6'
+        # "under 6 shots" / "less than 6" / "fewer than 6" -> '<6'
+        # "6 shot rallies" -> exact 6
         beyond_match = re.search(r'(?:beyond|more than|longer than|over|exceeding|extended beyond)\s+(\d+)', query_lower)
         or_more_match = re.search(r'(\d+)\s+or\s+more\s*(?:shot|stroke)?', query_lower)
         or_under_match = re.search(r'(\d+)\s+or\s+(?:under|fewer|less)\s*(?:shot|stroke)?', query_lower)
@@ -9079,7 +9136,7 @@ Answer:"""
             known_serve_targets = inventory.get('serve_targets', [])
             
             # Check query for serve target aliases (maps user input to canonical)
-            # Uses SHOT_ALIASES: "down the t" â†’ "t", "out wide" â†’ "wide", "to body" â†’ "body"
+            # Uses SHOT_ALIASES: "down the t" -> "t", "out wide" -> "wide", "to body" -> "body"
             serve_target_aliases = {
                 't': 't', 'down the t': 't', 'center': 't', 'down t': 't',
                 'wide': 'wide', 'out wide': 'wide', 'wide serve': 'wide',
@@ -9109,8 +9166,8 @@ Answer:"""
         # === SHOT NUMBER (parsed sequence position) ===
         # PARSED SEQUENCE: shot_number=1 (serve), shot_number=2 (return), shot_number=3 (server response)
         # TENNIS TERMINOLOGY: Rally shot 1 = return (parsed shot_number=2)
-        # "return winner" â†’ shot_number=2 (return in parsed sequence)
-        # "serve+1 winner" â†’ shot_number=3 (server's first groundstroke)
+        # "return winner" -> shot_number=2 (return in parsed sequence)
+        # "serve+1 winner" -> shot_number=3 (server's first groundstroke)
         if 'serve+1' in query_lower or 'serve + 1' in query_lower or 'third ball' in query_lower or '3rd ball' in query_lower:
             filters['shot_number'] = 3  # Server's first groundstroke (rally shot 2)
             print(f"[DETECT-FILTERS] Set shot_number=3 (serve+1)")
@@ -9363,7 +9420,7 @@ Answer:"""
     
     def _detect_chain_logic(self, query_lower: str) -> Dict[str, str]:
         """
-        Detect chain/sequence logic: Shot A â†’ Outcome B
+        Detect chain/sequence logic: Shot A -> Outcome B
         MCP: Critical for understanding "slice led to error" type queries.
         
         METADATA-DRIVEN: Uses inventory for shot types and outcomes.
@@ -9441,8 +9498,8 @@ Answer:"""
         â””â”€ filter: situation=break_point
            â””â”€ filter: serve_target=t
               â””â”€ group: serve_number
-                 â”œâ”€ leaf: serve_number=1st â†’ win_percentage
-                 â””â”€ leaf: serve_number=2nd â†’ win_percentage
+                 â”œâ”€ leaf: serve_number=1st -> win_percentage
+                 â””â”€ leaf: serve_number=2nd -> win_percentage
         """
         filters = classification.get('filters', {})
         metrics = classification.get('metrics', ['points_won'])
@@ -9838,11 +9895,29 @@ Answer:"""
                     elif situation_b == 'non_break_point':
                         passes_filter = not self._is_break_point_score(score)
                 # Regular situation filters - GENERIC using SITUATION_CONFIG
+                # Handle both single values and lists (for situation groups)
+                elif isinstance(value, list):
+                    # List of situations - check if ANY match (OR logic)
+                    passes_filter = False
+                    for sit in value:
+                        if sit in self.SITUATION_CONFIG:
+                            if self._check_situation(sit, score):
+                                passes_filter = True
+                                break
+                        elif sit == 'tiebreak':
+                            # Fallback for tiebreak
+                            if 'tiebreak' in score.lower() or self._is_tiebreak_point(score):
+                                passes_filter = True
+                                break
                 elif value in self.SITUATION_CONFIG:
                     passes_filter = self._check_situation(value, score)
                     # Fallback for tiebreak (check string too)
                     if value == 'tiebreak' and not passes_filter:
                         passes_filter = 'tiebreak' in score.lower() or self._is_tiebreak_point(score)
+                else:
+                    # Unknown situation value - don't pass filter
+                    passes_filter = False
+                    print(f"[WARN] Unknown situation value: {value} (type: {type(value)})")
             
             elif dimension == 'set' or dimension == 'sets':
                 # Prefer metadata set_number if available, otherwise parse from score
@@ -10025,8 +10100,8 @@ Answer:"""
                     for score_val in value:
                         value_normalized = self._normalize_point_score(score_val)
                         if _point_score_matches(value_normalized, actual_normalized, score):
-                            passes_filter = True
-                            break
+                                passes_filter = True
+                                break
                 else:
                     # Single value: exact match
                     value_normalized = self._normalize_point_score(value)
@@ -10084,8 +10159,8 @@ Answer:"""
                 elif group_by == 'player' and ('points_won' in metrics or 'win_percentage' in metrics or analysis_type in ['ratio', 'comparison']):
                     passes_filter = self._names_match_robust(value, point_winner)
                 # For shot-based groupings (shot_type/direction/etc.), use metric's player_role to determine who to filter by
-                # "Sinner's forehand winners" â†’ player_role='winner' â†’ filter to points Sinner won
-                # "Sinner's backhand errors" â†’ player_role='error' â†’ filter to points where Sinner hit the error
+                # "Sinner's forehand winners" -> player_role='winner' -> filter to points Sinner won
+                # "Sinner's backhand errors" -> player_role='error' -> filter to points where Sinner hit the error
                 # GENERIC: For ALL other cases (including shot-level groupings), use metric config
                 # NO HARDCODED LISTS - driven by METRIC_CONFIG and count_filter
                 else:
@@ -10140,12 +10215,12 @@ Answer:"""
                         player_field_used = 'involved'
                     
                     # DEBUG: Show player matching logic for first few points
-                    point_num = point_data.get('point_number', '?')
-                    if not hasattr(self, '_player_filter_debug_count'):
-                        self._player_filter_debug_count = 0
-                    if self._player_filter_debug_count < 5:
-                        self._player_filter_debug_count += 1
-                        print(f"[PLAYER-FILTER-DEBUG] Point {point_num} | player='{value}' | metric='{primary_metric}' | count_filter='{count_filter}' | player_field='{player_field_used}' | Match: {passes_filter}")
+                        point_num = point_data.get('point_number', '?')
+                        if not hasattr(self, '_player_filter_debug_count'):
+                            self._player_filter_debug_count = 0
+                        if self._player_filter_debug_count < 5:
+                            self._player_filter_debug_count += 1
+                        # Removed console print - point information only shown to user on screen
             
             # For grouping dimensions (when used as filter)
             elif dimension == 'serve_direction':
@@ -11030,11 +11105,130 @@ Answer:"""
         
         UNIFIED PATH: Always track BOTH players. Player filter applied at end.
         This ensures single-player and both-player queries use identical calculation logic.
+        
+        GENERIC GROUP BY: If classification has a tree-level group_by dimension,
+        points are grouped by that dimension and metrics computed per group.
         """
+        from collections import defaultdict
         
         metrics = classification.get('metrics', ['points_won'])
         filters = classification.get('filters', {})
         player_filter = filters.get('player')
+        
+        # ============================================================
+        # GENERIC GROUP BY SUPPORT
+        # When group_by is a tree-level dimension, compute metrics per group
+        # ============================================================
+        group_by = classification.get('group_by')
+        all_group_by = classification.get('all_group_by', [])  # For multi-dimensional
+        
+        # Check if we have a tree-level group_by that's NOT player (player is handled below)
+        # CRITICAL: Skip dimensions that are already in filters (they've been pre-filtered by query plan)
+        tree_group_by = None
+        if group_by and group_by in self.TREE_LEVEL_DIMENSIONS and group_by != 'player' and group_by not in filters:
+            tree_group_by = group_by
+        elif all_group_by:
+            # Check all_group_by for non-player tree dimensions NOT already filtered
+            for gb in all_group_by:
+                if gb in self.TREE_LEVEL_DIMENSIONS and gb != 'player' and gb not in filters:
+                    tree_group_by = gb
+                    break
+        
+        if tree_group_by and points:
+            print(f"[GROUP-BY] Computing metrics grouped by: {tree_group_by}")
+            
+            # Use GROUP_CONFIG for metadata paths (single source of truth)
+            group_config = self.GROUP_CONFIG.get(tree_group_by, {})
+            metadata_path = group_config.get('metadata_path')
+            normalize_fn = group_config.get('normalize')
+            
+            # Group points by the dimension from metadata
+            groups = defaultdict(list)
+            for pt in points:
+                # Ensure metadata is computed
+                if '_metadata' not in pt:
+                    pt['_metadata'] = self._get_point_metadata(pt)
+                
+                # Get group key from metadata using config path
+                meta = pt['_metadata']
+                group_key = None
+                
+                if metadata_path:
+                    # Navigate path from GROUP_CONFIG
+                    group_key = meta
+                    for key in metadata_path:
+                        if isinstance(group_key, dict):
+                            group_key = group_key.get(key)
+                        else:
+                            group_key = None
+                            break
+                else:
+                    # Direct access for dimensions without explicit path
+                    group_key = meta.get(tree_group_by)
+                
+                # Apply normalization if defined (e.g., 2 -> '2nd')
+                if group_key is not None and normalize_fn:
+                    try:
+                        group_key = normalize_fn(group_key)
+                    except:
+                        pass
+                
+                if group_key is None:
+                    group_key = 'unknown'
+                groups[str(group_key)].append(pt)
+            
+            # Compute metrics for EACH group (recursively, without group_by to avoid infinite loop)
+            grouped_results = {
+                'grouped_by': tree_group_by,
+                'groups': {},
+                'total_points': len(points),
+                'player1_name': self.player1,
+                'player2_name': self.player2
+            }
+            
+            # Create classification without group_by for recursive call
+            sub_classification = dict(classification)
+            sub_classification['group_by'] = None
+            sub_classification['all_group_by'] = []
+            
+            for group_value, group_points in groups.items():
+                if group_value == 'unknown':
+                    continue  # Skip unknown values
+                    
+                # Compute metrics for this group
+                sub_results = self._compute_leaf_metrics(group_points, sub_classification)
+                
+                # Extract key stats for this group
+                grouped_results['groups'][group_value] = {
+                    'count': len(group_points),
+                    'player1_wins': sub_results.get('player1_wins', 0),
+                    'player2_wins': sub_results.get('player2_wins', 0),
+                    'player1_pct': sub_results.get('player1_pct', 0),
+                    'player2_pct': sub_results.get('player2_pct', 0),
+                    'per_player_metrics': sub_results.get('per_player_metrics', {})
+                }
+            
+            print(f"[GROUP-BY] Found {len(grouped_results['groups'])} groups: {list(grouped_results['groups'].keys())}")
+            
+            # Also compute overall (ungrouped) metrics for context
+            overall_classification = dict(classification)
+            overall_classification['group_by'] = None
+            overall_classification['all_group_by'] = []
+            overall_results = self._compute_leaf_metrics(points, overall_classification)
+            
+            # Merge overall results with grouped results
+            grouped_results['per_player_metrics'] = overall_results.get('per_player_metrics', {})
+            grouped_results['metrics'] = overall_results.get('metrics', {})
+            grouped_results['player1_wins'] = overall_results.get('player1_wins', 0)
+            grouped_results['player2_wins'] = overall_results.get('player2_wins', 0)
+            grouped_results['player1_pct'] = overall_results.get('player1_pct', 0)
+            grouped_results['player2_pct'] = overall_results.get('player2_pct', 0)
+            
+            return grouped_results
+        
+        # ============================================================
+        # ORIGINAL LOGIC (no group_by or player-only group_by)
+        # ============================================================
         
         player1 = self.player1
         player2 = self.player2
@@ -12648,7 +12842,7 @@ Answer:"""
         if results.get('type') == 'filter':
             # Show filter narrowing
             response += f"{indent}**{results['dimension']}={results['value']}**: "
-            response += f"{results['points_before']} â†’ {results['points_after']} points\n"
+            response += f"{results['points_before']} -> {results['points_after']} points\n"
             
             if results.get('children'):
                 response += self._format_tree_results(results['children'], groups, metrics,
@@ -13163,7 +13357,7 @@ Answer:"""
                 for key in ['shot_type', 'shot_modifier', 'hand', 'direction']:
                     val = shot_data.get(key)
                     if val:
-                        # Split multi-word values: "forehand volley" â†’ ["forehand", "volley"]
+                        # Split multi-word values: "forehand volley" -> ["forehand", "volley"]
                         keywords.extend(val.lower().split())
             elif isinstance(shot_data, str):
                 # Split string into individual keywords
@@ -13181,6 +13375,86 @@ Answer:"""
         
         shot_a_keywords = normalize_shot(shot_a_raw)
         shot_b_keywords = normalize_shot(shot_b_raw)
+        
+        # CRITICAL: Extract Shot A attributes from chain_logic (for metadata-based matching)
+        # "When Federer hit X, did Nadal respond..." -> Shot A player = Federer, Shot B player = Nadal
+        shot_a_player = None
+        shot_a_shot_type = None
+        shot_a_direction = None
+        shot_a_depth = None
+        shot_a_spin = None
+        shot_a_phase = None  # NEW: serve, return, rally
+        
+        if isinstance(shot_a_raw, dict):
+            # Dict format: {player: "X", shot_type: "forehand", direction: "crosscourt", shot_phase: "return"}
+            shot_a_player = shot_a_raw.get('player')
+            shot_a_shot_type = shot_a_raw.get('shot_type')
+            shot_a_direction = shot_a_raw.get('direction')
+            shot_a_depth = shot_a_raw.get('depth')
+            shot_a_spin = shot_a_raw.get('spin')
+            shot_a_phase = shot_a_raw.get('shot_phase')  # NEW
+        elif isinstance(shot_a_raw, str):
+            # String format: "Federer's crosscourt forehand" - parse it using GROUP_CONFIG
+            shot_a_lower = shot_a_raw.lower()
+            
+            # Extract player name (before "'s" or "s'" or just the first name)
+            if "'s " in shot_a_lower or "s' " in shot_a_lower:
+                player_match = re.match(r"^([^']+)'s?", shot_a_lower)
+                if player_match:
+                    shot_a_player = player_match.group(1).strip()
+            
+            # Extract shot type from GROUP_CONFIG.shot_type
+            shot_type_config = self.GROUP_CONFIG.get('shot_type', {})
+            shot_type_branches = shot_type_config.get('default_branches', [])
+            shot_type_labels = shot_type_config.get('display_labels', {})
+            # Check both branch values and display labels
+            all_shot_types = list(set(shot_type_branches + list(shot_type_labels.keys())))
+            for st in all_shot_types:
+                if st.lower() in shot_a_lower:
+                    shot_a_shot_type = st
+                    break
+            
+            # Extract direction from GROUP_CONFIG.shot_direction
+            direction_config = self.GROUP_CONFIG.get('shot_direction', {})
+            direction_branches = direction_config.get('default_branches', [])
+            for d in direction_branches:
+                # Normalize: check with underscores, hyphens, and spaces
+                d_normalized = d.replace('_', ' ').replace('-', ' ')
+                if d_normalized in shot_a_lower or d.replace('_', '') in shot_a_lower.replace(' ', '').replace('-', ''):
+                    shot_a_direction = d
+                    break
+            
+            # Extract depth from GROUP_CONFIG.depth
+            depth_config = self.GROUP_CONFIG.get('depth', {})
+            depth_branches = depth_config.get('default_branches', [])
+            # Check longest first (to match "very deep" before "deep")
+            for depth in sorted(depth_branches, key=len, reverse=True):
+                depth_normalized = depth.replace('_', ' ')
+                if depth_normalized in shot_a_lower:
+                    shot_a_depth = depth
+                    break
+            
+            # Extract spin from GROUP_CONFIG.spin (if it exists)
+            spin_config = self.GROUP_CONFIG.get('spin', {})
+            spin_branches = spin_config.get('default_branches', [])
+            for spin in spin_branches:
+                if spin.lower() in shot_a_lower:
+                    shot_a_spin = spin
+                    break
+            
+            # NEW: Extract shot_phase (serve, return, rally)
+            if 'return' in shot_a_lower:
+                shot_a_phase = 'return'
+            elif 'serve' in shot_a_lower:
+                shot_a_phase = 'serve'
+            elif 'rally' in shot_a_lower:
+                shot_a_phase = 'rally'
+        
+        # Collect debug info for user response
+        debug_info = []
+        debug_info.append(f"Shot A player: {shot_a_player}, Shot B player (responder): {filters.get('player')}")
+        debug_info.append(f"Shot A metadata: type={shot_a_shot_type}, dir={shot_a_direction}, depth={shot_a_depth}, phase={shot_a_phase}")
+        debug_info.append(f"Shot A keywords (fallback): {shot_a_keywords}, Shot B keywords: {shot_b_keywords}")
         
         # CRITICAL: Parse Shot B for special cases
         # "unforced error from opponent" -> opponent's shot with unforced error outcome
@@ -13247,7 +13521,7 @@ Answer:"""
             shot_a_position = 4
         
         if shot_a_position:
-            print(f"[CHAIN] Shot A position filter: position {shot_a_position}")
+            debug_info.append(f"Shot A position filter: position {shot_a_position}")
         
         if not hasattr(self, 'point_by_point') or not self.point_by_point:
             return {'error': 'No point-by-point data available'}
@@ -13280,7 +13554,7 @@ Answer:"""
             rally_shots = self._parse_rally_sequence(point_text, server, returner)
             actual_shots = [s for s in rally_shots if s.get('outcome') != 'FAULT']
             
-            # Look for Shot A â†’ Shot B pattern
+            # Look for Shot A -> Shot B pattern
             for i, shot in enumerate(actual_shots[:-1]):
                 shot_desc = (shot.get('description') or '').lower()
                 shot_player = shot.get('player') or ''
@@ -13290,13 +13564,55 @@ Answer:"""
                 if shot_a_position and shot_position and shot_position != shot_a_position:
                     continue
                 
-                # Check if this is Shot A - ALL keywords must be present
-                shot_a_match = all(kw in shot_desc for kw in shot_a_keywords)
+                # Check if this is Shot A - Use METADATA-BASED matching first, fallback to keywords
+                # Metadata fields are already parsed by _parse_rally_sequence
+                shot_a_match = True
+                
+                # Check shot_type from metadata (e.g., 'forehand', 'backhand')
+                if shot_a_shot_type:
+                    shot_meta_type = shot.get('shot_type', '').lower() if shot.get('shot_type') else ''
+                    shot_a_match = shot_a_match and (shot_a_shot_type.lower() in shot_meta_type or shot_meta_type in shot_a_shot_type.lower())
+                
+                # Check direction from metadata (e.g., 'crosscourt', 'down_the_line')
+                if shot_a_match and shot_a_direction:
+                    shot_meta_dir = shot.get('direction', '').lower() if shot.get('direction') else ''
+                    # Normalize: 'crosscourt' matches 'cross_court', 'cc', etc.
+                    dir_normalized = shot_a_direction.lower().replace('_', '').replace('-', '').replace(' ', '')
+                    meta_normalized = shot_meta_dir.replace('_', '').replace('-', '').replace(' ', '')
+                    shot_a_match = shot_a_match and (dir_normalized in meta_normalized or meta_normalized in dir_normalized or shot_a_direction.lower() in shot_desc)
+                
+                # Check depth from metadata
+                if shot_a_match and shot_a_depth:
+                    shot_meta_depth = shot.get('depth', '').lower() if shot.get('depth') else ''
+                    shot_a_match = shot_a_match and (shot_a_depth.lower() in shot_meta_depth or shot_meta_depth in shot_a_depth.lower() or shot_a_depth.lower() in shot_desc)
+                
+                # Check spin from metadata
+                if shot_a_match and shot_a_spin:
+                    shot_meta_spin = shot.get('spin', '').lower() if shot.get('spin') else ''
+                    shot_a_match = shot_a_match and (shot_a_spin.lower() in shot_meta_spin or shot_meta_spin in shot_a_spin.lower() or shot_a_spin.lower() in shot_desc)
+                
+                # NEW: Check shot_phase from metadata (serve, return, rally)
+                if shot_a_match and shot_a_phase:
+                    # shot['outcome'] often includes "return", "serve", etc.
+                    shot_outcome = shot.get('outcome', '').lower() if shot.get('outcome') else ''
+                    # shot_desc also has phase info like "backhand return"
+                    shot_a_match = shot_a_match and (shot_a_phase.lower() in shot_desc or shot_a_phase.lower() in shot_outcome)
+                
+                # FALLBACK: If no metadata attributes specified, use keyword matching on description
+                if not any([shot_a_shot_type, shot_a_direction, shot_a_depth, shot_a_spin, shot_a_phase]) and shot_a_keywords:
+                    shot_a_match = all(kw in shot_desc for kw in shot_a_keywords)
                 
                 if shot_a_match:
-                    # Player filter for Shot A
-                    if player_filter and not self._names_match_robust(player_filter, shot_player):
+                    # Player filter for Shot A (use shot_a_player from chain_logic, NOT top-level player_filter!)
+                    # top-level player_filter = who responded (Shot B player)
+                    # shot_a_player = who hit Shot A (from chain_logic.shot_a.player)
+                    if shot_a_player and not self._names_match_robust(shot_a_player, shot_player):
                         continue
+                    
+                    # Debug: Log first few Shot A matches with metadata
+                    if total_shot_a < 3:
+                        shot_meta_info = f"type={shot.get('shot_type')}, dir={shot.get('direction')}, depth={shot.get('depth')}"
+                        debug_info.append(f"Shot A match #{total_shot_a+1}: '{shot_desc[:50]}' by {shot_player} | meta: {shot_meta_info}")
                     
                     # Serve target filter (wide, body, t)
                     if serve_target_filter:
@@ -13313,113 +13629,155 @@ Answer:"""
                     total_shot_a += 1
                     
                     # CRITICAL: Determine which shot to check for Shot B
-                    # If Shot A is a serve, "next shot" (or "very next shot") means serve + 1 (skip the return)
-                    # Otherwise, "next shot" means the immediate next shot
+                    # - If Shot B is by SAME player as Shot A → use +2 (opponent hits in between)
+                    # - If Shot B is by OPPONENT → use +1 (immediate next shot)
                     is_serve = 'serve' in shot_desc or '1st serve' in shot_desc or '2nd serve' in shot_desc
                     
+                    # Determine if we want same player or opponent for Shot B
+                    # CRITICAL: If Shot A is by a DIFFERENT player than player_filter, then Shot B is the response
+                    # E.g., "When Federer hit crosscourt forehand, how did Nadal respond?"
+                    # - shot_a_player = Federer, player_filter = Nadal
+                    # - Shot B is by Nadal (opponent of Shot A hitter), so step = 1
+                    if shot_a_player and player_filter:
+                        # Shot A has explicit player - check if it's the same as player_filter
+                        same_player_for_both = self._names_match_robust(shot_a_player, player_filter)
+                        # If Shot A is by player_filter, Shot B is also by player_filter (same player pattern)
+                        # If Shot A is by opponent, Shot B is by player_filter (response pattern)
+                        want_same_player = same_player_for_both and not shot_b_opponent
+                    else:
+                        # No explicit Shot A player - fall back to old logic
+                        want_same_player = player_filter and not shot_b_opponent
+                    step = 2 if want_same_player else 1
+                    
+                    # Special case: serve patterns always use +2 to get serve+1
                     if is_serve and player_filter:
-                        # Serve â†’ Serve + 1 pattern: Skip the return (i+1), check serve + 1 (i+2)
-                        # This handles both "next shot" and "very next shot" queries
-                        if i + 2 < len(actual_shots):
-                            next_shot = actual_shots[i + 2]  # Serve + 1 (skip return)
-                            next_player = next_shot.get('player') or ''
-                            # CRITICAL: Serve + 1 must be by the same player as the serve
+                        step = 2
+                    
+                    if i + step < len(actual_shots):
+                        next_shot = actual_shots[i + step]
+                        next_player = next_shot.get('player') or ''
+                        next_desc = (next_shot.get('description') or '').lower()
+                        next_outcome = (next_shot.get('outcome') or '').lower()
+                        
+                        # Verify player is correct for same-player patterns
+                        if want_same_player and not self._names_match_robust(player_filter, next_player):
+                            continue  # Wrong player for same-player pattern
+                        
+                        # For response patterns (Shot A by different player), verify next shot is by player_filter
+                        if not want_same_player and player_filter:
                             if not self._names_match_robust(player_filter, next_player):
-                                continue  # Serve + 1 is by wrong player
-                            next_desc = (next_shot.get('description') or '').lower()
-                            next_outcome = (next_shot.get('outcome') or '').lower()
+                                if total_shot_a < 3:
+                                    debug_info.append(f"Response pattern: next_player='{next_player}' != player_filter='{player_filter}' - skipping")
+                                continue  # Wrong player for response pattern
+                        
+                        # Check if Shot B matches
+                        # NEW: Handle three cases:
+                        # 1. shot_b_outcome set (e.g., "unforced error") - check outcome field
+                        # 2. shot_b_opponent set (e.g., "from opponent") - next shot by other player
+                        # 3. Regular keywords - check description
+                        shot_b_match = False
+                        
+                        # CASE 1: Outcome-based Shot B (e.g., "unforced error from opponent") - GENERIC
+                        if shot_b_outcome:
+                            # Check if next shot's outcome matches - GENERIC using keyword from shot_b_outcome
+                            outcome_upper = (next_outcome or '').upper()
+                            desc_lower = (next_desc or '').lower()
+                            
+                            # Convert shot_b_outcome to keyword for matching
+                            outcome_keyword = shot_b_outcome.lower().replace('_', ' ')
+                            shot_b_match = outcome_keyword in outcome_upper.lower() or outcome_keyword in desc_lower
+                            
+                            # Check if opponent requirement is met
+                            if shot_b_match and shot_b_opponent and player_filter:
+                                # Shot B should be by the OTHER player (not player_filter)
+                                if self._names_match_robust(player_filter, next_player):
+                                    shot_b_match = False  # Shot B is by same player, not opponent
                         else:
-                            continue  # Not enough shots for serve + 1
+                            # CASE 2: Regular keyword matching - CONFIG-DRIVEN
+                            # Get outcome keywords from GROUP_CONFIG instead of hardcoding
+                            outcome_keywords = self.GROUP_CONFIG.get('outcome', {}).get('default_branches', [])
+                            shot_type_keywords_b = [kw for kw in (shot_b_keywords or []) if kw not in outcome_keywords]
+                            outcome_only_keywords = [kw for kw in (shot_b_keywords or []) if kw in outcome_keywords]
+                            
+                            # Check shot type keywords (must be in description)
+                            shot_type_match = True
+                            if shot_type_keywords_b:
+                                shot_type_match = all(kw in next_desc for kw in shot_type_keywords_b)
+                            
+                            # Check outcome keywords (can be in outcome OR description)
+                            outcome_match = True
+                            if outcome_only_keywords:
+                                outcome_match = all(
+                                    (kw in next_outcome) or (kw in next_desc)
+                                    for kw in outcome_only_keywords
+                                )
+                            
+                            shot_b_match = shot_type_match and outcome_match
+                            
+                            # Check opponent requirement
+                            if shot_b_match and shot_b_opponent and player_filter:
+                                if self._names_match_robust(player_filter, next_player):
+                                    shot_b_match = False  # Shot B is by same player, not opponent
+                            # If NOT opponent mode and player filter exists, Shot B must be by player
+                            elif shot_b_match and not shot_b_opponent and player_filter:
+                                if not self._names_match_robust(player_filter, next_player):
+                                    shot_b_match = False
+                                    if total_shot_a < 3:
+                                        debug_info.append(f"Shot B rejected: next_player={next_player} != player_filter={player_filter}")
+                        
+                        # Shot type filter for Shot B (e.g., forehand winner)
+                        if shot_b_match and shot_type_filter:
+                            if shot_type_filter.lower() not in next_desc:
+                                continue
+                        
+                        if shot_b_match:
+                            # Determine if player won the point
+                            won = None
+                            if point_winner and player_filter:
+                                won = self._names_match_robust(player_filter, point_winner)
+                            
+                            # Debug: Log first few complete sequences
+                            if len(chain_matches) < 3:
+                                debug_info.append(f"Complete sequence: Shot A='{shot_desc}' -> Shot B='{next_desc}' by {next_player}")
+                            
+                            # Store Shot B metadata for grouping
+                            shot_b_metadata = {
+                                'description': next_desc,
+                                'outcome': next_outcome,
+                                'shot_type': next_shot.get('shot_type'),
+                                'direction': next_shot.get('direction'),
+                                'depth': next_shot.get('depth'),
+                                'spin': next_shot.get('spin')
+                            }
+                            
+                            chain_matches.append({
+                                'point': point_text,
+                                'point_number': point_data.get('point_number', '?'),
+                                'score': score,
+                                'server': point_data.get('server', ''),
+                                'shot_a': shot_desc,
+                                'shot_b': f"{next_desc} ({next_outcome})",
+                                'shot_b_metadata': shot_b_metadata,
+                                'player_a': shot_player,
+                                'player_b': next_player,
+                                'shot_a_number': shot_position,
+                                'shot_b_number': next_shot.get('shot_number'),
+                                'won': won
+                            })
                     else:
-                        # Regular pattern: Check immediate next shot
-                        if i + 1 < len(actual_shots):
-                            next_shot = actual_shots[i + 1]
-                            next_desc = (next_shot.get('description') or '').lower()
-                            next_outcome = (next_shot.get('outcome') or '').lower()
-                            next_player = next_shot.get('player') or ''
-                        else:
-                            continue  # No next shot
-                    
-                    # Check if Shot B matches
-                    # NEW: Handle three cases:
-                    # 1. shot_b_outcome set (e.g., "unforced error") - check outcome field
-                    # 2. shot_b_opponent set (e.g., "from opponent") - next shot by other player
-                    # 3. Regular keywords - check description
-                    shot_b_match = False
-                    
-                    # CASE 1: Outcome-based Shot B (e.g., "unforced error from opponent") - GENERIC
-                    if shot_b_outcome:
-                        # Check if next shot's outcome matches - GENERIC using keyword from shot_b_outcome
-                        outcome_upper = (next_outcome or '').upper()
-                        desc_lower = (next_desc or '').lower()
-                        
-                        # Convert shot_b_outcome to keyword for matching
-                        outcome_keyword = shot_b_outcome.lower().replace('_', ' ')
-                        shot_b_match = outcome_keyword in outcome_upper.lower() or outcome_keyword in desc_lower
-                        
-                        # Check if opponent requirement is met
-                        if shot_b_match and shot_b_opponent and player_filter:
-                            # Shot B should be by the OTHER player (not player_filter)
-                            if self._names_match_robust(player_filter, next_player):
-                                shot_b_match = False  # Shot B is by same player, not opponent
-                    else:
-                        # CASE 2: Regular keyword matching
-                        # Separate outcome keywords from shot type keywords
-                        outcome_keywords = ['winner', 'unforced', 'forced', 'error', 'ace', 'double', 'fault']
-                        shot_type_keywords_b = [kw for kw in (shot_b_keywords or []) if kw not in outcome_keywords]
-                        outcome_only_keywords = [kw for kw in (shot_b_keywords or []) if kw in outcome_keywords]
-                        
-                        # Check shot type keywords (must be in description)
-                        shot_type_match = True
-                        if shot_type_keywords_b:
-                            shot_type_match = all(kw in next_desc for kw in shot_type_keywords_b)
-                        
-                        # Check outcome keywords (can be in outcome OR description)
-                        outcome_match = True
-                        if outcome_only_keywords:
-                            outcome_match = all(
-                                (kw in next_outcome) or (kw in next_desc)
-                                for kw in outcome_only_keywords
-                            )
-                        
-                        shot_b_match = shot_type_match and outcome_match
-                        
-                        # Check opponent requirement
-                        if shot_b_match and shot_b_opponent and player_filter:
-                            if self._names_match_robust(player_filter, next_player):
-                                shot_b_match = False  # Shot B is by same player, not opponent
-                        # If NOT opponent mode and player filter exists, Shot B must be by player
-                        elif shot_b_match and not shot_b_opponent and player_filter:
-                            if not self._names_match_robust(player_filter, next_player):
-                                shot_b_match = False
-                    
-                    # Shot type filter for Shot B (e.g., forehand winner)
-                    if shot_b_match and shot_type_filter:
-                        if shot_type_filter.lower() not in next_desc:
-                            continue
-                    
-                    if shot_b_match:
-                        # Determine if player won the point
-                        won = None
-                        if point_winner and player_filter:
-                            won = self._names_match_robust(player_filter, point_winner)
-                        
-                        chain_matches.append({
-                            'point': point_text,
-                            'score': score,
-                            'shot_a': shot_desc,
-                            'shot_b': f"{next_desc} ({next_outcome})",
-                            'player_a': shot_player,
-                            'player_b': next_player,
-                            'shot_a_number': shot_position,
-                            'shot_b_number': next_shot.get('shot_number'),
-                            'won': won
-                        })
+                        continue  # Not enough shots
         
         # Calculate win percentage for chain sequences
         wins = sum(1 for m in chain_matches if m.get('won') == True)
         total_chain = len(chain_matches)
         win_pct = round(100 * wins / total_chain, 1) if total_chain > 0 else 0
+        
+        # Add full point information for all matching points to debug info
+        debug_info.append(f"\n=== All Matching Points ({len(chain_matches)} total) ===")
+        for i, m in enumerate(chain_matches, 1):
+            point_num = m.get('point_number', i)
+            debug_info.append(f"\n**Point {point_num}:**")
+            debug_info.append(m.get('point', 'N/A'))
         
         return {
             'classification': classification,
@@ -13431,7 +13789,8 @@ Answer:"""
             'total_chain_sequences': total_chain,
             'wins': wins,
             'win_percentage': win_pct,
-            'conversion_rate': round(100 * total_chain / total_shot_a, 1) if total_shot_a > 0 else 0
+            'conversion_rate': round(100 * total_chain / total_shot_a, 1) if total_shot_a > 0 else 0,
+            'debug_info': debug_info
         }
     
     def _format_chain_logic_analysis(self, analysis: Dict[str, Any]) -> str:
@@ -13449,29 +13808,1042 @@ Answer:"""
         win_pct = analysis.get('win_percentage', 0)
         rate = analysis['conversion_rate']
         
-        response = f"**Chain Logic Analysis: {shot_a.title()} â†’ {shot_b.title()}**\n\n"
+        # Handle None values
+        shot_a_display = shot_a.title() if shot_a else "Unknown Shot"
+        shot_b_display = shot_b.title() if shot_b else "Any Response"
+        
+        # CHECK FOR GROUPING (generic, like tree)
+        classification = analysis.get('classification', {})
+        group_by_dim = classification.get('group_by')
+        
+        # If shot_b is None AND group_by exists, group Shot B responses
+        if not shot_b and group_by_dim and matches:
+            # Map group_by to Shot B metadata field
+            field_map = {
+                'shot_direction': 'direction',
+                'direction': 'direction',
+                'shot_type': 'shot_type',
+                'depth': 'depth',
+                'spin': 'spin'
+            }
+            shot_b_field = field_map.get(group_by_dim, group_by_dim)
+            
+            # Group matches by Shot B attribute
+            from collections import defaultdict
+            grouped = defaultdict(lambda: {'count': 0, 'wins': 0, 'examples': []})
+            
+            for m in matches:
+                shot_b_meta = m.get('shot_b_metadata', {})
+                group_value = shot_b_meta.get(shot_b_field)
+                
+                if not group_value:
+                    group_value = 'unknown'
+                
+                grouped[group_value]['count'] += 1
+                if m.get('won'):
+                    grouped[group_value]['wins'] += 1
+                if len(grouped[group_value]['examples']) < 3:
+                    grouped[group_value]['examples'].append(m)
+            
+            # Format grouped results
+            response = f"**Chain Logic Analysis: After {shot_a_display}**\n\n"
+            if player:
+                response += f"**Player:** {player}\n"
+            response += f"**Total {shot_a_display} Shots:** {total_a}\n"
+            response += f"**Total Responses Analyzed:** {total_chain} ({rate}% response rate)\n\n"
+            
+            group_label = group_by_dim.replace('_', ' ').title()
+            response += f"**Response Breakdown by {group_label}:**\n\n"
+            
+            # Sort by count (most frequent first)
+            sorted_groups = sorted(grouped.items(), key=lambda x: x[1]['count'], reverse=True)
+            
+            for group_val, stats in sorted_groups:
+                count = stats['count']
+                wins = stats['wins']
+                pct = round(100 * count / total_chain, 1) if total_chain > 0 else 0
+                win_pct_group = round(100 * wins / count, 1) if count > 0 else 0
+                
+                response += f"**{group_val.title()}:** {count} responses ({pct}%)\n"
+                response += f"  - Win %: {win_pct_group}% ({wins}/{count})\n"
+                
+                # Show 1-2 examples
+                for ex in stats['examples'][:2]:
+                    won_str = "✅" if ex.get('won') else "❌"
+                    response += f"  - {won_str} {ex['score']}: {ex['shot_a']} → {ex['shot_b']}\n"
+                response += "\n"
+            
+            return response
+        
+        if shot_b:
+            response = f"**Chain Logic Analysis: {shot_a_display} → {shot_b_display}**\n\n"
+        else:
+            response = f"**Chain Logic Analysis: After {shot_a_display}**\n\n"
+        
+        # Player info below
+        if False:  # Dead code marker
+            _ = f"OLD {shot_a_display} -> {shot_b.title()}**\n\n"
         
         if player:
             response += f"**Player:** {player}\n"
         
-        response += f"**Total {shot_a.title()} Shots:** {total_a}\n"
-        response += f"**Led to {shot_b.title()}:** {total_chain} ({rate}% conversion)\n\n"
-        
+        response += f"**Total {shot_a_display} Shots:** {total_a}\n"
+        if shot_b:
+            response += f"**Led to {shot_b_display}:** {total_chain} ({rate}% conversion)\n\n"
         # Win percentage section
-        response += f"**Win Percentage on {shot_a.title()} â†’ {shot_b.title()} sequences:**\n"
+            response += f"**Win Percentage on {shot_a_display} → {shot_b_display} sequences:**\n"
+            response += f"- Points Won: {wins} / {total_chain}\n"
+            response += f"- **Win %: {win_pct}%**\n\n"
+        else:
+            response += f"**Total Responses:** {total_chain} ({rate}% response rate)\n\n"
+        
+        
+        # Examples section
+        if False:  # Dead code cleanup marker
+            _ = f"OLD {shot_a_display} -> {shot_b.title()} sequences:**\n"
         response += f"- Points Won: {wins} / {total_chain}\n"
         response += f"- **Win %: {win_pct}%**\n\n"
         
         if matches:
-            response += f"**Examples ({min(len(matches), 10)} shown):**\n\n"
-            for m in matches[:10]:
+            response += f"**Point Citations (All {len(matches)} Points):**\n\n"
+            for i, m in enumerate(matches, 1):
                 won_str = "âœ… WON" if m.get('won') else "âŒ LOST" if m.get('won') == False else ""
                 shot_a_num = m.get('shot_a_number', '?')
                 shot_b_num = m.get('shot_b_number', '?')
-                response += f"- **Score:** {m['score']} {won_str}\n"
-                response += f"  - **Shot A (#{shot_a_num}):** {m['shot_a']} by {m['player_a']}\n"
-                response += f"  - **Shot B (#{shot_b_num}):** {m['shot_b']} by {m['player_b']}\n"
-                response += f"  - Rally: {m['point']}\n\n"
+                point_num = m.get('point_number', i)
+                set_num = self._extract_current_set(m.get('score', '')) or '?'
+                server = m.get('server', '?')
+                score = m.get('score', '?')
+                
+                response += f"{i}. **Point {point_num}** [Set {set_num} | {server} serving at {score}] {won_str}\n"
+                response += f"   ● Shot A (#{shot_a_num}): {m['shot_a']} by {m['player_a']}\n"
+                response += f"   ● Shot B (#{shot_b_num}): {m['shot_b']} by {m['player_b']}\n"
+                # Show full point description - NO LIMITS
+                point_desc = m.get('point', '')
+                response += f"   ● Point: {point_desc}\n\n"
+        
+        # Add debug info if available
+        debug_info = analysis.get('debug_info', [])
+        if debug_info:
+            response += f"**Debug Information:**\n\n"
+            for debug_line in debug_info:
+                response += f"- {debug_line}\n"
+            response += "\n"
+        
+        return response
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # CONSECUTIVE SHOTS ANALYSIS - "3+ forehands in a row"
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def _analyze_consecutive_shots(self, classification: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze consecutive shot patterns within rallies.
+        
+        Handles questions like:
+        - "How many times did Federer hit 3+ consecutive forehands before winning?"
+        - "How often did Nadal hit 5+ crosscourt shots in a row?"
+        - "What's the average consecutive backhand count in long rallies?"
+        
+        Parses rally sequences and counts runs of consecutive shots matching criteria.
+        """
+        if not self.point_by_point:
+            return {'error': 'No point-by-point data available'}
+        
+        filters = classification.get('filters', {})
+        player_filter = filters.get('player')
+        
+        # Extract consecutive shot criteria from classification
+        min_consecutive = classification.get('consecutive_shots_min', 3)
+        shot_type_filter = classification.get('sequence_shot_type') or filters.get('shot_type')
+        direction_filter = classification.get('sequence_direction') or filters.get('direction')
+        require_win = classification.get('point_won_by') == player_filter or 'winning' in classification.get('actual_question', '').lower() or 'won' in classification.get('actual_question', '').lower()
+        
+        # Collect debug info for user response
+        debug_info = []
+        debug_info.append(f"Looking for {min_consecutive}+ consecutive shots")
+        debug_info.append(f"Player: {player_filter}, Shot type: {shot_type_filter}, Direction: {direction_filter}")
+        debug_info.append(f"Require win: {require_win}")
+        
+        # Results
+        matching_points = []
+        total_sequences = 0
+        max_consecutive = 0
+        consecutive_counts = []  # Track all sequence lengths
+        debug_count = 0
+        DEBUG_ENABLED = False  # Set to True to see detailed matching logs
+        
+        for point_data in self.point_by_point:
+            point_text = point_data.get('point_text', point_data.get('description', ''))
+            score = point_data.get('score', '')
+            set_num = self._extract_current_set(score) or 1
+            # Extract point winner from [Point won by:] tag
+            point_winner = None
+            winner_match = re.search(r'\[Point won by:\s*([^\]]+)\]', point_text)
+            if winner_match:
+                point_winner = winner_match.group(1).strip()
+            server = point_data.get('server', '')
+            returner = point_data.get('returner', '')
+            
+            # Parse rally sequence
+            rally = self._parse_rally_sequence(point_text, server, returner)
+            if not rally:
+                continue
+            
+            # TRULY CONSECUTIVE shots for a single player means +2 positions 
+            # (because opponent hits in between)
+            # Shot at position N, next by same player is at N+2, then N+4, etc.
+            # For BOTH players (no player filter), it's just +1 positions
+            
+            # Debug: show first few rallies
+            if DEBUG_ENABLED and debug_count < 3 and len(rally) > 3:
+                debug_count += 1
+                debug_info.append(f"Rally {debug_count} has {len(rally)} shots:")
+                for i, shot in enumerate(rally[:5], 1):
+                    debug_info.append(f"  Shot {i}: player={shot.get('player', '?')}, type={shot.get('shot_type', '?')}, desc={shot.get('description', '')[:40]}")
+            
+            # Helper to check if a shot matches criteria - CONFIG-DRIVEN
+            def shot_matches(shot):
+                shot_player = shot.get('player', '')
+                shot_type = (shot.get('shot_type') or '').lower()
+                shot_dir = (shot.get('direction') or '').lower()
+                shot_outcome = (shot.get('outcome') or '').lower()
+                shot_desc = shot.get('description', '').lower()
+                shot_intent = (shot.get('intent') or '').lower()
+                shot_contact = (shot.get('contact_type') or '').lower()
+                shot_spin = (shot.get('spin') or '').lower()
+                shot_depth = (shot.get('depth') or '').lower()
+                
+                # Player filter
+                player_match = not player_filter or self._names_match_robust(player_filter, shot_player)
+                if not player_match:
+                    return False
+                
+                # Shot type filter - CONFIG-DRIVEN using GROUP_CONFIG
+                type_match = True
+                if shot_type_filter:
+                    filter_lower = shot_type_filter.lower()
+                    # Check outcome using GROUP_CONFIG
+                    if filter_lower in self.GROUP_CONFIG.get('outcome', {}).get('default_branches', []):
+                        type_match = filter_lower in shot_outcome or filter_lower in shot_desc
+                    # Check intent using match_filter_inventory
+                    elif filter_lower in self.match_filter_inventory.get('intents', []) or filter_lower.replace(' ', '_') in self.match_filter_inventory.get('intents', []):
+                        type_match = (filter_lower.replace(' ', '_') in shot_intent if shot_intent else False) or filter_lower in shot_desc
+                    # Check contact type using match_filter_inventory
+                    elif filter_lower in self.match_filter_inventory.get('contact_types', []) or filter_lower.replace(' ', '_') in self.match_filter_inventory.get('contact_types', []):
+                        type_match = (filter_lower.replace(' ', '_') in shot_contact if shot_contact else False) or filter_lower in shot_desc or (filter_lower.replace('_', ' ') in shot_desc)
+                    # Check shot_type using GROUP_CONFIG
+                    elif filter_lower in self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', []):
+                        type_match = filter_lower in shot_type or filter_lower in shot_desc
+                    # Check spin using GROUP_CONFIG
+                    elif filter_lower in self.GROUP_CONFIG.get('spin', {}).get('default_branches', []):
+                        type_match = filter_lower in shot_spin or filter_lower in shot_desc
+                    # Check depth using GROUP_CONFIG
+                    elif filter_lower in self.GROUP_CONFIG.get('depth', {}).get('default_branches', []):
+                        type_match = filter_lower in shot_depth or filter_lower in shot_desc
+                    # Fallback: check all keywords in description
+                    else:
+                        type_match = all(kw in shot_desc for kw in filter_lower.split())
+                
+                # Direction filter - CONFIG-DRIVEN using GROUP_CONFIG
+                dir_match = True
+                if direction_filter:
+                    filter_lower = direction_filter.lower()
+                    if filter_lower in self.GROUP_CONFIG.get('shot_direction', {}).get('default_branches', []):
+                        dir_match = filter_lower.replace(' ', '_') in shot_dir or filter_lower.replace(' ', '') in shot_dir.replace('_', '') or filter_lower in shot_desc
+                    else:
+                        # Fallback: check all keywords in description
+                        dir_match = all(kw in shot_desc for kw in filter_lower.split())
+                
+                return type_match and dir_match
+            
+            # Find longest run of TRULY consecutive shots
+            # For single player: +2 positions (opponent hits in between)
+            # For both players: +1 positions
+            step = 2 if player_filter else 1
+            
+            best_run_in_point = 0
+            
+            for start_idx in range(len(rally)):
+                if not shot_matches(rally[start_idx]):
+                    continue
+                
+                # Count consecutive matching shots from this starting point
+                run_length = 1
+                current_idx = start_idx
+                
+                while True:
+                    next_idx = current_idx + step
+                    if next_idx >= len(rally):
+                        break
+                    if not shot_matches(rally[next_idx]):
+                        break
+                    run_length += 1
+                    current_idx = next_idx
+                
+                best_run_in_point = max(best_run_in_point, run_length)
+            
+            # Debug: show when we find enough matching shots
+            if DEBUG_ENABLED and debug_count <= 3 and best_run_in_point >= min_consecutive:
+                debug_info.append(f"Found {best_run_in_point} {shot_type_filter or 'shots'} by {player_filter} in this rally")
+            
+            # Record if this point had a qualifying sequence
+            if best_run_in_point >= min_consecutive:
+                # Check win requirement
+                player_won = False
+                if player_filter and point_winner:
+                    player_won = self._names_match_robust(player_filter, point_winner)
+                
+                if not require_win or player_won:
+                    total_sequences += 1
+                    max_consecutive = max(max_consecutive, best_run_in_point)
+                    consecutive_counts.append(best_run_in_point)
+                    
+                    matching_points.append({
+                        'point_number': point_data.get('point_number', '?'),
+                        'point': point_text,
+                        'score': score,
+                        'set': set_num,
+                        'server': point_data.get('server', '?'),
+                        'point_winner': point_winner,
+                        'consecutive_count': best_run_in_point,
+                        'won': player_won,
+                        'rally_length': len(rally)
+                    })
+        
+        # Calculate stats
+        avg_consecutive = round(sum(consecutive_counts) / len(consecutive_counts), 1) if consecutive_counts else 0
+        wins = sum(1 for m in matching_points if m.get('won'))
+        win_pct = round(100 * wins / total_sequences, 1) if total_sequences > 0 else 0
+        
+        # Add full point information for all matching points to debug info
+        debug_info.append(f"\n=== All Matching Points ({len(matching_points)} total) ===")
+        for i, m in enumerate(matching_points, 1):
+            point_num = m.get('point_number', '?')
+            debug_info.append(f"\n**Point {point_num}:**")
+            debug_info.append(m.get('point', 'N/A'))
+        
+        return {
+            'classification': classification,
+            'player': player_filter,
+            'shot_type': shot_type_filter,
+            'direction': direction_filter,
+            'min_consecutive': min_consecutive,
+            'require_win': require_win,
+            'total_sequences': total_sequences,
+            'max_consecutive': max_consecutive,
+            'avg_consecutive': avg_consecutive,
+            'wins': wins,
+            'win_percentage': win_pct,
+            'matching_points': matching_points,
+            'debug_info': debug_info
+        }
+    
+    def _analyze_multi_step_pattern(self, classification: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Analyze multi-step shot patterns (A -> B -> C or more).
+        
+        Handles questions like:
+        - "How many points ended: forehand -> approach -> volley -> winner?"
+        - "When did Federer hit slice -> approach -> volley?"
+        - "How often did rallies go forehand -> forehand -> backhand?"
+        
+        Extends chain logic to 3+ step sequences.
+        """
+        if not self.point_by_point:
+            return {'error': 'No point-by-point data available'}
+        
+        filters = classification.get('filters', {})
+        player_filter = filters.get('player')
+        
+        # Extract pattern from classification
+        pattern = classification.get('multi_step_pattern', [])
+        if not pattern:
+            return {'error': 'No multi-step pattern specified'}
+        
+        # Collect debug info for user response
+        debug_info = []
+        debug_info.append(f"Looking for pattern: {' -> '.join(pattern)}")
+        debug_info.append(f"Player filter: {player_filter or 'Both players'}")
+        
+        # Results
+        matching_points = []
+        total_matches = 0
+        debug_windows = 0
+        DEBUG_ENABLED = False  # Set to True to see detailed matching logs
+        
+        for point_data in self.point_by_point:
+            point_text = point_data.get('point_text', point_data.get('description', ''))
+            score = point_data.get('score', '')
+            set_num = self._extract_current_set(score) or 1
+            # Extract point winner from [Point won by:] tag
+            point_winner = None
+            winner_match = re.search(r'\[Point won by:\s*([^\]]+)\]', point_text)
+            if winner_match:
+                point_winner = winner_match.group(1).strip()
+            server = point_data.get('server', '')
+            returner = point_data.get('returner', '')
+            
+            # Parse rally sequence
+            rally = self._parse_rally_sequence(point_text, server, returner)
+            
+            # CRITICAL: Determine if pattern should be checked for ONE player or BOTH players
+            # Examples:
+            # - "forehand approach -> volley winner" → tactical sequence, same player only (step=2)
+            # - "crosscourt -> crosscourt -> down-the-line" → could be same or alternating
+            
+            # If player_filter specified → only check that player's pattern (step=2)
+            # If tactical sequence (approach/volley/winner) → only same player (step=2)
+            # Otherwise → check BOTH same-player (step=2) AND alternating (step=1)
+            
+            is_tactical_sequence = any('approach' in p.lower() or 'volley' in p.lower() or 'winner' in p.lower() for p in pattern)
+            
+            # Determine which step patterns to check
+            if player_filter or is_tactical_sequence:
+                step_patterns = [2]  # Only same player
+            else:
+                step_patterns = [2, 1]  # Try both: same player first, then alternating
+            
+            # Track matches for each pattern type
+            same_player_matches = []
+            alternating_matches = []
+            
+            for step in step_patterns:
+                required_rally_length = 1 + (len(pattern) - 1) * step
+                
+                if len(rally) < required_rally_length:
+                    continue
+                
+                # Slide through rally looking for pattern match with correct step
+                max_start = len(rally) - required_rally_length + 1
+                for start_idx in range(max_start):
+                    # Build window using correct step
+                    window_indices = [start_idx + i * step for i in range(len(pattern))]
+                    if window_indices[-1] >= len(rally):
+                        continue
+                    window = [rally[idx] for idx in window_indices]
+                    
+                    # For same-player patterns (step=2), verify ALL shots are by the same player
+                    if step == 2:
+                        first_player = window[0].get('player', '')
+                        if not all(self._names_match_robust(first_player, shot.get('player', '')) for shot in window):
+                            continue  # Different players in sequence, skip
+                
+                # Debug: show first few windows
+                if DEBUG_ENABLED and debug_windows < 1:
+                    debug_windows += 1
+                    debug_info.append(f"Window {debug_windows}: {len(window)} shots from {len(rally)}-shot rally")
+                    for j, s in enumerate(window):
+                        debug_info.append(f"  Step {j+1}: type={s.get('shot_type')}, intent={s.get('intent')}, contact={s.get('contact_type')}, outcome={s.get('outcome')}")
+                        debug_info.append(f"           desc='{s.get('description', '')[:80]}'")
+                
+                # Check if window matches pattern
+                match = True
+                match_details = []
+                
+                for i, (shot, pattern_step) in enumerate(zip(window, pattern)):
+                    shot_player = shot.get('player', '')
+                    shot_type = (shot.get('shot_type') or '').lower()
+                    shot_dir = (shot.get('direction') or '').lower()
+                    shot_outcome = (shot.get('outcome') or '').lower()
+                    shot_desc = shot.get('description', '').lower()
+                    shot_intent = (shot.get('intent') or '').lower()  # NEW: approach, drop_shot, lob
+                    shot_contact = (shot.get('contact_type') or '').lower()  # NEW: volley, groundstroke
+                    
+                    # Parse pattern step (can be "forehand", "crosscourt forehand", "winner", etc.)
+                    step_lower = pattern_step.lower()
+                    
+                    # Check for player constraint (first shot often has player)
+                    step_player = None
+                    if player_filter and i == 0:
+                        step_player = player_filter
+                    
+                    # CONFIG-DRIVEN MATCHING - Check if pattern step matches this shot
+                    # All possible shot attributes come from config
+                    step_keywords = step_lower.split()
+                    
+                    # Build config-driven category lookups (normalize to lowercase)
+                    cfg_shot_types = [s.lower() for s in self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])]
+                    cfg_outcomes = [o.lower() for o in self.GROUP_CONFIG.get('outcome', {}).get('default_branches', [])]
+                    cfg_directions = [d.lower() for d in self.GROUP_CONFIG.get('shot_direction', {}).get('default_branches', [])]
+                    cfg_modifiers = [m.lower() for m in self.GROUP_CONFIG.get('shot_modifier', {}).get('default_branches', [])]
+                    cfg_spins = [s.lower() for s in self.GROUP_CONFIG.get('spin', {}).get('default_branches', [])]
+                    cfg_contacts = [c.lower() for c in self.match_filter_inventory.get('contact_types', [])]
+                    cfg_intents = [i.lower() for i in self.match_filter_inventory.get('intents', [])]
+                    cfg_depths = [d.lower() for d in self.GROUP_CONFIG.get('depth', {}).get('default_branches', [])]
+                    
+                    # Get ALL shot fields for matching
+                    shot_spin = (shot.get('spin') or '').lower()
+                    shot_depth = (shot.get('depth') or '').lower()
+                    
+                    def keyword_in_shot(kw):
+                        """CONFIG-DRIVEN: Check keyword against appropriate shot field based on config category"""
+                        kw = kw.lower().strip()
+                        kw_norm = kw.replace('-', '_').replace(' ', '_')
+                        
+                        # Determine category from config and check appropriate field
+                        # 1. Shot type (forehand, backhand) -> shot_type field
+                        if kw in cfg_shot_types or kw_norm in cfg_shot_types:
+                            return kw in shot_type or kw_norm in shot_type
+                        
+                        # 2. Outcome (winner, error, ace) -> outcome field
+                        if kw in cfg_outcomes or kw_norm in cfg_outcomes:
+                            return kw in shot_outcome or kw_norm in shot_outcome
+                        
+                        # 3. Direction (crosscourt, down_the_line) -> direction field
+                        if kw in cfg_directions or kw_norm in cfg_directions:
+                            dir_norm = shot_dir.replace('-', '_').replace(' ', '_')
+                            return kw_norm in dir_norm or kw in shot_dir or kw.replace('_', ' ') in shot_desc
+                        
+                        # 4. Modifier/Intent (approach, volley, drop_shot, slice) -> intent OR contact OR description
+                        if kw in cfg_modifiers or kw_norm in cfg_modifiers:
+                            return (kw in shot_intent or kw_norm in shot_intent or
+                                    kw in shot_contact or kw_norm in shot_contact or
+                                    kw in shot_desc or kw.replace('_', ' ') in shot_desc)
+                        
+                        # 5. Contact type (volley, overhead, groundstroke) -> contact_type field
+                        if kw in cfg_contacts or kw_norm in cfg_contacts:
+                            return kw in shot_contact or kw_norm in shot_contact or kw in shot_desc
+                        
+                        # 6. Intent (approach, drop_shot, lob) -> intent field
+                        if kw in cfg_intents or kw_norm in cfg_intents:
+                            return kw in shot_intent or kw_norm in shot_intent or kw in shot_desc
+                        
+                        # 7. Spin (slice, topspin, flat) -> spin field
+                        if kw in cfg_spins or kw_norm in cfg_spins:
+                            return kw in shot_spin or kw_norm in shot_spin or kw in shot_desc
+                        
+                        # 8. Depth (shallow, deep, very_deep) -> depth field
+                        if kw in cfg_depths or kw_norm in cfg_depths:
+                            return kw in shot_depth or kw_norm in shot_depth or kw in shot_desc
+                        
+                        # Fallback: check description for anything not in config
+                        return kw in shot_desc or kw.replace('_', ' ') in shot_desc
+                    
+                    # ALL keywords in pattern step must match this ONE shot
+                    step_match = all(keyword_in_shot(kw) for kw in step_keywords)
+                    
+                    # Debug: Show when we find a match for ANY pattern step
+                    if step_match and len(step_keywords) > 1:
+                        print(f"[PATTERN-MATCH] Step {i+1} '{step_lower}' MATCHED shot: type='{shot_type}', intent='{shot_intent}', contact='{shot_contact}', outcome='{shot_outcome}'")
+                        print(f"  Desc: '{shot_desc[:60]}'")
+                    
+                    # Player check for first step
+                    if step_player and not self._names_match_robust(step_player, shot_player):
+                        step_match = False
+                    
+                    if not step_match:
+                        # Debug: Show when step 2+ fails after step 1 matched
+                        if i > 0 and len(step_keywords) > 1:
+                            print(f"[PATTERN-FAIL] Step {i+1} '{step_lower}' FAILED vs shot: type='{shot_type}', intent='{shot_intent}', contact='{shot_contact}', outcome='{shot_outcome}'")
+                            print(f"  Desc: '{shot_desc[:60]}'")
+                            kw_results = [(kw, keyword_in_shot(kw)) for kw in step_keywords]
+                            print(f"  Keywords: {kw_results}")
+                        match = False
+                        break
+                    
+                    match_details.append({
+                        'shot_num': shot.get('shot_number'),
+                        'player': shot_player,
+                        'description': shot.get('description', '')[:50]
+                    })
+                
+                    if match:
+                        player_won = False
+                        if player_filter and point_winner:
+                            player_won = self._names_match_robust(player_filter, point_winner)
+                        
+                        match_data = {
+                            'point_number': point_data.get('point_number', '?'),
+                            'point': point_text,
+                            'score': score,
+                            'set': set_num,
+                            'server': point_data.get('server', '?'),
+                            'point_winner': point_winner,
+                            'match_details': match_details,
+                            'won': player_won,
+                            'rally_length': len(rally),
+                            'pattern_type': 'same_player' if step == 2 else 'alternating'
+                        }
+                        
+                        # Store in appropriate list
+                        if step == 2:
+                            same_player_matches.append(match_data)
+                        else:
+                            alternating_matches.append(match_data)
+                        break  # Only count once per point (for this step pattern)
+            
+            # Combine matches (avoid duplicates if point matched both patterns)
+            seen_points = set()
+            for match in same_player_matches + alternating_matches:
+                point_num = match['point_number']
+                if point_num not in seen_points:
+                    matching_points.append(match)
+                    seen_points.add(point_num)
+                    total_matches += 1
+        
+        # Calculate stats
+        wins = sum(1 for m in matching_points if m.get('won'))
+        win_pct = round(100 * wins / total_matches, 1) if total_matches > 0 else 0
+        
+        # Add pattern type breakdown if we checked both
+        if len(same_player_matches) > 0 and len(alternating_matches) > 0:
+            debug_info.append(f"\n=== Pattern Match Breakdown ===")
+            debug_info.append(f"Same Player Pattern (step=2): {len(same_player_matches)} points")
+            debug_info.append(f"Alternating Players Pattern (step=1): {len(alternating_matches)} points")
+            debug_info.append(f"Total Unique Points: {len(matching_points)}")
+        
+        # Add full point information for all matching points to debug info
+        debug_info.append(f"\n=== All Matching Points ({len(matching_points)} total) ===")
+        for i, m in enumerate(matching_points, 1):
+            point_num = m.get('point_number', '?')
+            pattern_type = m.get('pattern_type', 'unknown')
+            debug_info.append(f"\n**Point {point_num}** [{pattern_type}]:")
+            debug_info.append(m.get('point', 'N/A'))
+        
+        return {
+            'classification': classification,
+            'player': player_filter,
+            'pattern': pattern,
+            'total_matches': total_matches,
+            'same_player_matches': len(same_player_matches),
+            'alternating_matches': len(alternating_matches),
+            'wins': wins,
+            'win_percentage': win_pct,
+            'matching_points': matching_points,
+            'debug_info': debug_info
+        }
+    
+    def _prefilter_points_by_shot_attributes(self, classification: Dict[str, Any]) -> List[Dict]:
+        """
+        Pre-filter points by shot-level attributes before passing to narrative.
+        
+        Filters points that contain specific shot characteristics:
+        - shot_type: forehand, backhand, volley, etc.
+        - direction: crosscourt, down_the_line, etc.
+        - spin: slice, topspin, flat
+        - outcome: winner, error, etc.
+        
+        Returns list of matching point descriptions for focused narrative synthesis.
+        """
+        if not self.point_by_point:
+            return []
+        
+        filters = classification.get('filters', {})
+        
+        # CONFIG-DRIVEN: Extract ALL possible shot attributes from GROUP_CONFIG and match_filter_inventory
+        # Get all config categories
+        cfg_outcomes = [o.lower() for o in self.GROUP_CONFIG.get('outcome', {}).get('default_branches', [])]
+        
+        # Extract attributes (check both filters and top-level classification)
+        shot_type = filters.get('shot_type') or classification.get('shot_type')
+        direction = filters.get('direction') or classification.get('direction')
+        spin = filters.get('spin') or classification.get('spin')
+        outcome = filters.get('outcome') or classification.get('outcome')
+        intent = filters.get('intent') or classification.get('intent')
+        contact_type = filters.get('contact_type') or classification.get('contact_type')
+        depth = filters.get('depth') or classification.get('depth')  # NEW: shallow, deep, very_deep
+        location = filters.get('location') or classification.get('location')  # NEW: baseline, mid_court, net, service_line
+        shot_modifier = filters.get('shot_modifier') or classification.get('shot_modifier')  # NEW: slice, volley, drop_shot, approach
+        player_filter = filters.get('player')
+        
+        # CONFIG-DRIVEN: Extract outcome from metrics_parsed using config
+        # Query like "crosscourt forehand winners" might parse "winners" as a metric, not outcome
+        metrics_parsed = classification.get('metrics_parsed', [])
+        for metric_info in metrics_parsed:
+            metric = metric_info.get('metric', '').lower()
+            if not outcome:
+                # Check if metric matches any outcome in config
+                for cfg_outcome in cfg_outcomes:
+                    if cfg_outcome in metric or metric in cfg_outcome:
+                        outcome = cfg_outcome
+                        print(f"[SHOT-PREFILTER] Extracted '{outcome}' outcome from metric '{metric_info.get('metric')}' (config-driven)")
+                        break
+        
+        # CONFIG-DRIVEN: Fallback - Check question text for outcome keywords from config
+        if not outcome:
+            question = classification.get('actual_question', '') or ''
+            question_lower = question.lower()
+            # Check each outcome in config
+            for cfg_outcome in cfg_outcomes:
+                if cfg_outcome.replace('_', ' ') in question_lower or cfg_outcome in question_lower:
+                    outcome = cfg_outcome
+                    print(f"[SHOT-PREFILTER] Extracted '{outcome}' outcome from question text (config-driven)")
+                    break
+        
+        # If no shot attributes to filter on, return empty (use normal narrative)
+        if not any([shot_type, direction, spin, outcome, intent, contact_type, depth, location, shot_modifier]):
+            return []
+        
+        # Collect debug info for user response
+        debug_info = []
+        debug_info.append(f"Filtering points by: player={player_filter}, shot_type={shot_type}, dir={direction}, spin={spin}, outcome={outcome}, intent={intent}, contact={contact_type}, depth={depth}, location={location}, modifier={shot_modifier}")
+        
+        matching_points = []
+        
+        for point_data in self.point_by_point:
+            point_text = point_data.get('point_text', point_data.get('description', ''))
+            server = point_data.get('server', '')
+            returner = point_data.get('returner', '')
+            
+            # Parse rally to check shot attributes
+            rally = self._parse_rally_sequence(point_text, server, returner)
+            
+            # Check if any shot in rally matches criteria - CONFIG-DRIVEN
+            point_matches = False
+            for shot in rally:
+                shot_player = shot.get('player', '')
+                s_type = (shot.get('shot_type') or '').lower()
+                s_dir = (shot.get('direction') or '').lower()
+                s_spin = (shot.get('spin') or '').lower()
+                s_outcome = (shot.get('outcome') or '').lower()
+                s_desc = shot.get('description', '').lower()
+                s_intent = (shot.get('intent') or '').lower()
+                s_contact = (shot.get('contact_type') or '').lower()
+                s_depth = (shot.get('depth') or '').lower()
+                
+                # Player filter
+                if player_filter and not self._names_match_robust(player_filter, shot_player):
+                    continue
+                
+                # Check all specified attributes - CONFIG-DRIVEN using GROUP_CONFIG and match_filter_inventory
+                # Shot type filter
+                type_match = True
+                if shot_type:
+                    filter_lower = shot_type.lower()
+                    # Check outcome using GROUP_CONFIG
+                    if filter_lower in self.GROUP_CONFIG.get('outcome', {}).get('default_branches', []):
+                        type_match = filter_lower in s_outcome or filter_lower in s_desc
+                    # Check intent using match_filter_inventory
+                    elif filter_lower in self.match_filter_inventory.get('intents', []) or filter_lower.replace(' ', '_') in self.match_filter_inventory.get('intents', []):
+                        type_match = (filter_lower.replace(' ', '_') in s_intent if s_intent else False) or filter_lower in s_desc
+                    # Check contact type using match_filter_inventory
+                    elif filter_lower in self.match_filter_inventory.get('contact_types', []) or filter_lower.replace(' ', '_') in self.match_filter_inventory.get('contact_types', []):
+                        type_match = (filter_lower.replace(' ', '_') in s_contact if s_contact else False) or filter_lower in s_desc or (filter_lower.replace('_', ' ') in s_desc)
+                    # Check shot_type using GROUP_CONFIG
+                    elif filter_lower in self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', []):
+                        type_match = filter_lower in s_type or filter_lower in s_desc
+                    # Fallback: check all keywords in description
+                    else:
+                        type_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Direction filter - CONFIG-DRIVEN using GROUP_CONFIG
+                dir_match = True
+                if direction:
+                    filter_lower = direction.lower()
+                    if filter_lower in self.GROUP_CONFIG.get('shot_direction', {}).get('default_branches', []):
+                        dir_match = filter_lower.replace(' ', '_') in s_dir or filter_lower.replace(' ', '') in s_dir.replace('_', '') or filter_lower in s_desc
+                    else:
+                        # Fallback: check all keywords in description
+                        dir_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Spin filter - CONFIG-DRIVEN using GROUP_CONFIG
+                spin_match = True
+                if spin:
+                    filter_lower = spin.lower()
+                    if filter_lower in self.GROUP_CONFIG.get('spin', {}).get('default_branches', []):
+                        spin_match = filter_lower in s_spin or filter_lower in s_desc
+                    else:
+                        spin_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Outcome filter - CONFIG-DRIVEN using GROUP_CONFIG
+                outcome_match = True
+                if outcome:
+                    filter_lower = outcome.lower()
+                    if filter_lower in self.GROUP_CONFIG.get('outcome', {}).get('default_branches', []):
+                        outcome_match = filter_lower in s_outcome or filter_lower in s_desc
+                    else:
+                        outcome_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Intent filter - CONFIG-DRIVEN using match_filter_inventory
+                intent_match = True
+                if intent:
+                    filter_lower = intent.lower()
+                    if filter_lower in self.match_filter_inventory.get('intents', []) or filter_lower.replace(' ', '_') in self.match_filter_inventory.get('intents', []):
+                        intent_match = (filter_lower.replace(' ', '_') in s_intent if s_intent else False) or filter_lower in s_desc
+                    else:
+                        intent_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Contact type filter - CONFIG-DRIVEN using match_filter_inventory
+                contact_match = True
+                if contact_type:
+                    filter_lower = contact_type.lower()
+                    if filter_lower in self.match_filter_inventory.get('contact_types', []) or filter_lower.replace(' ', '_') in self.match_filter_inventory.get('contact_types', []):
+                        contact_match = (filter_lower.replace(' ', '_') in s_contact if s_contact else False) or filter_lower in s_desc or (filter_lower.replace('_', ' ') in s_desc)
+                    else:
+                        contact_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Depth filter - CONFIG-DRIVEN using GROUP_CONFIG
+                depth_match = True
+                if depth:
+                    filter_lower = depth.lower()
+                    if filter_lower in self.GROUP_CONFIG.get('depth', {}).get('default_branches', []):
+                        depth_match = filter_lower in s_depth or filter_lower in s_desc
+                    else:
+                        depth_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Location filter - CONFIG-DRIVEN using match_filter_inventory
+                location_match = True
+                if location:
+                    filter_lower = location.lower()
+                    s_location = (shot.get('location') or '').lower()
+                    if filter_lower in self.match_filter_inventory.get('locations', []) or filter_lower.replace(' ', '_') in self.match_filter_inventory.get('locations', []):
+                        location_match = (filter_lower.replace(' ', '_') in s_location if s_location else False) or filter_lower in s_desc
+                    else:
+                        location_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                # Shot modifier filter - CONFIG-DRIVEN using GROUP_CONFIG
+                modifier_match = True
+                if shot_modifier:
+                    filter_lower = shot_modifier.lower()
+                    # Modifiers can appear in multiple fields: intent, contact, or description
+                    if filter_lower in self.GROUP_CONFIG.get('shot_modifier', {}).get('default_branches', []):
+                        modifier_match = (filter_lower in s_intent or filter_lower in s_contact or 
+                                         filter_lower in s_desc or filter_lower.replace('_', ' ') in s_desc)
+                    else:
+                        modifier_match = all(kw in s_desc for kw in filter_lower.split())
+                
+                if type_match and dir_match and spin_match and outcome_match and intent_match and contact_match and depth_match and location_match and modifier_match:
+                    point_matches = True
+                    break
+            
+            if point_matches:
+                # Extract point winner
+                point_winner = None
+                winner_match = re.search(r'\[Point won by:\s*([^\]]+)\]', point_text)
+                if winner_match:
+                    point_winner = winner_match.group(1).strip()
+                
+                matching_points.append({
+                    'point': point_text,
+                    'point_number': point_data.get('point_number', '?'),
+                    'score': point_data.get('score', ''),
+                    'set': self._extract_current_set(point_data.get('score', '')) or 1,
+                    'winner': point_winner or ''
+                })
+                
+                # NO LIMIT - show ALL matching points in debug
+        
+        debug_info.append(f"Found {len(matching_points)} matching points")
+        
+        # Add full point information for all matching points to debug info
+        debug_info.append(f"\n=== All Matching Points ({len(matching_points)} total) ===")
+        for i, m in enumerate(matching_points, 1):
+            point_num = m.get('point_number', '?')
+            debug_info.append(f"\n**Point {point_num}:**")
+            debug_info.append(m.get('point', 'N/A'))
+        
+        # Store debug info in last_prefilter_debug for caller to append
+        self._last_prefilter_debug = debug_info
+        
+        return matching_points
+    
+    def _format_prefiltered_narrative_context(self, matching_points: List[Dict], classification: Dict) -> str:
+        """Format pre-filtered points into narrative context for LLM."""
+        if not matching_points:
+            return ""
+        
+        filters = classification.get('filters', {})
+        shot_type = filters.get('shot_type') or classification.get('shot_type')
+        direction = filters.get('direction') or classification.get('direction')
+        player = filters.get('player')
+        
+        # Build header
+        desc_parts = []
+        if player:
+            desc_parts.append(player)
+        if direction:
+            desc_parts.append(direction.replace('_', ' '))
+        if shot_type:
+            desc_parts.append(shot_type)
+        
+        header = f"Points containing {' '.join(desc_parts) if desc_parts else 'specified shot attributes'}:"
+        
+        context = f"{header}\n\n"
+        for i, p in enumerate(matching_points, 1):
+            point_num = p.get('point_number', '?')
+            won_by = f" (won by {p['winner']})" if p.get('winner') else ""
+            context += f"{i}. **Point {point_num}** [{p['score']}]{won_by}: {p['point']}\n\n"
+        
+        return context
+    
+    def _format_multi_step_pattern_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format multi-step pattern analysis results."""
+        if 'error' in analysis:
+            return f"Unable to perform multi-step pattern analysis: {analysis['error']}"
+        
+        player = analysis.get('player', 'Player')
+        pattern = analysis.get('pattern', [])
+        total = analysis.get('total_matches', 0)
+        wins = analysis.get('wins', 0)
+        win_pct = analysis.get('win_percentage', 0)
+        matches = analysis.get('matching_points', [])
+        
+        pattern_str = ' -> '.join(pattern)
+        
+        response = f"**Multi-Step Pattern Analysis: {pattern_str}**\n\n"
+        
+        if player:
+            response += f"**Player:** {player}\n"
+        
+        response += f"**Pattern Found:** {total} times\n\n"
+        
+        response += f"**Win Statistics:**\n"
+        response += f"- Points Won: {wins} / {total}\n"
+        response += f"- **Win %: {win_pct}%**\n\n"
+        
+        if matches:
+            response += f"**Point Citations (All {len(matches)} Points):**\n\n"
+            for i, m in enumerate(matches, 1):
+                won_str = "◆ WIN" if m.get('won') else "◆ LOSS"
+                point_num = m.get('point_number', '?')
+                set_num = m.get('set', '?')
+                server = m.get('server', '?')
+                score = m.get('score', '?')
+                
+                response += f"{i}. **Point {point_num}** [Set {set_num} | {server} serving at {score}] {won_str}\n"
+                response += f"   ● Pattern: {pattern_str} (rally length: {m['rally_length']} shots)\n"
+                response += f"   ● Won by: {m.get('point_winner', '?')}\n"
+                
+                # Show matched shots
+                if m.get('match_details'):
+                    response += f"   ● Matched shots:\n"
+                    for j, detail in enumerate(m['match_details'], 1):
+                        response += f"      {j}. {detail.get('player', '?')}: {detail.get('description', '?')}\n"
+                
+                # Show full point description - NO LIMITS
+                point_desc = m.get('point', '')
+                response += f"   ● Point: {point_desc}\n\n"
+        
+        # Add debug info if available
+        debug_info = analysis.get('debug_info', [])
+        if debug_info:
+            response += f"**Debug Information:**\n\n"
+            for debug_line in debug_info:
+                response += f"- {debug_line}\n"
+                response += "\n"
+        
+        return response
+    
+    def _format_multi_step_pattern_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format multi-step pattern analysis results."""
+        if 'error' in analysis:
+            return f"Unable to perform multi-step pattern analysis: {analysis['error']}"
+        
+        pattern = analysis.get('pattern', [])
+        player = analysis.get('player')
+        total = analysis.get('total_matches', 0)
+        wins = analysis.get('wins', 0)
+        win_pct = analysis.get('win_percentage', 0)
+        matches = analysis.get('matching_points', [])
+        
+        pattern_str = " → ".join(pattern)
+        
+        response = f"**Multi-Step Pattern Analysis: {pattern_str}**\n\n"
+        
+        if player:
+            response += f"**Player:** {player}\n"
+        
+        response += f"**Pattern Matches Found:** {total}\n"
+        response += f"**Points Won:** {wins} / {total}\n"
+        response += f"**Win %:** {win_pct}%\n\n"
+        
+        if matches:
+            response += f"**Point Citations (All {len(matches)} Points):**\n\n"
+            for i, m in enumerate(matches, 1):
+                won_str = "â—† WIN" if m.get('won') else "â—‡ LOSS"
+                point_num = m.get('point_number', '?')
+                set_num = m.get('set', '?')
+                server = m.get('server', '?')
+                score = m.get('score', '?')
+                
+                response += f"{i}. **Point {point_num}** [Set {set_num} | {server} serving at {score}] {won_str}\n"
+                response += f"   â—Ź Pattern: {pattern_str} (rally length: {m['rally_length']} shots)\n"
+                response += f"   â—Ź Won by: {m.get('point_winner', '?')}\n"
+                
+                # Show matched shots
+                if m.get('match_details'):
+                    response += f"   â—Ź Matched shots:\n"
+                    for j, detail in enumerate(m['match_details'], 1):
+                        response += f"      {j}. {detail.get('player', '?')}: {detail.get('description', '?')}\n"
+                
+                # Show full point description - NO LIMITS
+                point_desc = m.get('point', '')
+                response += f"   ● Point: {point_desc}\n\n"
+        
+        # Add debug info if available
+        debug_info = analysis.get('debug_info', [])
+        if debug_info:
+            response += f"**Debug Information:**\n\n"
+            for debug_line in debug_info:
+                response += f"- {debug_line}\n"
+                response += "\n"
+        
+        return response
+    
+    def _format_consecutive_shots_analysis(self, analysis: Dict[str, Any]) -> str:
+        """Format consecutive shots analysis results."""
+        if 'error' in analysis:
+            return f"Unable to perform consecutive shots analysis: {analysis['error']}"
+        
+        player = analysis.get('player', 'Player')
+        shot_type = analysis.get('shot_type', 'shot')
+        direction = analysis.get('direction')
+        min_consec = analysis.get('min_consecutive', 3)
+        require_win = analysis.get('require_win', False)
+        
+        total = analysis.get('total_sequences', 0)
+        max_consec = analysis.get('max_consecutive', 0)
+        avg_consec = analysis.get('avg_consecutive', 0)
+        wins = analysis.get('wins', 0)
+        win_pct = analysis.get('win_percentage', 0)
+        matches = analysis.get('matching_points', [])
+        
+        # Build description
+        shot_desc = shot_type.title() if shot_type else "Shot"
+        if direction:
+            shot_desc = f"{direction.replace('_', ' ').title()} {shot_desc}"
+        
+        win_clause = " Before Winning" if require_win else ""
+        
+        response = f"**Consecutive {shot_desc}s Analysis ({min_consec}+{win_clause})**\n\n"
+        
+        if player:
+            response += f"**Player:** {player}\n"
+        
+        response += f"**Minimum Consecutive:** {min_consec}\n"
+        response += f"**Total Qualifying Sequences:** {total}\n"
+        response += f"**Longest Streak:** {max_consec} consecutive\n"
+        response += f"**Average Streak Length:** {avg_consec}\n\n"
+        
+        response += f"**Win Statistics:**\n"
+        response += f"- Points Won: {wins} / {total}\n"
+        response += f"- **Win %: {win_pct}%**\n\n"
+        
+        if matches:
+            response += f"**Point Citations (All {len(matches)} Points):**\n\n"
+            for i, m in enumerate(matches, 1):
+                won_str = "◆ WIN" if m.get('won') else "◆ LOSS"
+                point_num = m.get('point_number', '?')
+                set_num = m.get('set', '?')
+                server = m.get('server', '?')
+                score = m.get('score', '?')
+                
+                response += f"{i}. **Point {point_num}** [Set {set_num} | {server} serving at {score}] {won_str}\n"
+                response += f"   ● {m['consecutive_count']} consecutive {shot_desc}s (rally length: {m['rally_length']} shots)\n"
+                response += f"   ● Won by: {m.get('point_winner', '?')}\n"
+                
+                # Show full point description - NO LIMITS
+                point_desc = m.get('point', '')
+                response += f"   ● Point: {point_desc}\n\n"
+        
+        # Add debug info if available
+        debug_info = analysis.get('debug_info', [])
+        if debug_info:
+            response += f"**Debug Information:**\n\n"
+            for debug_line in debug_info:
+                response += f"- {debug_line}\n"
+            response += "\n"
         
         return response
     
@@ -13678,11 +15050,11 @@ Answer:"""
                 if val_a > 0:
                     ratio = val_b / val_a
                     if ratio >= 2:
-                        response += f"\nâœ… **More than doubled!** ({val_a} â†’ {val_b}, **{ratio:.1f}x**)\n"
+                        response += f"\nâœ… **More than doubled!** ({val_a} -> {val_b}, **{ratio:.1f}x**)\n"
                     elif ratio > 1:
-                        response += f"\nðŸ“ˆ +{((ratio-1)*100):.0f}% change ({val_a} â†’ {val_b})\n"
+                        response += f"\nðŸ“ˆ +{((ratio-1)*100):.0f}% change ({val_a} -> {val_b})\n"
                     elif ratio < 1:
-                        response += f"\nðŸ“‰ -{((1-ratio)*100):.0f}% change ({val_a} â†’ {val_b})\n"
+                        response += f"\nðŸ“‰ -{((1-ratio)*100):.0f}% change ({val_a} -> {val_b})\n"
         
         # === EXAMPLES (optional) ===
         for group_key in group_keys:
@@ -13872,7 +15244,7 @@ Answer:"""
             if point_count_match:
                 shown_points = int(point_count_match.group(1))
                 total_points = int(point_count_match.group(2))
-                print(f"[DEBUG] {shown_points} of {total_points} matching points (shown in response, not terminal)")
+                # Removed console print - points only shown to user on screen
         else:
             data_for_llm = data_response
         
@@ -13925,11 +15297,11 @@ Answer:"""
    - Format the numbers in the way that best answers the user's question{f"   - **RELATED METRICS:** If the question asks about multiple related metrics (e.g., 'first serve % and first serve win %'), synthesize them together in a cohesive answer that shows how they relate to each other." if synthesize_related else ""}
 
 2. **PRESENT THE ANSWER CLEARLY:**
-   - If asking "how many" â†’ Lead with the COUNT (e.g., "Sinner hit **33 winners**, Medvedev hit **29 winners**")
-   - If asking "percentage" â†’ Lead with the PERCENTAGE
-   - If asking "comparison" â†’ Show side-by-side comparison with numbers from calculated data
-   - If asking about "final score" or "match score" â†’ Include the Match Score from the calculated data section
-   - If asking about "how long" or "duration" â†’ Look for this information in the narrative context (it's not in calculated data){f"   - **MULTI-METRIC:** If multiple metrics are provided, present them together showing their relationship (e.g., 'First serve % was X%, and on those first serves, win % was Y%')" if synthesize_related else ""}
+   - If asking "how many" -> Lead with the COUNT (e.g., "Sinner hit **33 winners**, Medvedev hit **29 winners**")
+   - If asking "percentage" -> Lead with the PERCENTAGE
+   - If asking "comparison" -> Show side-by-side comparison with numbers from calculated data
+   - If asking about "final score" or "match score" -> Include the Match Score from the calculated data section
+   - If asking about "how long" or "duration" -> Look for this information in the narrative context (it's not in calculated data){f"   - **MULTI-METRIC:** If multiple metrics are provided, present them together showing their relationship (e.g., 'First serve % was X%, and on those first serves, win % was Y%')" if synthesize_related else ""}
    - Use tables, bullets, or plain text - whatever is clearest
 
 3. **ADD BRIEF TACTICAL INSIGHT (2-3 sentences):**
@@ -14002,29 +15374,29 @@ Format in markdown."""
         guidance_parts = []
         
         if intent['wants_count']:
-            guidance_parts.append("â†’ User wants COUNTS (raw numbers). Show counts prominently, not percentages.")
+            guidance_parts.append("-> User wants COUNTS (raw numbers). Show counts prominently, not percentages.")
         
         if intent['wants_percentage']:
-            guidance_parts.append("â†’ User wants PERCENTAGES/RATES. Calculate and show percentages clearly.")
+            guidance_parts.append("-> User wants PERCENTAGES/RATES. Calculate and show percentages clearly.")
         
         if intent['wants_comparison']:
-            guidance_parts.append("â†’ User wants COMPARISON. Show side-by-side and state who was better/worse.")
+            guidance_parts.append("-> User wants COMPARISON. Show side-by-side and state who was better/worse.")
         
         if intent['wants_trend']:
-            guidance_parts.append("â†’ User wants TREND over time. Show progression across sets/games.")
+            guidance_parts.append("-> User wants TREND over time. Show progression across sets/games.")
         
         if intent['wants_breakdown']:
-            guidance_parts.append("â†’ User wants BREAKDOWN by category. Show grouped/categorized data.")
+            guidance_parts.append("-> User wants BREAKDOWN by category. Show grouped/categorized data.")
         
         if intent['is_simple_lookup']:
-            guidance_parts.append("â†’ Simple lookup question. Give a direct, brief answer.")
+            guidance_parts.append("-> Simple lookup question. Give a direct, brief answer.")
         
         if metrics:
             metric_name = metrics[0].replace('_', ' ').title()
-            guidance_parts.append(f"â†’ Primary metric: {metric_name}")
+            guidance_parts.append(f"-> Primary metric: {metric_name}")
         
         if not guidance_parts:
-            guidance_parts.append("â†’ Use your judgment on the best format to answer this question.")
+            guidance_parts.append("-> Use your judgment on the best format to answer this question.")
         
         return "\n".join(guidance_parts)
     
@@ -14059,7 +15431,75 @@ Format in markdown."""
         - "What happened in Set 3?"
         - "Provide a strategic summary"
         - "Tell the parallel journey of both players"
+        
+        NEW: Supports shot-level pre-filtering for questions like:
+        - "Show me all backhand slice down-the-line winners"
+        - "Find points with forehand volleys"
         """
+        # === NEW: Check if question needs shot-level pre-filtering ===
+        filters = classification.get('filters', {})
+        question_lower = question.lower()
+        
+        # CONFIG-DRIVEN: Check for ALL possible shot attributes from GROUP_CONFIG and match_filter_inventory
+        # Attributes from GROUP_CONFIG: shot_type, direction, spin, outcome, depth, shot_modifier
+        # Attributes from match_filter_inventory: intent, contact_type, location
+        has_shot_attributes = any([
+            filters.get('shot_type'),
+            classification.get('shot_type'),
+            filters.get('direction'),
+            classification.get('direction'),
+            filters.get('spin'),
+            classification.get('spin'),
+            filters.get('outcome'),
+            classification.get('outcome'),
+            filters.get('depth'),
+            classification.get('depth'),
+            filters.get('shot_modifier'),
+            classification.get('shot_modifier'),
+            filters.get('intent'),
+            classification.get('intent'),
+            filters.get('contact_type'),
+            classification.get('contact_type'),
+            filters.get('location'),
+            classification.get('location')
+        ])
+        
+        # Also check attributes that were moved to top-level by schema repair
+        has_toplevel_shot_attrs = any([
+            classification.get('filters', {}).get('shot_type'),
+            classification.get('filters', {}).get('direction'),
+            classification.get('filters', {}).get('spin'),
+            classification.get('filters', {}).get('outcome'),
+            classification.get('filters', {}).get('depth'),
+            classification.get('filters', {}).get('shot_modifier'),
+            classification.get('filters', {}).get('intent'),
+            classification.get('filters', {}).get('contact_type'),
+            classification.get('filters', {}).get('location')
+        ])
+        
+        needs_shot_filter = has_shot_attributes or has_toplevel_shot_attrs
+        
+        if needs_shot_filter and self.point_by_point:
+            print("[NARRATIVE] Using shot-level pre-filtering for specific shot query...")
+            matching_points = self._prefilter_points_by_shot_attributes(classification)
+            
+            if matching_points:
+                # Use pre-filtered context instead of chunk retrieval
+                prefiltered_context = self._format_prefiltered_narrative_context(matching_points, classification)
+                print(f"[NARRATIVE] Pre-filtered to {len(matching_points)} points with matching shots")
+                
+                # Synthesize with focused context
+                answer = self._synthesize_narrative_with_context(question, prefiltered_context, classification, matching_points)
+                
+                # Append debug info (matching points) AFTER narrative synthesis
+                if hasattr(self, '_last_prefilter_debug') and self._last_prefilter_debug:
+                    answer += "\n\n" + "\n".join(self._last_prefilter_debug)
+                    self._last_prefilter_debug = None  # Clear after use
+                
+                return answer
+            else:
+                print("[NARRATIVE] No points matched shot filters, falling back to chunk retrieval")
+        
         print("[NARRATIVE] Retrieving relevant context from NL file...")
         
         # Determine appropriate chunk count for narrative
@@ -14176,6 +15616,64 @@ Answer:"""
         
         return answer
     
+    def _synthesize_narrative_with_context(self, question: str, context: str, classification: Dict, matching_points: List[Dict] = None) -> str:
+        """
+        Synthesize narrative answer using pre-filtered shot-level context.
+        
+        This is a lighter version of _handle_narrative_query for when we already
+        have focused context from shot-level pre-filtering.
+        """
+        filters = classification.get('filters', {})
+        player = filters.get('player', 'the player')
+        
+        # Count points from context if matching_points not provided
+        num_points = len(matching_points) if matching_points else len([line for line in context.split('\n') if line.strip().startswith('**Point')])
+        
+        prompt = f"""Based on the following point-by-point data, answer this question:
+
+**Question:** {question}
+
+**Relevant Points:**
+{context}
+
+Instructions:
+- **LIST ALL {num_points} MATCHING POINTS** - Do NOT summarize or condense
+- **ALWAYS cite point numbers** (e.g., "Point 5", "Point 12") for EVERY point you mention
+- Show the exact count: "There are {num_points} matching points"
+- List each point with its point number and score
+- Provide tactical context if relevant
+- **CRITICAL: The count must match the number of points provided above ({num_points} points)**
+
+Answer:"""
+        
+        try:
+            if self.llm_provider == "gemini":
+                import google.generativeai as genai
+                model = genai.GenerativeModel(self.model)
+                response = model.generate_content(prompt)
+                return response.text
+            elif self.llm_provider == "claude":
+                import anthropic
+                client = anthropic.Anthropic(api_key=self.api_key)
+                response = client.messages.create(
+                    model=self.model,
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                return response.content[0].text
+            elif self.llm_provider == "openai":
+                from openai import OpenAI
+                client = OpenAI(api_key=self.api_key)
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.7
+                )
+                return response.choices[0].message.content
+        except Exception as e:
+            print(f"[SHOT-PREFILTER] Error in synthesis: {e}")
+            return f"Found {len(context.split('**'))-1} matching points. See context above for details."
+    
     # =========================================================================
     # QUERY PLAN ARCHITECTURE
     # =========================================================================
@@ -14202,6 +15700,9 @@ Answer:"""
         query_type = classification.get('query_type', 'narrative')
         analysis_type = classification.get('analysis_type', '')
         metric_clarity = classification.get('metric_clarity', 'vague')
+        
+        # Extract metrics
+        metrics = classification.get('metrics', [])
         
         # Comparison structures that REQUIRE Query Plan (parallel operations)
         set_comparison = classification.get('set_comparison') or {}
@@ -14262,7 +15763,9 @@ Answer:"""
         is_multi_dimensional = n_dimensional or (group_by and secondary_group_by)
         
         # 4. Complex analysis types that need structure
-        complex_analysis_types = ['2d_cross_tab', 'chain', 'momentum']
+        # NOTE: 'chain' is EXCLUDED - it has its own implementation in _analyze_chain_logic
+        # Query Plan doesn't have chain operation support, so let legacy routing handle it
+        complex_analysis_types = ['2d_cross_tab', 'momentum']
         is_complex_analysis = analysis_type in complex_analysis_types
         
         # 5. Comparison with specific filter (needs tree)
@@ -14301,6 +15804,83 @@ Answer:"""
         # DECISION
         # ═══════════════════════════════════════════════════════════════════════
         
+        # Check if this is a one-shot question (serve/return/winner/error) - these are tree-capable
+        is_one_shot_question = any(
+            self.METRIC_CONFIG.get(m, {}).get('player_role') in self.ONE_SHOT_TYPES
+            for m in metrics
+        )
+        
+        # Chain queries have their own implementation - DON'T use Query Plan
+        is_chain_query = analysis_type == 'chain' or classification.get('filters', {}).get('chain_logic')
+        
+        # Consecutive shot queries have their own implementation - DON'T use Query Plan
+        has_consecutive_keywords = (
+            'consecutive' in question_lower or
+            'in a row' in question_lower or
+            'in-a-row' in question_lower or
+            re.search(r'\d+\+?\s*(straight|consecutive)', question_lower) or
+            re.search(r'(hit|hitting|had)\s+\d+\+?\s*(fore|back|cross|down)', question_lower)
+        )
+        has_consecutive_filters = (
+            classification.get('consecutive_shots_min') or
+            filters.get('consecutive_shots_min') or
+            filters.get('sequence_shot_type')
+        )
+        is_consecutive_query = has_consecutive_keywords or has_consecutive_filters
+        
+        # Multi-step pattern queries have their own implementation - DON'T use Query Plan
+        # Normalize arrows (Unicode → to ASCII ->)
+        question_normalized = question.replace('→', '->').replace('→', '->')
+        question_lower_normalized = question_normalized.lower()
+        
+        # Check if LLM detected nested pattern in chain_logic
+        chain_logic = classification.get('chain_logic') or filters.get('chain_logic')
+        has_nested_pattern = False
+        if chain_logic and isinstance(chain_logic, dict):
+            shot_b = chain_logic.get('shot_b')
+            if shot_b and isinstance(shot_b, dict) and 'next_shot' in shot_b:
+                has_nested_pattern = True
+        
+        has_multistep_keywords = (
+            '->' in question_lower_normalized or
+            ' then ' in question_lower_normalized or
+            'sequence' in question_lower_normalized or
+            re.search(r'(forehand|backhand|volley|slice|approach|crosscourt|down.the.line)\s*(,|then|->|followed by)\s*(forehand|backhand|volley|slice|approach|crosscourt|down.the.line|winner|error)', question_lower_normalized)
+        )
+        is_multistep_query = has_nested_pattern or (has_multistep_keywords and '->' in question_normalized)
+        
+        # Shot pre-filtering queries have shot-level attributes but NO grouping
+        # E.g., "When Nadal hit a forehand down-the-line, what % did he win?"
+        # These need _prefilter_points_by_shot_attributes to filter by shot attributes
+        has_shot_attributes = any([
+            filters.get('shot_type'),
+            classification.get('shot_type'),
+            filters.get('direction'),
+            classification.get('direction'),
+            filters.get('spin'),
+            classification.get('spin'),
+            filters.get('outcome')
+        ])
+        
+        # Check top-level shot attributes (moved by schema repair)
+        has_toplevel_shot_attrs = any([
+            classification.get('filters', {}).get('shot_type'),
+            classification.get('filters', {}).get('direction'),
+            classification.get('filters', {}).get('spin'),
+            classification.get('filters', {}).get('shot_modifier')
+        ])
+        
+        # Shot prefilter query = has shot attributes but NOT chain/consecutive/multi-step
+        is_shot_prefilter_query = (has_shot_attributes or has_toplevel_shot_attrs) and not (is_chain_query or is_consecutive_query or is_multistep_query)
+        
+        # CRITICAL: Exclude ALL shot parser queries - they have dedicated handlers
+        is_shot_parser_query = (
+            is_chain_query or 
+            is_consecutive_query or 
+            is_multistep_query or 
+            is_shot_prefilter_query
+        )
+        
         needs_query_plan = (
             has_set_comparison or
             has_situation_comparison or
@@ -14309,10 +15889,11 @@ Answer:"""
             is_filtered_comparison or
             has_temporal_pattern or         # Safety net #1: temporal
             is_shot_level_grouping or       # Safety net #2: shot-level grouping (CONFIG-DRIVEN)
-            has_shot_level_context          # Safety net #3: shot-level context exists
-        )
+            has_shot_level_context or       # Safety net #3: shot-level context exists
+            is_one_shot_question            # Safety net #4: one-shot types need tree grouping
+        ) and not is_shot_parser_query  # EXCLUDE all shot parser queries
         
-        skip_query_plan = is_pure_narrative or is_simple_analytical
+        skip_query_plan = is_pure_narrative or is_simple_analytical or is_shot_parser_query
         
         # Final decision: use Query Plan unless we're confident it's simple
         should_use = needs_query_plan or (not skip_query_plan)
@@ -14330,10 +15911,18 @@ Answer:"""
             if not reasons: reasons.append("non-trivial")
             print(f"[QUERY-PLAN] Using Query Plan ({', '.join(reasons)})")
         else:
-            if is_pure_narrative:
-                print(f"[QUERY-PLAN] Skipping Query Plan (pure narrative → existing routing)")
+            if is_chain_query:
+                print(f"[QUERY-PLAN] Skipping Query Plan (chain query -> _analyze_chain_logic)")
+            elif is_consecutive_query:
+                print(f"[QUERY-PLAN] Skipping Query Plan (consecutive shots query -> _analyze_consecutive_shots)")
+            elif is_multistep_query:
+                print(f"[QUERY-PLAN] Skipping Query Plan (multi-step pattern query -> _analyze_multi_step_pattern)")
+            elif is_shot_prefilter_query:
+                print(f"[QUERY-PLAN] Skipping Query Plan (shot pre-filtering query -> _prefilter_points_by_shot_attributes)")
+            elif is_pure_narrative:
+                print(f"[QUERY-PLAN] Skipping Query Plan (pure narrative -> existing routing)")
             elif is_simple_analytical:
-                print(f"[QUERY-PLAN] Skipping Query Plan (simple analytical → existing routing)")
+                print(f"[QUERY-PLAN] Skipping Query Plan (simple analytical -> existing routing)")
         
         return should_use
     
@@ -14420,6 +16009,34 @@ KEYWORD DETECTION → TREE:
 - "at 30-30", "at 15-40", "when ahead", "when behind"
 - "long rallies", "short rallies", "rallies of 7+"
 - "first 100 points", "last 50 points"
+
+════════════════════════════════════════════════════════════════════════════════════════════
+CRITICAL: TREE METADATA ATTRIBUTES - USE PURE TREE FOR ALL COUNTING/DISTRIBUTION
+════════════════════════════════════════════════════════════════════════════════════════════
+ANY attribute stored in tree metadata MUST use TREE operations for counting/math.
+NEVER use narrative/LLM counting for data that exists in tree metadata.
+
+TREE METADATA ATTRIBUTES (use group_by for distribution questions):
+• return_depth: shallow, deep, very_deep (return shot - one per return point)
+• serve_target / serve_direction: T, wide, body (serve - one per serve point)
+• serve_number: 1st, 2nd (which serve was in play)
+• winning_shot_type: forehand, backhand, volley, etc. (shot that ended the point)
+• winning_shot_direction: crosscourt, DTL, etc. (direction of winning shot)
+• winning_shot_outcome: winner, unforced_error, forced_error, ace, double_fault
+• court_side: deuce, ad
+• serve_plus_one_type: forehand, backhand, none (shot after serve)
+
+KEYWORD DETECTION → TREE WITH GROUP_BY (deterministic counting):
+- "return depth distribution" → group_by=return_depth
+- "serve target %" → group_by=serve_target  
+- "winning shot type breakdown" → group_by=winning_shot_type
+- "direction of winners" → filters={{outcome: winner}}, group_by=winning_shot_direction
+
+IMPORTANT DISTINCTION - Rally shots vs Point-metadata shots:
+- "forehand depth in rallies" = NARRATIVE (many forehands per point, requires parsing)
+- "return depth" = TREE (exactly one return per point, in metadata)
+- "winning shot direction" = TREE (exactly one winning shot per point, in metadata)
+- "rally forehand direction" = NARRATIVE (many forehands per point, requires parsing)
 
 ════════════════════════════════════════════════════════════════════════════════════════════
 TREE METRICS (what tree can compute)
@@ -14512,6 +16129,7 @@ QUERY PLAN JSON FORMAT
       "route": "tree" | "narrative" | "clarify",
       "filters": {{}},           // tree: ONLY point-level filters
       "metrics": [],             // tree: ONLY supported metrics
+      "group_by": "return_depth" | "serve_target" | "player" | null,  // tree: for COUNTING/DISTRIBUTION questions
       "chunk_retrieval": true,   // narrative: ALWAYS true
       "chunk_query": "...",      // narrative: REQUIRED - keywords to find right chunks
       "point_source": "A",       // hybrid: use filtered points from tree op
@@ -14565,11 +16183,19 @@ RULE 8: CRITICAL - Distinguish QUALITATIVE momentum vs SEQUENTIAL momentum:
     → Statistical analysis using prev_rally_length, prev_point_result filters
   - Keywords: "after", "following", "immediately after", "in response to" → TREE with prev_* filters
 
-RULE 9: CRITICAL - If group_by is NOT in TREE_LEVEL_DIMENSIONS, use HYBRID:
-  - Tree dimensions: {supported_filters}
-  - Examples of shot-level groupings: return_depth, serve_placement, direction, shot_type, depth, spin
-  - Tree operation filters to relevant points (e.g., role=returner for return_depth)
-  - Narrative operation analyzes point descriptions to extract shot-level data
+RULE 9: CRITICAL - IF DATA EXISTS IN TREE METADATA, USE TREE (NOT NARRATIVE/LLM COUNTING):
+  - For ANY counting/distribution/math question, check if the attribute is in tree metadata
+  - Tree metadata attributes: return_depth, serve_target, serve_number, winning_shot_*, court_side, serve_plus_one_type
+  - Questions about these → Use PURE TREE with group_by for DETERMINISTIC counts
+  - Example: {{"route": "tree", "filters": {{"role": "returner"}}, "group_by": "return_depth", "metrics": ["win_percentage"]}}
+  - NO LLM COUNTING - tree metadata provides exact numbers
+  
+RULE 9b: ONLY use HYBRID/NARRATIVE when data is NOT in tree metadata:
+  - Rally shot patterns NOT in metadata: forehand/backhand patterns during rallies, shot sequences
+  - These require parsing point descriptions because tree doesn't store every shot in a rally
+  - Tree stores: serve, return, winning shot (in metadata) ✅
+  - Tree does NOT store: 2nd rally shot, 3rd rally shot, etc. ❌
+  - Example hybrid: "forehand crosscourt patterns in rallies" → tree filters + narrative analyzes rally descriptions
 
 RULE 10: CRITICAL - Handling ANY "*_group*" Fields in Classification:
   - NEVER use ANY field name containing "_group" as a filter dimension
@@ -14598,6 +16224,17 @@ RULE 11: CRITICAL - ALWAYS Include Player Filter in Tree Operations:
   - Example: If player="Daniil Medvedev" and you're filtering to sets [3,4,5], the filter MUST be {{"set": [3,4,5], "player": "Daniil Medvedev"}}
   - The ONLY exception is when player="both" (comparing both players) → then do NOT include player in filters
   - DO NOT filter player in tree operations if player="both" - the tree will aggregate by player automatically
+
+RULE 12: CRITICAL - MULTI-DIMENSIONAL GROUPING - SPLIT OPERATIONS:
+  - When classification has secondary_group_by or tertiary_group_by with point-level values, CREATE SEPARATE OPERATIONS
+  - For serve_number: Create 2 ops (serve_number=1, serve_number=2)
+  - For player (when comparing "both"): Create 2 ops for each player name
+  - Each operation should have the SAME group_by but DIFFERENT filters for the secondary dimension
+  - Example: group_by="return_depth", secondary_group_by="serve_number"
+    → Op A: filters={{{{role: returner, serve_number: 1}}}}, group_by="return_depth"
+    → Op B: filters={{{{role: returner, serve_number: 2}}}}, group_by="return_depth"
+  - Example: group_by="return_depth", secondary_group_by="serve_number", tertiary_group_by="player", player="both"
+    → 4 ops: each player × each serve_number, all with group_by="return_depth"
 
 ════════════════════════════════════════════════════════════════════════════════════════════
 EXAMPLES - COPY THESE PATTERNS
@@ -14788,46 +16425,50 @@ CRITICAL: Player "Daniil Medvedev" MUST be included in tree filters (RULE 11)!
   "synthesis_instructions": "Operation A filters to Medvedev's points in Sets 1-2. B analyzes down-the-line shots in those points. C filters to Sets 3-5. D analyzes down-the-line in those. Compare frequency/patterns between early vs late sets."
 }}
 
-Q: "Did Sinner start returning deeper later, or was it constant?"
-PARSED CLASSIFICATION: {{"filters": {{"role": "returner"}}, "group_by": "sets"}}
-EXPLANATION: TREND question about return depth. Get ALL return points via tree, then narrative analyzes the POINT DESCRIPTIONS to extract depth patterns per set.
+Q: "What was the return depth distribution?"
+PARSED CLASSIFICATION: {{"filters": {{"role": "returner"}}, "group_by": "return_depth"}}
+EXPLANATION: COUNTING/DISTRIBUTION question about return_depth (one-shot-per-point). Use TREE grouping for deterministic counts.
+CRITICAL: return_depth is in tree metadata - use group_by for accurate counting!
 {{
   "query_plan": [
-    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"role": "returner"}}, "metrics": []}},
-    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "chunk_retrieval": false}}
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"role": "returner"}}, "group_by": "return_depth", "metrics": ["points_won", "win_percentage"]}}
   ],
-  "synthesis_instructions": "Operation A gives ALL return points with full descriptions. Analyze the return shot in each point (2nd shot, after serve). Extract depth labels ('very deep', 'deep', 'shallow') from descriptions like 'backhand return down the middle (very deep)'. Group by set and count depths per set. Report whether depth was constant or changed across sets."
+  "synthesis_instructions": "Tree operation A filters to return points and groups by return_depth (shallow/deep/very_deep). Use the per-branch win rates to answer the distribution question."
 }}
 
-Q: "How did Medvedev's serve placement change throughout the match?"
-EXPLANATION: Shot-level pattern analysis (serve placement). Get ALL serve points, then narrative analyzes POINT DESCRIPTIONS to extract placement.
+Q: "What was Nadal's return depth distribution against Federer's 1st and 2nd serves?"
+PARSED CLASSIFICATION: {{"player": "Rafael Nadal", "group_by": "return_depth", "role": "returner"}}
+EXPLANATION: Return depth DISTRIBUTION question. Use TREE grouping by return_depth for deterministic counts. Separate operations for 1st vs 2nd serve.
+CRITICAL: return_depth is in tree metadata - DO NOT use narrative for counting!
 {{
   "query_plan": [
-    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"role": "server"}}, "metrics": []}},
-    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "chunk_retrieval": false}}
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"role": "returner", "serve_number": 1, "player": "Rafael Nadal"}}, "group_by": "return_depth", "metrics": ["points_won", "win_percentage"]}},
+    {{"id": "B", "route": "tree", "op_type": "tree_aggregate", "filters": {{"role": "returner", "serve_number": 2, "player": "Rafael Nadal"}}, "group_by": "return_depth", "metrics": ["points_won", "win_percentage"]}}
   ],
-  "synthesis_instructions": "Operation A gives ALL serve points with descriptions. Extract serve placement ('wide', 'T', 'body') from descriptions like '1st serve wide' or '2nd serve down the T'. Group by set and count placements. Report how placement changed across sets."
+  "synthesis_instructions": "Operation A groups Nadal's 1st serve returns by depth (shallow/deep/very_deep). Operation B does same for 2nd serves. Report distribution and win rates for each depth zone against each serve type."
 }}
 
-Q: "Which return depth zone created the most advantage: deep vs very deep?"
-PARSED CLASSIFICATION: {{"group_by": "return_depth", "role": "returner", "metric": "win_percentage"}}
-EXPLANATION: Return depth is shot-level (extracted from point descriptions). Get ALL return points via tree, then analyze descriptions.
+Q: "What direction did Nadal hit his winners?"
+PARSED CLASSIFICATION: {{"player": "Rafael Nadal", "group_by": "winning_shot_direction", "outcome": "winner"}}
+EXPLANATION: Winning shot direction DISTRIBUTION. Use TREE grouping - winning_shot_direction is in tree metadata!
+CRITICAL: DO NOT use narrative - tree has exact counts per direction.
 {{
   "query_plan": [
-    {{"id": "A", "route": "tree", "op_type": "tree_filter_only", "filters": {{"role": "returner"}}, "metrics": []}},
-    {{"id": "B", "route": "narrative", "op_type": "narrative_describe", "point_source": "A", "chunk_retrieval": false}}
+    {{"id": "A", "route": "tree", "op_type": "tree_aggregate", "filters": {{"player": "Rafael Nadal", "outcome": "winner"}}, "group_by": "winning_shot_direction", "metrics": ["points_won"]}}
   ],
-  "synthesis_instructions": "Operation A gives ALL return points. Extract return depth ('deep', 'very deep', 'shallow') from point descriptions. Group by depth and compute win % for each. Report which depth had highest win %."
+  "synthesis_instructions": "Tree groups Nadal's winners by direction (crosscourt/DTL/inside-out/inside-in). Report count and % for each direction."
 }}
 
-Q: "What was Sinner's most successful forehand pattern (inside-out, inside-in, DTL)?"
+Q: "What was Sinner's most successful forehand pattern during rallies (inside-out, inside-in, DTL)?"
 PARSED CLASSIFICATION: {{"group_by": "direction", "shot_type": "forehand", "player": "Jannik Sinner"}}
-EXPLANATION: Shot direction comparison - data is in SHOTDIR chunks with win percentages by direction. Use narrative with chunk_retrieval to get SHOTDIR data.
+EXPLANATION: RALLY forehand direction patterns - this asks about ALL forehands during rallies (not just winning shots).
+This data is pre-computed and stored in SHOTDIR chunks. Use narrative with chunk_retrieval.
+IMPORTANT: This is DIFFERENT from "direction of Sinner's forehand winners" (which would use tree + winning_shot_direction).
 {{
   "query_plan": [
     {{"id": "A", "route": "narrative", "op_type": "narrative_describe", "chunk_retrieval": true, "chunk_query": "Sinner forehand direction inside-out inside-in down the line win percentage points won", "top_k": 15}}
   ],
-  "synthesis_instructions": "Find SHOTDIR1 chunk with forehand win percentages by direction. Compare inside-out, inside-in, and down the line win rates. Report which pattern was most successful (highest win %)."
+  "synthesis_instructions": "Find SHOTDIR1 chunk with forehand win percentages by direction for ALL rally forehands. Compare inside-out, inside-in, and down the line win rates. Report which pattern was most successful (highest win %)."
 }}
 
 Q: "How many crosscourt winners did each player hit?"
@@ -14985,7 +16626,7 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             ) if ops else True
             
             if is_garbage:
-                print(f"[QUERY-PLAN] Generated garbage (empty ops) → using fallback")
+                print(f"[QUERY-PLAN] Generated garbage (empty ops) -> using fallback")
                 return self._fallback_query_plan(question, classification)
             
             print(f"[QUERY-PLAN] Generated plan with {len(ops)} operations")
@@ -15150,6 +16791,29 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         filters = classification.get('filters', {})
         metrics = classification.get('metrics', ['points_won'])
         group_by = classification.get('group_by')
+        secondary_group_by = classification.get('secondary_group_by')
+        tertiary_group_by = classification.get('tertiary_group_by')
+        
+        # Find the FIRST tree-level group_by dimension (for tree operations)
+        # Check primary, then secondary, then tertiary
+        # NORMALIZE: "depth" → "return_depth" for return questions (schema inconsistency fix)
+        is_return_question = filters.get('role') == 'returner' or classification.get('role') == 'returner'
+        
+        tree_group_by = None
+        for gb in [group_by, secondary_group_by, tertiary_group_by]:
+            if not gb:
+                continue
+            
+            # NORMALIZE: "depth" → "return_depth" for return questions
+            if gb == 'depth' and is_return_question:
+                gb = 'return_depth'
+                print(f"[FALLBACK] Normalized group_by 'depth' -> 'return_depth' (return question)")
+            
+            if gb in self.TREE_LEVEL_DIMENSIONS:
+                tree_group_by = gb
+                print(f"[FALLBACK] Found tree-level group_by: '{gb}'")
+                break
+        
         shot_type = classification.get('shot_type') or filters.get('shot_type')
         direction = classification.get('direction') or filters.get('direction')
         shot_modifier = classification.get('shot_modifier') or filters.get('shot_modifier')
@@ -15190,9 +16854,14 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             }
         
         # Check if any filters are NOT in tree dimensions → narrative
-        non_tree_filters = [k for k in filters.keys() if k not in self.TREE_LEVEL_DIMENSIONS and filters[k]]
+        # IGNORE spurious filters that LLM sometimes adds (handedness, etc.)
+        IGNORED_FILTERS = {'handedness', 'hand', 'handed'}  # These should never be filters
+        non_tree_filters = [k for k in filters.keys() 
+                           if k not in self.TREE_LEVEL_DIMENSIONS 
+                           and k not in IGNORED_FILTERS
+                           and filters[k]]
         if non_tree_filters:
-            print(f"[FALLBACK] Non-tree filters {non_tree_filters} → narrative")
+            print(f"[FALLBACK] Non-tree filters {non_tree_filters} -> narrative")
             return {
                 "query_plan": [
                     {"id": "A", "route": "narrative", "chunk_retrieval": True, 
@@ -15204,12 +16873,17 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         # DEFAULT: TREE with valid filters only
         tree_filters = {k: v for k, v in filters.items() 
                        if v is not None and k in self.TREE_LEVEL_DIMENSIONS}
+        
+        # Include group_by if it's a tree-level dimension (deterministic counting!)
+        tree_op = {"id": "A", "route": "tree", "filters": tree_filters, "metrics": metrics}
+        if tree_group_by:
+            tree_op["group_by"] = tree_group_by
+            print(f"[FALLBACK-DEFAULT] Including group_by='{tree_group_by}' in tree operation")
+        
         return {
-            "query_plan": [
-                {"id": "A", "route": "tree", "filters": tree_filters, "metrics": metrics}
-            ],
-            "synthesis_instructions": "Report stats from tree analysis"
-        }
+            "query_plan": [tree_op],
+            "synthesis_instructions": "Report stats from tree analysis with grouping"
+            }
     
     def _execute_query_plan(self, question: str, query_plan: Dict, classification: Dict, top_k: int = None) -> str:
         """
@@ -15271,6 +16945,24 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             print(f"[QUERY-PLAN] Executing operation {op_id} ({route}, type={op_type})...")
             
             if route == 'tree':
+                # ENSURE group_by is in operation if classification has it (LLM sometimes forgets)
+                if 'group_by' not in op:
+                    # Check if classification has a tree-level group_by
+                    for gb_field in ['group_by', 'secondary_group_by', 'tertiary_group_by']:
+                        gb_value = classification.get(gb_field)
+                        if not gb_value:
+                            continue
+                        
+                        # Normalize "depth" → "return_depth" for return questions
+                        is_return = op.get('filters', {}).get('role') == 'returner' or classification.get('role') == 'returner'
+                        if gb_value == 'depth' and is_return:
+                            gb_value = 'return_depth'
+                        
+                        if gb_value in self.TREE_LEVEL_DIMENSIONS:
+                            op['group_by'] = gb_value
+                            print(f"[QUERY-PLAN] Added missing group_by='{gb_value}' to operation {op_id}")
+                            break
+                
                 result, points = self._execute_tree_operation(op, classification)
                 
                 # Add structured metadata
@@ -15359,8 +17051,11 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         original_filters = classification.get('filters', {})
         player_context = filters.get('player') or original_filters.get('player') or classification.get('player')
         
-        # CRITICAL FIX: Strip 'player' from filters if Query Plan LLM incorrectly added it
-        # 'player' is NOT a filter dimension - it's context for role/winner matching
+        # ORIGINAL DESIGN: Strip 'player' from filters - it's context for role resolution, not a filter
+        # The role filter (server/returner) uses player_context to determine WHO should be in that role
+        # Having player in BOTH filters AND classification causes double-filtering with different logic
+        if 'player' in filters:
+            print(f"[TREE-OP] Moving player='{filters.get('player')}' from filters to classification context")
         filters = {k: v for k, v in filters.items() if k != 'player'}
         
         # Set operation filters but preserve player at classification level for role filtering
@@ -15388,7 +17083,37 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         
         # Build classification for metric computation
         temp_classification['metrics'] = metrics
-        temp_classification['group_by'] = None  # Query Plan operations don't group by default
+        
+        # For tree-level dimensions, allow tree grouping
+        # These are dimensions that exist in tree metadata (no rally parsing needed)
+        # Use TREE_LEVEL_DIMENSIONS constant (defined at class level)
+        
+        # Collect ALL group_by dimensions that are tree-level
+        # NORMALIZE: "depth" → "return_depth" for return questions (schema inconsistency fix)
+        is_return_question = filters.get('role') == 'returner' or classification.get('role') == 'returner'
+        
+        group_by_dimensions = []
+        for gb_field in ['group_by', 'secondary_group_by', 'tertiary_group_by']:
+            gb_value = classification.get(gb_field)
+            if not gb_value:
+                continue
+            
+            # NORMALIZE: "depth" → "return_depth" for return questions
+            if gb_value == 'depth' and is_return_question:
+                gb_value = 'return_depth'
+                print(f"[TREE-OP] Normalized group_by 'depth' -> 'return_depth' (return question)")
+            
+            if gb_value in self.TREE_LEVEL_DIMENSIONS:
+                group_by_dimensions.append(gb_value)
+        
+        if group_by_dimensions:
+            # Use primary tree-level group_by for the main grouping
+            temp_classification['group_by'] = group_by_dimensions[0]
+            # Store all dimensions for multi-dimensional analysis
+            temp_classification['all_group_by'] = group_by_dimensions
+            print(f"[TREE-OP] Using tree grouping for dimensions: {group_by_dimensions}")
+        else:
+            temp_classification['group_by'] = None
         
         # Use existing _compute_leaf_metrics - it's GENERIC and handles ALL metrics via config
         # NO HARDCODING - the config defines how each metric is computed
@@ -15403,6 +17128,12 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             'player1_name': self.player1,
             'player2_name': self.player2,
         }
+        
+        # Include grouping data if present (for distribution queries)
+        if 'grouped_by' in computed_results:
+            result['grouped_by'] = computed_results['grouped_by']
+            result['groups'] = computed_results['groups']
+            print(f"[TREE-OP] Returning grouped results: {len(computed_results['groups'])} groups by {computed_results['grouped_by']}")
         
         return result, filtered_points
     
@@ -15640,6 +17371,29 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                     # Get total points for clarity
                     total_points_in_category = result.get('total_points', 0)
                     
+                    # ============================================================
+                    # GROUPED RESULTS: Display distribution by dimension
+                    # ============================================================
+                    grouped_by = result.get('grouped_by')
+                    groups = result.get('groups', {})
+                    
+                    if grouped_by and groups:
+                        context_parts.append(f"\n*** DISTRIBUTION BY {grouped_by.upper()} ***")
+                        for group_value, group_data in sorted(groups.items()):
+                            count = group_data.get('count', 0)
+                            p1_wins = group_data.get('player1_wins', 0)
+                            p2_wins = group_data.get('player2_wins', 0)
+                            p1_pct = group_data.get('player1_pct', 0)
+                            p2_pct = group_data.get('player2_pct', 0)
+                            
+                            context_parts.append(f"  {group_value}: {count} points")
+                            context_parts.append(f"    {player1} won: {p1_wins} ({p1_pct}%)")
+                            context_parts.append(f"    {player2} won: {p2_wins} ({p2_pct}%)")
+                        context_parts.append("")
+                    
+                    # ============================================================
+                    # OVERALL METRICS (always shown)
+                    # ============================================================
                     for metric, player_data in result.get('per_player_metrics', {}).items():
                         p1_count = player_data.get('player1', {}).get('count', 0)
                         p1_total = player_data.get('player1', {}).get('total', 0)
@@ -15675,7 +17429,9 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                     if limitations:
                         context_parts.append(f"Limitations: {', '.join(limitations)}")
                     
-                    # Collect filtered points
+                    # Collect filtered points from this operation
+                    # NOTE: May contain duplicates across operations (e.g., Op A: all break points, Op B: subset with 7+ shots)
+                    # Deduplication happens before debug display
                     points = filtered_points_by_id.get(op_id, [])
                     all_points.extend(points)
                     
@@ -15689,16 +17445,9 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                     if result.get('point_texts'):
                         num_points = len(result['point_texts'])
                         context_parts.append(f"\nFiltered Point Descriptions ({num_points} points):")
-                        # For shot-level questions, we NEED the point descriptions
-                        # Include ALL points if < 50, otherwise sample intelligently
-                        if num_points <= 50:
-                            context_parts.extend(result['point_texts'])
-                        else:
-                            # Sample evenly across the filtered points
-                            step = num_points // 40  # Show ~40 points max
-                            sampled = result['point_texts'][::step][:40]
-                            context_parts.extend(sampled)
-                            context_parts.append(f"\n[Note: Showing 40 of {num_points} filtered points]")
+                        # NO SAMPLING - Include ALL points for maximum accuracy
+                        # User preference: accuracy > speed/cost
+                        context_parts.extend(result['point_texts'])
                     
                     if result.get('chunks'):
                         context_parts.append("\nRetrieved Reference Chunks:")
@@ -15726,11 +17475,18 @@ Return ONLY valid JSON (no markdown, no explanation):"""
         aggregated_stats = ""
         
         if all_points:
+            # Check if tree operations already provided grouped results
+            has_tree_grouping = any(
+                result.get('grouped_by') and result.get('groups')
+                for result in results.values()
+                if isinstance(result, dict)
+            )
+            
             # ONLY compute aggregations for questions that NEED full point analysis:
-            # - Trend analysis (changes across sets)
-            # - Shot-level pattern questions (return depth, serve placement, directions)
-            # - Questions grouped by sets
+            # - Trend analysis (changes across sets) without tree grouping
+            # - Shot-level pattern questions (depth, placement, directions) that DON'T have tree grouping
             # Simple metric questions (aces, winners, win%) use tree stats directly
+            # Set-based questions now use tree grouping (not full point analysis)
             
             analysis_type = classification.get('analysis_type', '')
             group_by = classification.get('group_by', '')
@@ -15738,7 +17494,7 @@ Return ONLY valid JSON (no markdown, no explanation):"""
             
             needs_full_analysis = (
                 analysis_type == 'trend' or
-                group_by in ('sets', 'set') or  # Handle both plural and singular
+                # REMOVED: group_by in ('sets', 'set') - now handled by tree grouping
                 'depth' in question_lower or
                 'placement' in question_lower or
                 'direction' in question_lower or
@@ -15749,23 +17505,33 @@ Return ONLY valid JSON (no markdown, no explanation):"""
                 'throughout' in question_lower
             )
             
+            # If tree already grouped the results, skip full point analysis
+            if has_tree_grouping:
+                needs_full_analysis = False
+                print(f"[SYNTHESIS] Skipping full point analysis - tree provided grouped results")
+            
             if needs_full_analysis and len(all_points) > 10:
                 aggregated_stats = self._compute_point_aggregations(all_points, classification)
                 print(f"[SYNTHESIS] Full point analysis for trend/pattern question")
             
-            # NO SAMPLING - Pass ALL points for maximum accuracy
-            # User preference: accuracy > speed
-            point_texts = []
-            for pt in all_points:
-                point_num = pt.get('point_number', '?')
-                server = pt.get('server', '?')
-                score = pt.get('score', '?')
-                set_num = pt.get('set_number', pt.get('set', '?'))
-                description = pt.get('point_text', pt.get('description', ''))
-                point_winner = pt.get('point_winner', '?')
-                point_texts.append(f"Point {point_num} [Set {set_num} | {server} serving at {score}]: {description} [Won by: {point_winner}]")
-            point_context = "\n\n".join(point_texts)
-            print(f"[SYNTHESIS] Passing ALL {len(all_points)} point descriptions to LLM (no sampling)")
+            # Only pass point descriptions if we don't have tree grouping
+            # When tree has grouped results, the LLM uses those - no need for raw descriptions
+            if not has_tree_grouping:
+                # NO SAMPLING - Pass ALL points for maximum accuracy
+                # User preference: accuracy > speed
+                point_texts = []
+                for pt in all_points:
+                    point_num = pt.get('point_number', '?')
+                    server = pt.get('server', '?')
+                    score = pt.get('score', '?')
+                    set_num = pt.get('set_number', pt.get('set', '?'))
+                    description = pt.get('point_text', pt.get('description', ''))
+                    point_winner = pt.get('point_winner', '?')
+                    point_texts.append(f"Point {point_num} [Set {set_num} | {server} serving at {score}]: {description} [Won by: {point_winner}]")
+                point_context = "\n\n".join(point_texts)
+                print(f"[SYNTHESIS] Passing ALL {len(all_points)} point descriptions to LLM (no sampling)")
+            else:
+                print(f"[SYNTHESIS] Skipping point descriptions - using tree grouped results only")
         
         # Build limitations summary for LLM
         limitations_text = "\n".join(all_limitations) if all_limitations else "None"
@@ -15798,11 +17564,11 @@ LIMITATIONS/CAVEATS:
 AGGREGATED STATISTICS (computed from ALL points):
 {aggregated_stats if aggregated_stats else "(No aggregated stats)"}
 
-SAMPLE POINT DETAILS (for context):
+FULL POINT DETAILS ({len(all_points) if all_points else 0} points - NO SAMPLING):
 {point_context if point_context else "(No point details)"}
 
 Based on the operation results and AGGREGATED STATISTICS, provide a clear answer to the question.
-CRITICAL: Use the AGGREGATED STATISTICS for your analysis - they cover ALL points, not just the samples.
+CRITICAL: Use the AGGREGATED STATISTICS for your analysis - they cover ALL filtered points.
 
 DATA SOURCE HIERARCHY (CRITICAL):
 1. For shot-level questions (forehand/backhand, direction, etc.) with point-level filters (Set X, break points):
@@ -15832,8 +17598,8 @@ RULES (CRITICAL):
 - For hybrid queries: Analyze the "Filtered Point Descriptions" to extract shot-level data
 - Reference specific points when relevant (by point number)
 - Provide tactical insight for PATTERNS only, not for inventing statistics
-- If any operation has low confidence or small sample size, explicitly mention this caveat
-- If sample size < 7 points, avoid strong tactical claims like "dominated" or "struggled"
+- If any operation has low confidence or small data size, explicitly mention this caveat
+- If data size < 7 points, avoid strong tactical claims like "dominated" or "struggled"
 - Be concise but complete
 - SURFACE NEGATIVE EVIDENCE: If no meaningful difference is observed, SAY SO explicitly
   - "No significant difference was observed between X and Y"
@@ -15854,7 +17620,7 @@ RULES (CRITICAL):
 FORBIDDEN:
 - Do NOT calculate percentages yourself - only report what tree operations computed
 - Do NOT invent counts - if winners/errors not in tree results, say "detailed breakdown not available"
-- Do NOT extrapolate from small samples to general patterns
+- Do NOT extrapolate from small data sets to general patterns
 - Do NOT use match-wide totals when the question asks about a specific set/situation
 - Do NOT imply differences when the data shows none - be honest about null results
 
@@ -15876,14 +17642,31 @@ Answer:"""
         
         # Add debug section showing filtered points (controlled by DEBUG flag)
         if self.DEBUG_SHOW_POINTS and all_points:
-            debug_section = f"\n\n**DEBUG: Filtered Points ({len(all_points)} total)**\n"
-            # NO SAMPLING - Show ALL points for maximum transparency
-            for i, pt in enumerate(all_points, 1):
+            # CRITICAL: Deduplicate points by point_number (multi-op plans can have overlapping filters)
+            # Example: Op A filters to "break points in Sets 4-5" (6 points)
+            #          Op B filters to "break points in Sets 4-5 with 7+ shots" (3 points)
+            # Without dedup, we'd show 9 points (6 + 3 with duplicates)
+            seen_points = {}
+            for pt in all_points:
+                point_num = pt.get('point_number')
+                if point_num and point_num not in seen_points:
+                    seen_points[point_num] = pt
+            
+            unique_points = list(seen_points.values())
+            
+            debug_section = f"\n\n**DEBUG: Filtered Points ({len(unique_points)} unique)**\n"
+            if len(all_points) > len(unique_points):
+                debug_section += f"*(Deduplicated from {len(all_points)} total across operations)*\n"
+            
+            # NO SAMPLING - Show ALL unique points for maximum transparency
+            for i, pt in enumerate(unique_points, 1):
                 debug_section += self._format_debug_point(pt, i)
             answer += debug_section
         elif all_points and not self.DEBUG_SHOW_POINTS:
-            # Production mode: just show count and filters
-            answer += f"\n\n*Based on {len(all_points)} filtered points.*"
+            # Production mode: deduplicate and show count
+            seen_points = set(pt.get('point_number') for pt in all_points if pt.get('point_number'))
+            unique_count = len(seen_points)
+            answer += f"\n\n*Based on {unique_count} filtered points.*"
         
         return answer
     
@@ -15999,8 +17782,19 @@ Answer:"""
         # === CHECK FOR HYBRID CONDITIONS ===
         active_hybrid_filters = {k: v for k, v in ALWAYS_HYBRID_FILTERS.items() if v is not None}
         
+        # Extract metrics from classification
+        metrics = classification.get('metrics', [])
+        
+        # NEW: If the question is about ONE-SHOT types (serve/return/winner/error),
+        # ALL shot attributes (direction, depth, type) are tree-capable - no hybrid needed
+        is_one_shot_question = any(
+            self.METRIC_CONFIG.get(m, {}).get('player_role') in self.ONE_SHOT_TYPES
+            for m in metrics
+        )
+        
         # Condition 1: Always-hybrid filter + shot question
-        if active_hybrid_filters and is_shot_question:
+        # BUT SKIP if it's a one-shot question (those are tree-capable)
+        if active_hybrid_filters and is_shot_question and not is_one_shot_question:
             return {
                 'needs_hybrid': True,
                 'reason': f"Filter {list(active_hybrid_filters.keys())} + shot {shot_trigger} not pre-computed",
@@ -16009,7 +17803,8 @@ Answer:"""
             }
         
         # Condition 2: Situation + shot direction (situation stats exist, but not with directions)
-        if situation_filter and has_direction_question:
+        # BUT SKIP if it's a one-shot question (those are tree-capable)
+        if situation_filter and has_direction_question and not is_one_shot_question:
             return {
                 'needs_hybrid': True,
                 'reason': f"Situation '{situation_filter}' + shot direction not pre-computed",
@@ -16352,19 +18147,7 @@ Answer:"""
         # CRITICAL: Show cited points in debug (console)
         self._extract_and_show_cited_points(answer)
         
-        # Also show all filtered points in debug for transparency (console)
-        print(f"\n[HYBRID-DEBUG] Complete filtered point set ({len(filtered_points)} points):")
-        print("=" * 100)
-        for pt in filtered_points[:20]:  # Show first 20
-            point_num = pt.get('point_number', '?')
-            server = pt.get('server', '?')
-            score = pt.get('score', '?')
-            point_winner = pt.get('point_winner', '?')
-            description = pt.get('point_text', pt.get('description', ''))[:100]
-            print(f"Point {point_num} [Server: {server} | Score: {score}] -> Won by: {point_winner}")
-            print(f"  {description}...")
-        # NO SAMPLING - All points shown above
-        print("=" * 100)
+        # Removed console print - point information only shown to user on screen
         
         # CRITICAL: Append point details to ANSWER so user can see them in UI (not just console)
         # Reuse existing _format_debug_point function for consistency
@@ -16411,12 +18194,11 @@ Answer:"""
         # Sort for display
         cited_point_numbers = sorted(cited_point_numbers)
         
-        print(f"\n[NARRATIVE-DEBUG] Answer cites {len(cited_point_numbers)} point(s): {cited_point_numbers}")
-        print(f"[NARRATIVE-DEBUG] Displaying full point details for verification...\n")
+        # Removed console print - point information only shown to user on screen
         
         # Look up points in point_by_point data
         if not hasattr(self, 'point_by_point') or not self.point_by_point:
-            print("[NARRATIVE-DEBUG] WARNING: point_by_point data not available")
+            # Removed console print - point information only shown to user on screen
             return
         
         found_points = []
@@ -16426,25 +18208,10 @@ Answer:"""
                 found_points.append(pt)
         
         if not found_points:
-            print(f"[NARRATIVE-DEBUG] WARNING: Could not find cited points in PBP data")
+            # Removed console print - point information only shown to user on screen
             return
         
-        # Display points in same format as analytical debug
-        print("=" * 120)
-        print(f"CITED POINTS FROM NARRATIVE ANSWER ({len(found_points)} points)")
-        print("=" * 120)
-        
-        for pt in found_points:
-            point_num = pt.get('point_number', '?')
-            server = pt.get('server', '?')
-            returner = pt.get('returner', '?')
-            score = pt.get('score', '?')
-            point_winner = pt.get('point_winner', '?')
-            description = pt.get('point_text', pt.get('description', 'No description'))
-            
-            print(f"\nPoint {point_num} [Server: {server} | Returner: {returner} | Score: {score}]")
-            print(f"  {description}")
-            print(f"  [Point won by: {point_winner}]")
+        # Removed console print - point information only shown to user on screen
         
         print("=" * 120)
     
@@ -16499,9 +18266,9 @@ Answer:"""
         
         Handles multiple formats:
         - "Djokovic 0-0 1-2" (name + sets + games) â†' Set 1
-        - "Djokovic 1-0 0-0" (name + sets + games) â†’ Set 2
-        - "0-0 1-2 15-30" (sets + games + points) â†’ Set 1
-        - "2-1 3-2 40-30" (sets + games + points) â†’ Set 4
+        - "Djokovic 1-0 0-0" (name + sets + games) -> Set 2
+        - "0-0 1-2 15-30" (sets + games + points) -> Set 1
+        - "2-1 3-2 40-30" (sets + games + points) -> Set 4
         """
         import re
         
@@ -16906,10 +18673,10 @@ COMPREHENSIVE ALIAS MAPPINGS (system auto-normalizes):
 - Modifiers: chip/underspin = slice, vb/vol = volley, ds/dropshot = drop_shot, app = approach, sv = swinging_volley, hv = half_volley
 - Depths: short = shallow
 - Outcomes: wnr/w = winner, ue/unforced = unforced_error, fe/forced = forced_error, df = double_fault
-- Serve Targets (CONTEXT: for serves only): "down the t"/"center"/"middle" â†’ t, "out wide" â†’ wide, "to body"/"at body"/"jam" â†’ body
+- Serve Targets (CONTEXT: for serves only): "down the t"/"center"/"middle" -> t, "out wide" -> wide, "to body"/"at body"/"jam" -> body
 
 IMPORTANT CONTACT TYPE MAPPINGS:
-- "smash" / "smashes" / "overhead" â†’ contact_type: "overhead" (NOT shot_type)
+- "smash" / "smashes" / "overhead" -> contact_type: "overhead" (NOT shot_type)
 - Overheads/smashes use shot_type: "forehand" or "backhand" (the stroke used), contact_type: "overhead"
 
 CRITICAL CONTEXT-DEPENDENT MAPPINGS:
@@ -16917,8 +18684,8 @@ CRITICAL CONTEXT-DEPENDENT MAPPINGS:
   1. For GROUNDSTROKES (direction): "down_the_middle" (rally shot direction)
   2. For SERVES (serve_target): "t" (serve to the T / center of service box)
   
-- When user asks about SERVES: "serves down the middle" / "serves to center" â†’ serve_target: "t"
-- When user asks about RALLY SHOTS: "forehand down the middle" â†’ direction: "down_the_middle"
+- When user asks about SERVES: "serves down the middle" / "serves to center" -> serve_target: "t"
+- When user asks about RALLY SHOTS: "forehand down the middle" -> direction: "down_the_middle"
 - Context is KEY - look at whether it's about serves or groundstrokes
 
 ALIAS MAPPING RULES:
@@ -17007,7 +18774,7 @@ Return ONLY valid JSON (no markdown, no explanation) with these fields:
   "n_dimensional": "true if query has 3+ combined dimensions (filters + groups), else false",
   "direction": "crosscourt|down_the_line|inside_out|inside_in|down_the_middle|null",
   "depth": "shallow|deep|very_deep|null",
-  "chain_logic": {{"shot_a": "first shot type", "shot_b": "outcome/result"}} or null - for "X led to Y" patterns,
+  "chain_logic": {{"shot_a": "string OR dict with keys: player/shot_type/direction/depth/spin", "shot_b": "string or dict or null"}} or null - for chain patterns. Use DICT format when shot has player+attributes.,
   "analysis_type": "count|percentage|comparison|ratio|trend|2d_cross_tab|chain|momentum|null",
   "query_type": "analytical|narrative - 'analytical' if clear calculable metric, 'narrative' if vague/strategic question",
   "metric_clarity": "clear|vague - 'clear' if the question specifies exactly what to measure (e.g., 'ace count', 'first serve %'), 'vague' if unclear (e.g., 'how did serves change?', 'forehand effectiveness')",
@@ -17038,15 +18805,15 @@ CRITICAL RULES:
    - That dimension goes ONLY in group_by, NOT in filters
    - Leave the filter as null
    - Examples:
-   - "Ad Court compared to Deuce Court" â†’ {{"group_by": "court_side", "court_side": null}}
-   - "T vs Wide vs Body" â†’ {{"group_by": "serve_direction", "serve_target": null}}
-   - "Forehand vs Backhand winners" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-   - "Sinner's forehand vs backhand errors" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "errors"}}
-   - "Errors on forehand vs backhand" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
-   - "Crosscourt vs Down the Line" â†’ {{"group_by": "shot_direction", "direction": null}}
-   - "1st serve vs 2nd serve" â†’ {{"group_by": "serve_number", "serve_number": null}}
-   - "Shallow vs Deep returns" â†’ {{"group_by": "return_depth", "depth": null}}
-   - "Short vs Long rallies" â†’ {{"group_by": "rally_length_category"}}
+   - "Ad Court compared to Deuce Court" -> {{"group_by": "court_side", "court_side": null}}
+   - "T vs Wide vs Body" -> {{"group_by": "serve_direction", "serve_target": null}}
+   - "Forehand vs Backhand winners" -> {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+   - "Sinner's forehand vs backhand errors" -> {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+   - "Errors on forehand vs backhand" -> {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+   - "Crosscourt vs Down the Line" -> {{"group_by": "shot_direction", "direction": null}}
+   - "1st serve vs 2nd serve" -> {{"group_by": "serve_number", "serve_number": null}}
+   - "Shallow vs Deep returns" -> {{"group_by": "return_depth", "depth": null}}
+   - "Short vs Long rallies" -> {{"group_by": "rally_length_category"}}
    - DO NOT use metrics_parsed for these - use group_by!
 5. For ratio questions (winners to errors), set analysis_type: "ratio"
 6. For trend questions (across sets), set analysis_type: "trend"
@@ -17058,12 +18825,12 @@ CRITICAL RULES:
    - player: "both"
    - group_by: "player"
    Examples:
-   - "How many winners did each player have?" â†’ {{"player": "both", "group_by": "player", "metric": "winners"}}
-   - "How many winners did each have?" â†’ {{"player": "both", "group_by": "player", "metric": "winners"}}
-   - "Compare aces for both players" â†’ {{"player": "both", "group_by": "player", "metric": "aces"}}
-   - "Which player hit more forehand winners?" â†’ {{"player": "both", "group_by": "player", "shot_type": "forehand", "metric": "winners"}}
-   - "Who had more break points saved?" â†’ {{"player": "both", "group_by": "player", "situation": "break_point", "metric": "points_won"}}
-   - "Aces by player" â†’ {{"player": "both", "group_by": "player", "metric": "aces"}}
+   - "How many winners did each player have?" -> {{"player": "both", "group_by": "player", "metric": "winners"}}
+   - "How many winners did each have?" -> {{"player": "both", "group_by": "player", "metric": "winners"}}
+   - "Compare aces for both players" -> {{"player": "both", "group_by": "player", "metric": "aces"}}
+   - "Which player hit more forehand winners?" -> {{"player": "both", "group_by": "player", "shot_type": "forehand", "metric": "winners"}}
+   - "Who had more break points saved?" -> {{"player": "both", "group_by": "player", "situation": "break_point", "metric": "points_won"}}
+   - "Aces by player" -> {{"player": "both", "group_by": "player", "metric": "aces"}}
 
 EXAMPLES BY ANALYSIS TYPE:
 
@@ -17090,28 +18857,28 @@ RALLY LENGTH (CRITICAL - Filter vs Group):
 - "Points by rally length" â†' {{"group_by": "rally_length_category"}}
 
 GROUPING/COMPARISON (CRITICAL - dimension being compared goes in group_by, NOT filter):
-- "T vs Wide serves" â†’ {{"group_by": "serve_direction", "serve_target": null}}
-- "T vs Wide vs Body" â†’ {{"group_by": "serve_direction", "serve_target": null}}
-- "Forehand vs Backhand winners" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-- "Sinner's forehand vs backhand winners" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-- "How many forehand winners did Sinner hit compared to backhand winners?" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
-- "How many unforced errors did Sinner make on forehand vs backhand?" â†’ {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "unforced_errors"}}
-- "Forehand errors vs backhand errors" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
-- "Forced errors on forehand vs backhand" â†’ {{"group_by": "shot_type", "shot_type": null, "metric": "forced_errors"}}
-- "Crosscourt vs Down the Line" â†’ {{"group_by": "shot_direction", "direction": null}}
-- "1st serve vs 2nd serve win %" â†’ {{"group_by": "serve_number", "serve_number": null, "metric": "win_percentage"}}
-- "Shallow vs Deep vs Very Deep returns" â†’ {{"group_by": "return_depth", "depth": null}}
-- "Ad Court compared to Deuce Court" â†’ {{"group_by": "court_side", "court_side": null}}
-- "Points by rally length" â†’ {{"group_by": "rally_length_category"}}
-- "Stats in service games won vs lost" â†’ {{"group_by": "game_outcome", "role": "server"}}
-- "Which player hit more aces?" â†’ {{"player": "both", "group_by": "player", "metric": "aces"}}
-- "Who used body serves more?" â†’ {{"player": "both", "group_by": "player", "serve_target": "body", "metric": "count"}}
+- "T vs Wide serves" -> {{"group_by": "serve_direction", "serve_target": null}}
+- "T vs Wide vs Body" -> {{"group_by": "serve_direction", "serve_target": null}}
+- "Forehand vs Backhand winners" -> {{"group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "Sinner's forehand vs backhand winners" -> {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "How many forehand winners did Sinner hit compared to backhand winners?" -> {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "winners"}}
+- "How many unforced errors did Sinner make on forehand vs backhand?" -> {{"player": "Jannik Sinner", "group_by": "shot_type", "shot_type": null, "metric": "unforced_errors"}}
+- "Forehand errors vs backhand errors" -> {{"group_by": "shot_type", "shot_type": null, "metric": "errors"}}
+- "Forced errors on forehand vs backhand" -> {{"group_by": "shot_type", "shot_type": null, "metric": "forced_errors"}}
+- "Crosscourt vs Down the Line" -> {{"group_by": "shot_direction", "direction": null}}
+- "1st serve vs 2nd serve win %" -> {{"group_by": "serve_number", "serve_number": null, "metric": "win_percentage"}}
+- "Shallow vs Deep vs Very Deep returns" -> {{"group_by": "return_depth", "depth": null}}
+- "Ad Court compared to Deuce Court" -> {{"group_by": "court_side", "court_side": null}}
+- "Points by rally length" -> {{"group_by": "rally_length_category"}}
+- "Stats in service games won vs lost" -> {{"group_by": "game_outcome", "role": "server"}}
+- "Which player hit more aces?" -> {{"player": "both", "group_by": "player", "metric": "aces"}}
+- "Who used body serves more?" -> {{"player": "both", "group_by": "player", "serve_target": "body", "metric": "count"}}
 
 SET COMPARISON:
-- "Errors in Set 1 vs Set 3" â†’ {{"set_comparison": {{"set_a": [1], "set_b": [3]}}}}
-- "In the sets X won vs the sets X lost" â†’ Use the MATCH CONTEXT to determine which specific sets X won/lost, then set set_a and set_b accordingly
+- "Errors in Set 1 vs Set 3" -> {{"set_comparison": {{"set_a": [1], "set_b": [3]}}}}
+- "In the sets X won vs the sets X lost" -> Use the MATCH CONTEXT to determine which specific sets X won/lost, then set set_a and set_b accordingly
   Example: If Player A won sets [2, 3, 5] and lost sets [1, 4], then:
-  - "Player A's stats in sets he won vs sets he lost" â†’ {{"player": "Player A", "set_comparison": {{"set_a": [2, 3, 5], "set_b": [1, 4]}}}}
+  - "Player A's stats in sets he won vs sets he lost" -> {{"player": "Player A", "set_comparison": {{"set_a": [2, 3, 5], "set_b": [1, 4]}}}}
 
 SITUATION COMPARISON:
 - "Net points in tiebreaks compared to rest of match" â†' {{"court_zone": "net", "metric": "net_points_won", "group_by": "situation", "situation_comparison": {{"situation_a": "tiebreak", "situation_b": "non_tiebreak"}}}}
@@ -17167,31 +18934,31 @@ When query says "X and Y combined", "X plus Y", "both X and Y":
   - It needs ALL serves (both serve_number=1 AND serve_number=2) to calculate the denominator
   - DO NOT set serve_number filter for first_serve_pct - it must be null/omitted
   - first_serve_win_pct DOES need serve_number=1 because it's win % ON first serves that went in
-- "Aces and double faults" â†’ {{
+- "Aces and double faults" -> {{
     "metrics_parsed": [
       {{"metric": "aces", "filters": {{"role": "server"}}, "context": "serve"}},
       {{"metric": "double_faults", "filters": {{"role": "server"}}, "context": "serve"}}
     ]
   }}
-- "Break point save % and conversion %" â†’ {{
+- "Break point save % and conversion %" -> {{
     "metrics_parsed": [
       {{"metric": "win_percentage", "filters": {{"situation": "break_point", "role": "server"}}, "context": "situation"}},
       {{"metric": "win_percentage", "filters": {{"situation": "break_point", "role": "returner"}}, "context": "situation"}}
     ]
   }}
-- "Net points won and baseline winners" â†’ {{
+- "Net points won and baseline winners" -> {{
     "metrics_parsed": [
       {{"metric": "points_won", "filters": {{"court_zone": "net"}}, "context": "net"}},
       {{"metric": "winners", "filters": {{"court_zone": "baseline"}}, "context": "rally"}}
     ]
   }}
-- "Set 1 aces plus Set 3 aces" â†’ {{
+- "Set 1 aces plus Set 3 aces" -> {{
     "metrics_parsed": [
       {{"metric": "aces", "filters": {{"set": 1}}, "context": "serve"}},
       {{"metric": "aces", "filters": {{"set": 3}}, "context": "serve"}}
     ]
   }}
-- "Game point winners and break point winners" â†’ {{
+- "Game point winners and break point winners" -> {{
     "metrics_parsed": [
       {{"metric": "winners", "filters": {{"situation": "game_point"}}, "context": "situation"}},
       {{"metric": "winners", "filters": {{"situation": "break_point"}}, "context": "situation"}}
@@ -17202,41 +18969,43 @@ When query says "X and Y combined", "X plus Y", "both X and Y":
 - Related metrics (same context) will be synthesized together in the answer
 
 RATIO ANALYSIS:
-- "Winners to errors ratio" â†’ {{"metric": "winners", "secondary_metric": "errors", "analysis_type": "ratio"}}
-- "Winners to unforced errors ratio" â†’ {{"metric": "winners", "secondary_metric": "unforced_errors", "analysis_type": "ratio"}}
+- "Winners to errors ratio" -> {{"metric": "winners", "secondary_metric": "errors", "analysis_type": "ratio"}}
+- "Winners to unforced errors ratio" -> {{"metric": "winners", "secondary_metric": "unforced_errors", "analysis_type": "ratio"}}
 
 TREND ANALYSIS:
-- "How did serve % change across sets?" â†’ {{"metric": "first_serve_pct", "analysis_type": "trend"}}
+- "How did serve % change across sets?" -> {{"metric": "first_serve_pct", "analysis_type": "trend"}}
 
 2D CROSS-TAB:
-- "IO vs DTL ratio in sets won vs lost" â†’ {{"group_by": "shot_direction", "secondary_group_by": "set_groups", "analysis_type": "2d_cross_tab"}}
+- "IO vs DTL ratio in sets won vs lost" -> {{"group_by": "shot_direction", "secondary_group_by": "set_groups", "analysis_type": "2d_cross_tab"}}
 
 ROLE-BASED:
-- "When serving, break point saves" â†’ {{"role": "server", "situation": "break_point"}}
-- "As returner, deep returns" â†’ {{"role": "returner", "group_by": "return_depth"}}
+- "When serving, break point saves" -> {{"role": "server", "situation": "break_point"}}
+- "As returner, deep returns" -> {{"role": "returner", "group_by": "return_depth"}}
 - **CRITICAL - SERVE EFFECTIVENESS vs SERVE SHOTS:**
-  - "Serve effectiveness" / "serve win %" / "points won on serve" â†’ {{"role": "server", "metric": "win_percentage"}} (NO shot_type!)
-  - "How many aces?" â†’ {{"metric": "aces"}} (NO shot_type needed - aces are detected by outcome)
-  - "Forehand winners" â†’ {{"shot_type": "forehand", "metric": "winners"}} (shot_type IS the winning shot)
+  - "Serve effectiveness" / "serve win %" / "points won on serve" -> {{"role": "server", "metric": "win_percentage"}} (NO shot_type!)
+  - "How many aces?" -> {{"metric": "aces"}} (NO shot_type needed - aces are detected by outcome)
+  - "Forehand winners" -> {{"shot_type": "forehand", "metric": "winners"}} (shot_type IS the winning shot)
   - Do NOT set shot_type: "serve" for serve effectiveness - that filters to only aces/double faults!
   
 - **CRITICAL - SERVE TARGET FILTER (DO NOT HALLUCINATE):**
-  - "First serve percentage" / "Second serve won percentage" â†’ {{"serve_target": null}} (NO serve_target filter!)
-  - "Serve effectiveness" / "Serve win %" â†’ {{"serve_target": null}} (NO serve_target filter!)
+  - "First serve percentage" / "Second serve won percentage" -> {{"serve_target": null}} (NO serve_target filter!)
+  - "Serve effectiveness" / "Serve win %" -> {{"serve_target": null}} (NO serve_target filter!)
   - ONLY set serve_target if question EXPLICITLY mentions: "wide", "body", "to T", "down the T", "to the middle"
   - Examples that SHOULD have serve_target:
-    * "First serve percentage to T" â†’ {{"serve_target": "t"}}
-    * "Wide serve win percentage" â†’ {{"serve_target": "wide"}}
+    * "First serve percentage to T" -> {{"serve_target": "t"}}
+    * "Wide serve win percentage" -> {{"serve_target": "wide"}}
   - Examples that should NOT have serve_target:
-    * "First serve percentage" â†’ {{"serve_target": null}}
-    * "Second serve won percentage" â†’ {{"serve_target": null}}
-    * "Serve effectiveness" â†’ {{"serve_target": null}}
+    * "First serve percentage" -> {{"serve_target": null}}
+    * "Second serve won percentage" -> {{"serve_target": null}}
+    * "Serve effectiveness" -> {{"serve_target": null}}
   - DO NOT add serve_target for general serve questions! The system will block it anyway, but don't waste tokens.
 
-CHAIN LOGIC (A â†’ B):
-- "Backhand slice led to unforced error" â†’ {{"chain_logic": {{"shot_a": "backhand slice", "shot_b": "unforced error"}}, "analysis_type": "chain"}}
-- "Approach shot followed by winner" â†’ {{"chain_logic": {{"shot_a": "approach shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
-- "Drop shot directly led to winner" â†’ {{"chain_logic": {{"shot_a": "drop shot", "shot_b": "winner"}}, "analysis_type": "chain"}}
+CHAIN LOGIC (A â†' B):
+⚠️ CRITICAL: Use DICT format for shot_a/shot_b when shot has player or multiple attributes (more accurate):
+- Simple: "Backhand slice led to unforced error" â†' {{"chain_logic": {{"shot_a": "backhand slice", "shot_b": "unforced error"}}, "analysis_type": "chain"}}
+- With player+attributes (DICT): "When Federer hit crosscourt forehand, did Nadal respond..." â†' {{"chain_logic": {{"shot_a": {{"player": "Roger Federer", "shot_type": "forehand", "direction": "crosscourt"}}, "shot_b": null}}, "analysis_type": "chain", "player": "Rafael Nadal"}}
+- With depth (DICT): "After Nadal hit deep backhand, what did Federer do?" â†' {{"chain_logic": {{"shot_a": {{"player": "Rafael Nadal", "shot_type": "backhand", "depth": "deep"}}, "shot_b": null}}, "analysis_type": "chain", "player": "Roger Federer"}}
+- Reverse: "Before the winner, what shot did Federer hit?" â†' {{"chain_logic": {{"shot_a": null, "shot_b": "winner"}}, "analysis_type": "chain", "player": "Roger Federer"}}
 
 SEQUENTIAL/TEMPORAL QUERIES (CRITICAL - "after", "following", "next"):
 ⚠️ Questions asking about "immediately after X rally" use **prev_rally_length_range** filter - tree CAN handle this!
@@ -17245,20 +19014,20 @@ SEQUENTIAL/TEMPORAL QUERIES (CRITICAL - "after", "following", "next"):
 - "After double faults" → {{"query_type": "narrative", "note": "prev_point_outcome filter not yet implemented"}}
 
 NEW TAXONOMY EXAMPLES:
-- "Forehand slice winners" â†’ {{"shot_type": "forehand", "spin": "slice", "metric": "winners"}}
-- "Volley winners at net" â†’ {{"contact_type": "volley", "location": "net", "metric": "winners"}}
-- "Approach shot effectiveness" â†’ {{"intent": "approach", "metric": "win_percentage"}}
-- "Drop shot winners" â†’ {{"intent": "drop_shot", "metric": "winners"}}
-- "Passing shot success rate" â†’ {{"intent": "passing_shot", "metric": "win_percentage"}}
-- "Topspin forehand crosscourt" â†’ {{"shot_type": "forehand", "spin": "topspin", "direction": "crosscourt"}}
-- "Slice backhand down the line" â†’ {{"shot_type": "backhand", "spin": "slice", "direction": "down_the_line"}}
-- "Net play by contact type" â†’ {{"location": "net", "group_by": "contact_type"}}
-- "Groundstroke vs volley winners" â†’ {{"group_by": "contact_type", "metric": "winners"}}
+- "Forehand slice winners" -> {{"shot_type": "forehand", "spin": "slice", "metric": "winners"}}
+- "Volley winners at net" -> {{"contact_type": "volley", "location": "net", "metric": "winners"}}
+- "Approach shot effectiveness" -> {{"intent": "approach", "metric": "win_percentage"}}
+- "Drop shot winners" -> {{"intent": "drop_shot", "metric": "winners"}}
+- "Passing shot success rate" -> {{"intent": "passing_shot", "metric": "win_percentage"}}
+- "Topspin forehand crosscourt" -> {{"shot_type": "forehand", "spin": "topspin", "direction": "crosscourt"}}
+- "Slice backhand down the line" -> {{"shot_type": "backhand", "spin": "slice", "direction": "down_the_line"}}
+- "Net play by contact type" -> {{"location": "net", "group_by": "contact_type"}}
+- "Groundstroke vs volley winners" -> {{"group_by": "contact_type", "metric": "winners"}}
 
 MOMENTUM ANALYSIS:
-- "Momentum after break points" â†’ {{"analysis_type": "momentum", "situation": "break_point"}}
-- "Did aggression increase after breaks?" â†’ {{"analysis_type": "momentum"}}
-- "Carry-over effect after winning break" â†’ {{"analysis_type": "momentum"}}
+- "Momentum after break points" -> {{"analysis_type": "momentum", "situation": "break_point"}}
+- "Did aggression increase after breaks?" -> {{"analysis_type": "momentum"}}
+- "Carry-over effect after winning break" -> {{"analysis_type": "momentum"}}
 
 QUERY_TYPE CLASSIFICATION:
 - **analytical**: Questions asking for specific counts, percentages, or metrics that can be directly calculated
@@ -17279,19 +19048,19 @@ QUERY_TYPE CLASSIFICATION:
   - "Performance on break points" (vague: performance = win %? aggression? shot selection?)
   
 KEY DISTINCTION:
-- **Clear, calculable metric** â†’ analytical (e.g., "ace count", "first serve %", "winner count")
-- **Vague concept or strategic question** â†’ narrative (e.g., "aggression", "momentum", "effectiveness", "performance")
-- When in doubt: if the metric isn't a direct count/percentage â†’ narrative
+- **Clear, calculable metric** -> analytical (e.g., "ace count", "first serve %", "winner count")
+- **Vague concept or strategic question** -> narrative (e.g., "aggression", "momentum", "effectiveness", "performance")
+- When in doubt: if the metric isn't a direct count/percentage -> narrative
 
 METRIC CLARITY CHECK:
 - **clear_metric**: The question specifies EXACTLY what to count/measure
   Examples: "first serve win %", "ace count", "break point conversion", "forehand winners"
 - **vague_metric**: The question asks about something but doesn't specify what metric
   Examples: "How did first serves change?", "Did serving improve?", "Forehand effectiveness", "Performance on break points"
-  â†’ If vague_metric â†’ default to query_type: "narrative"
+  -> If vague_metric -> default to query_type: "narrative"
 
 N-DIMENSIONAL (complex multi-filter + multi-group):
-- "On break points, serving to T, Ad court, in sets won - 1st vs 2nd serve win %" â†’ {{
+- "On break points, serving to T, Ad court, in sets won - 1st vs 2nd serve win %" -> {{
     "situation": "break_point",
     "serve_target": "t", 
     "court_side": "ad",
@@ -17299,26 +19068,26 @@ N-DIMENSIONAL (complex multi-filter + multi-group):
     "group_by": "serve_number",
     "n_dimensional": true
   }}
-- "In tiebreaks, on 2nd serves, compare forehand vs backhand return effectiveness by court side" â†’ {{
+- "In tiebreaks, on 2nd serves, compare forehand vs backhand return effectiveness by court side" -> {{
     "situation": "tiebreak",
     "serve_number": 2,
     "group_by": "shot_type",
     "secondary_group_by": "court_side",
     "n_dimensional": true
   }}
-- "How many net points in tiebreaks compared to rest of match?" â†’ {{
+- "How many net points in tiebreaks compared to rest of match?" -> {{
     "player": "Roger Federer",
     "court_zone": "net",
     "metric": "net_points_won",
     "group_by": "situation",
     "situation_comparison": {{"situation_a": "tiebreak", "situation_b": "non_tiebreak"}}
   }}
-- "On break points, T vs Wide vs Body" â†’ {{
+- "On break points, T vs Wide vs Body" -> {{
     "situation": "break_point",
     "group_by": "serve_direction",
     "serve_target": null
   }}
-- "In Set 5, Ad Court vs Deuce Court win %" â†’ {{
+- "In Set 5, Ad Court vs Deuce Court win %" -> {{
     "set_filter": 5,
     "group_by": "court_side",
     "court_side": null,
@@ -17406,7 +19175,7 @@ Return ONLY the JSON:"""
                 # Move to top-level (unless it's already there)
                 if field not in classification:
                     classification[field] = value
-                repairs.append(f"Removed shot-level '{field}' from filters → moved to top-level")
+                repairs.append(f"Removed shot-level '{field}' from filters -> moved to top-level")
         
         # ═══════════════════════════════════════════════════════════════════════
         # RULE C: Grouping fields must NOT be in filters
@@ -17614,7 +19383,7 @@ Return ONLY the JSON:"""
                 
                 # CRITICAL: Map invalid metric names to correct base metrics FIRST
                 # LLM might return "ace_percentage" instead of "aces", etc.
-                # ALSO map "shots" â†’ "shot_count" (shots = individual shots in rallies, not points)
+                # ALSO map "shots" -> "shot_count" (shots = individual shots in rallies, not points)
                 metric_name_map = {
                     'shots': 'shot_count',  # CRITICAL: "shots" means count individual shots, not points
                     'shots_hit': 'shot_count',  # LLM sometimes returns this variant
@@ -17871,7 +19640,7 @@ Return ONLY the JSON:"""
             
             if has_action_verb:
                 # GENERIC: Map error metrics to their induced counterparts
-                # The pattern: X_errors â†’ induced_X_errors (player caused opponent's error)
+                # The pattern: X_errors -> induced_X_errors (player caused opponent's error)
                 metric_transforms = {
                     'forced_errors': 'induced_forced_errors',
                     # Add more transforms as needed (e.g., if we track 'induced_unforced_errors' someday)
@@ -18021,10 +19790,10 @@ Return ONLY the JSON:"""
                 print(f"[LLM-PARSE] Situation '{situation}' with BOTH defensive and offensive keywords - leaving role=None (will show both perspectives)")
             elif has_defensive_kw:
                 classification['filters']['role'] = 'server'
-                print(f"[LLM-PARSE] Situation '{situation}' with defensive keywords â†’ role='server'")
+                print(f"[LLM-PARSE] Situation '{situation}' with defensive keywords -> role='server'")
             elif has_offensive_kw:
                 classification['filters']['role'] = 'returner'
-                print(f"[LLM-PARSE] Situation '{situation}' with offensive keywords â†’ role='returner'")
+                print(f"[LLM-PARSE] Situation '{situation}' with offensive keywords -> role='returner'")
             else:
                 # No specific keywords - leave role unset (will show the situation regardless of role)
                 print(f"[LLM-PARSE] Situation '{situation}' without role keywords - leaving role=None")
@@ -18362,12 +20131,12 @@ Return ONLY the JSON:"""
         Main method to ask a question and get an answer.
         
         INTELLIGENT ROUTING:
-        1. LLM parses query â†’ structured understanding
+        1. LLM parses query -> structured understanding
         2. Classification uses LLM output + keyword detection
         3. Route by category:
-           - 'analytical' â†’ Taxonomy/PBP parsing
-           - 'comparative' â†’ Taxonomy + LLM synthesis
-           - 'narrative' â†’ NL retrieval + LLM
+           - 'analytical' -> Taxonomy/PBP parsing
+           - 'comparative' -> Taxonomy + LLM synthesis
+           - 'narrative' -> NL retrieval + LLM
         """
         print(f"Processing question: {question}")
         
@@ -18396,7 +20165,7 @@ Return ONLY the JSON:"""
         #   - Parse score from each point header (set-game-point)
         #   - Add 'game_number' and 'set_number' to point metadata
         #   - Track unique (set, game) tuples won by each player during tree traversal
-        #   - Aggregate games â†’ sets â†’ match naturally through the tree
+        #   - Aggregate games -> sets -> match naturally through the tree
         # For now, games_won metric temporarily falls back to game_winners dict
         
         # STEP 3.5: CLASSIFY QUERY COMPLEXITY FOR MODEL SELECTION
@@ -18473,6 +20242,378 @@ Return ONLY the JSON:"""
         
         question_lower = question.lower()
         
+        # Normalize arrows (Unicode → to ASCII ->)
+        question_normalized = question.replace('→', '->').replace('→', '->')
+        question_lower_normalized = question_normalized.lower()
+        
+        # === LEVEL -3: MULTI-STEP PATTERN DETECTION (BEFORE CONSECUTIVE) ===
+        # Multi-step patterns: "forehand -> approach -> volley -> winner"
+        # Can come from:
+        # 1. Explicit arrows: "crosscourt -> crosscourt -> down-the-line"
+        # 2. LLM parsing natural language into nested chain_logic with 'next_shot'
+        
+        # Check if LLM detected a multi-step pattern (nested next_shot in chain_logic)
+        chain_logic = classification.get('chain_logic') or filters.get('chain_logic')
+        has_nested_pattern = False
+        if chain_logic and isinstance(chain_logic, dict):
+            shot_b = chain_logic.get('shot_b')
+            if shot_b and isinstance(shot_b, dict) and 'next_shot' in shot_b:
+                has_nested_pattern = True
+                print("[MULTI-STEP] Detected nested pattern in chain_logic (LLM parsed multi-step from natural language)")
+        
+        has_multistep_keywords = (
+            '->' in question_lower_normalized or
+            ' then ' in question_lower_normalized or
+            'sequence' in question_lower_normalized or
+            re.search(r'(forehand|backhand|volley|slice|approach|crosscourt|down.the.line)\s*(,|then|->|followed by)\s*(forehand|backhand|volley|slice|approach|crosscourt|down.the.line|winner|error)', question_lower_normalized)
+        )
+        
+        if has_nested_pattern or (has_multistep_keywords and '->' in question_normalized):
+            pattern = []
+            
+            # OPTION 1: LLM already parsed nested pattern from natural language
+            if has_nested_pattern:
+                # Extract pattern from nested chain_logic structure
+                # e.g., {shot_a: {direction: 'crosscourt'}, shot_b: {direction: 'crosscourt', next_shot: {direction: 'down_the_line'}}}
+                def extract_pattern_from_chain(chain_dict, current_pattern=[]):
+                    if not chain_dict:
+                        return current_pattern
+                    
+                    # Extract shot_a
+                    shot_a = chain_dict.get('shot_a', {})
+                    if shot_a:
+                        # Build description from shot_a attributes
+                        parts = []
+                        if shot_a.get('shot_type'): parts.append(shot_a['shot_type'])
+                        if shot_a.get('direction'): parts.append(shot_a['direction'])
+                        if shot_a.get('intent'): parts.append(shot_a['intent'])
+                        if shot_a.get('outcome'): parts.append(shot_a['outcome'])
+                        if parts:
+                            current_pattern.append(' '.join(parts))
+                    
+                    # Extract shot_b
+                    shot_b = chain_dict.get('shot_b', {})
+                    if shot_b:
+                        parts = []
+                        if shot_b.get('shot_type'): parts.append(shot_b['shot_type'])
+                        if shot_b.get('contact_type'): parts.append(shot_b['contact_type'])
+                        if shot_b.get('direction'): parts.append(shot_b['direction'])
+                        if shot_b.get('intent'): parts.append(shot_b['intent'])
+                        if shot_b.get('outcome'): parts.append(shot_b['outcome'])
+                        if parts:
+                            current_pattern.append(' '.join(parts))
+                        
+                        # Recursively extract next_shot
+                        if 'next_shot' in shot_b:
+                            return extract_pattern_from_chain({'shot_a': shot_b['next_shot']}, current_pattern)
+                    
+                    return current_pattern
+                
+                pattern = extract_pattern_from_chain(chain_logic)
+                print(f"[MULTI-STEP] Extracted pattern from LLM chain_logic: {pattern}")
+                
+                # Check if LLM parsed "winner" or "error" as a METRIC instead of as an outcome
+                # If so, append it to the pattern as the final shot outcome
+                metrics_parsed = classification.get('metrics_parsed', [])
+                for metric_info in metrics_parsed:
+                    metric = metric_info.get('metric', '')
+                    if metric in ['winners', 'winner']:
+                        # Add "winner" as final element if not already there
+                        if pattern and 'winner' not in pattern[-1].lower():
+                            pattern[-1] = pattern[-1] + ' winner'
+                            print(f"[MULTI-STEP] Added 'winner' outcome from metrics to last shot: {pattern[-1]}")
+                    elif metric in ['unforced_errors', 'unforced error', 'forced_errors', 'forced error', 'errors']:
+                        if pattern and 'error' not in pattern[-1].lower():
+                            error_type = 'unforced error' if 'unforced' in metric else 'error'
+                            pattern[-1] = pattern[-1] + ' ' + error_type
+                            print(f"[MULTI-STEP] Added '{error_type}' outcome from metrics to last shot: {pattern[-1]}")
+            
+            # OPTION 2: Parse explicit arrow pattern from question
+            elif '->' in question_normalized:
+                pattern_match = re.findall(r'([a-zA-Z\s\-_]+)\s*->', question_lower_normalized)
+                if pattern_match:
+                    # Add the last element (after final arrow)
+                    last_match = re.search(r'->\s*([a-zA-Z\s\-_]+?)(?:\?|$|\s*,|\s*and)', question_lower_normalized)
+                    if last_match:
+                        pattern_match.append(last_match.group(1).strip())
+                    
+                    pattern = [p.strip() for p in pattern_match if p.strip()]
+                    print(f"[MULTI-STEP] Detected pattern from arrows: {pattern}")
+            
+            # CRITICAL: Multi-attribute shot support - CONFIG-DRIVEN
+            # Patterns can have multiple attributes per shot:
+            # - "forehand crosscourt winner" (shot_type + direction + outcome)
+            # - "backhand slice down-the-line" (shot_type + spin + direction)
+            # - "volley winner" (contact_type + outcome)
+            # 
+            # Approach: Keep pattern elements as-is (they may already contain multiple words)
+            # The matching logic will handle multi-word patterns by checking ALL attributes
+            # 
+            # We DON'T need to pre-combine because:
+            # 1. Arrow patterns already have combined elements: "forehand crosscourt → backhand"
+            # 2. LLM extraction already builds combined descriptions
+            # 3. The matcher checks if pattern step matches shot (not exact equality)
+            
+            # COMBINE adjacent pattern elements that are different attributes of the same shot
+            # E.g., ['forehand', 'approach', 'volley', 'winner'] -> ['forehand approach', 'volley winner']
+            if pattern:  # Only process if pattern was extracted
+                pattern = [p.strip() for p in pattern if p.strip()]
+                print(f"[MULTI-STEP] Raw pattern from extraction: {pattern}")
+                
+                # Combine logic: merge adjacent elements if they are different attribute types
+                # Shot attributes from config:
+                shot_types = self.GROUP_CONFIG.get('shot_type', {}).get('default_branches', [])
+                outcomes = self.GROUP_CONFIG.get('outcome', {}).get('default_branches', [])
+                intents = self.match_filter_inventory.get('intents', [])
+                contact_types = self.match_filter_inventory.get('contact_types', [])
+                directions = self.GROUP_CONFIG.get('shot_direction', {}).get('default_branches', [])
+                
+                combined_pattern = []
+                i = 0
+                
+                # Get ALL config-driven categories for combining
+                shot_modifiers = self.GROUP_CONFIG.get('shot_modifier', {}).get('default_branches', [])
+                spins = self.GROUP_CONFIG.get('spin', {}).get('default_branches', [])
+                
+                while i < len(pattern):
+                    current = pattern[i].lower().strip()
+                    
+                    # Check if next element should be combined with current
+                    if i + 1 < len(pattern):
+                        next_elem = pattern[i + 1].lower().strip()
+                        
+                        # Detect what category each element belongs to
+                        # Use exact matching for reliability
+                        def matches_category(elem, category_list):
+                            elem_normalized = elem.replace('-', '_').replace(' ', '_')
+                            for item in category_list:
+                                item_normalized = item.lower().replace('-', '_').replace(' ', '_')
+                                if elem_normalized == item_normalized or elem in item.lower() or item.lower() in elem:
+                                    return True
+                            return False
+                        
+                        current_is_shot_type = matches_category(current, shot_types)  # forehand, backhand
+                        current_is_modifier = matches_category(current, shot_modifiers)  # approach, volley, slice, drop_shot
+                        current_is_spin = matches_category(current, spins)  # slice, topspin, flat
+                        current_is_direction = matches_category(current, directions)  # crosscourt, down_the_line
+                        current_is_contact = matches_category(current, contact_types)  # volley, overhead
+                        
+                        next_is_outcome = matches_category(next_elem, outcomes)  # winner, error
+                        next_is_modifier = matches_category(next_elem, shot_modifiers)  # approach, volley, slice
+                        next_is_direction = matches_category(next_elem, directions)
+                        next_is_shot_type = matches_category(next_elem, shot_types)
+                        next_is_contact = matches_category(next_elem, contact_types)
+                        next_is_spin = matches_category(next_elem, spins)
+                        
+                        # Combining rules:
+                        # 1. shot_type + modifier (forehand + approach) → COMBINE
+                        # 2. modifier/contact + outcome (volley + winner) → COMBINE
+                        # 3. spin + modifier (slice + approach) → COMBINE
+                        # 4. shot_type + spin (forehand + slice) → COMBINE
+                        # 5. direction + direction → DON'T COMBINE (separate shots)
+                        
+                        should_combine = (
+                            # Rule 1: shot_type + modifier/spin (forehand approach, backhand slice)
+                            (current_is_shot_type and (next_is_modifier or next_is_spin)) or
+                            # Rule 2: modifier/contact + outcome (volley winner, approach winner)
+                            ((current_is_modifier or current_is_contact) and next_is_outcome) or
+                            # Rule 3: spin + modifier (slice approach)
+                            (current_is_spin and next_is_modifier) or
+                            # Rule 4: shot_type + spin (forehand slice - rare but valid)
+                            (current_is_shot_type and next_is_spin)
+                        )
+                        
+                        # NEVER combine two directions (crosscourt + crosscourt = 2 separate shots)
+                        if current_is_direction and next_is_direction:
+                            should_combine = False
+                        
+                        print(f"[MULTI-STEP-COMBINE] '{current}' (shot_type={current_is_shot_type}, mod={current_is_modifier}, spin={current_is_spin}, dir={current_is_direction}, contact={current_is_contact})")
+                        print(f"[MULTI-STEP-COMBINE] '{next_elem}' (outcome={next_is_outcome}, mod={next_is_modifier}, dir={next_is_direction}, shot_type={next_is_shot_type}, contact={next_is_contact}, spin={next_is_spin})")
+                        print(f"[MULTI-STEP-COMBINE] Should combine? {should_combine}")
+                        
+                        if should_combine:
+                            combined_pattern.append(f"{pattern[i]} {pattern[i+1]}")
+                            print(f"[MULTI-STEP] Combined '{pattern[i]}' + '{pattern[i+1]}' into '{pattern[i]} {pattern[i+1]}'")
+                            i += 2
+                            continue
+                    
+                    combined_pattern.append(pattern[i])
+                    i += 1
+                
+                pattern = combined_pattern
+                print(f"[MULTI-STEP] Pattern after combining: {pattern}")
+                
+                # Process ALL combined patterns (2+ shots) - multi-step handler works for any length
+                if len(pattern) >= 2:
+                    print(f"[MULTI-STEP] Detected pattern: {pattern}")
+                    classification['multi_step_pattern'] = pattern
+                    
+                    try:
+                        analysis = self._analyze_multi_step_pattern(classification)
+                        if 'error' not in analysis and analysis.get('total_matches', 0) > 0:
+                            self.last_analysis = analysis
+                            data_response = self._format_multi_step_pattern_analysis(analysis)
+                            answer = self._synthesize_with_narrative(question, data_response, classification)
+                            
+                            # Append debug info (matching points) AFTER narrative synthesis
+                            debug_info = analysis.get('debug_info', [])
+                            if debug_info:
+                                answer += "\n\n" + "\n".join(debug_info)
+                            
+                            self.last_answer = answer
+                            print(f"[MULTI-STEP] Successfully analyzed: {analysis.get('total_matches')} pattern matches")
+                            return answer
+                        elif 'error' in analysis:
+                            print(f"[MULTI-STEP] Error: {analysis.get('error')}, falling back")
+                        else:
+                            print(f"[MULTI-STEP] No pattern matches found, falling back")
+                    except Exception as e:
+                        print(f"[MULTI-STEP] Exception: {e}, falling back")
+        
+        # === LEVEL -2: CONSECUTIVE SHOTS DETECTION (BEFORE CHAIN) ===
+        # Consecutive shot patterns: "3+ forehands in a row", "consecutive crosscourts"
+        has_consecutive_keywords = (
+            'consecutive' in question_lower or
+            'in a row' in question_lower or
+            'in-a-row' in question_lower or
+            re.search(r'\d+\+?\s*(straight|consecutive)', question_lower) or
+            re.search(r'(hit|hitting|had)\s+\d+\+?\s*(fore|back|cross|down)', question_lower)
+        )
+        has_consecutive_filters = (
+            classification.get('consecutive_shots_min') or
+            filters.get('consecutive_shots_min') or
+            filters.get('sequence_shot_type')
+        )
+        is_consecutive_query = has_consecutive_keywords or has_consecutive_filters
+        
+        if is_consecutive_query:
+            print("[CONSECUTIVE] Consecutive shots query detected -> Attempting sequence analysis")
+            
+            # Extract minimum consecutive count from question if not in classification
+            if not classification.get('consecutive_shots_min'):
+                # Try to extract number from question like "3+ consecutive" or "hit 4 forehands"
+                num_match = re.search(r'(\d+)\+?\s*(consecutive|straight|in a row|fore|back)', question_lower)
+                if num_match:
+                    classification['consecutive_shots_min'] = int(num_match.group(1))
+                else:
+                    classification['consecutive_shots_min'] = 3  # Default
+            
+            # Extract shot type if not set
+            if not classification.get('sequence_shot_type') and not filters.get('shot_type'):
+                if 'forehand' in question_lower:
+                    classification['sequence_shot_type'] = 'forehand'
+                elif 'backhand' in question_lower:
+                    classification['sequence_shot_type'] = 'backhand'
+            
+            # Extract direction if present
+            if 'crosscourt' in question_lower or 'cross court' in question_lower:
+                classification['sequence_direction'] = 'crosscourt'
+            elif 'down the line' in question_lower or 'down-the-line' in question_lower:
+                classification['sequence_direction'] = 'down_the_line'
+            
+            try:
+                analysis = self._analyze_consecutive_shots(classification)
+                if 'error' not in analysis and analysis.get('total_sequences', 0) > 0:
+                    self.last_analysis = analysis
+                    data_response = self._format_consecutive_shots_analysis(analysis)
+                    answer = self._synthesize_with_narrative(question, data_response, classification)
+                    
+                    # Append debug info (matching points) AFTER narrative synthesis
+                    debug_info = analysis.get('debug_info', [])
+                    if debug_info:
+                        answer += "\n\n" + "\n".join(debug_info)
+                    
+                    self.last_answer = answer
+                    print(f"[CONSECUTIVE] Successfully analyzed: {analysis.get('total_sequences')} qualifying sequences, max {analysis.get('max_consecutive')} consecutive")
+                    return answer
+                elif 'error' in analysis:
+                    print(f"[CONSECUTIVE] Error: {analysis.get('error')}, falling back to narrative")
+                else:
+                    print(f"[CONSECUTIVE] No matching sequences found, falling back to narrative")
+            except Exception as e:
+                print(f"[CONSECUTIVE] Exception: {e}, falling back to narrative")
+            
+            # Fallback to narrative
+            print("[CONSECUTIVE] Using narrative fallback")
+            answer = self._handle_narrative_query(question, classification, top_k)
+            self.last_answer = answer
+            self.last_analysis = None
+            return answer
+        
+        # === LEVEL -1: CHAIN LOGIC DETECTION (MUST BE FIRST) ===
+        # Chain queries have their own dedicated handler and should bypass all other routing
+        # Detect chain patterns: "X led to Y", "X followed by Y", "when X...respond", "after/before X...did Y"
+        has_chain_keywords = (
+            'led to' in question_lower or 
+            'lead to' in question_lower or 
+            'followed by' in question_lower or
+            ('when' in question_lower and 'respond' in question_lower) or
+            ('after' in question_lower and 'respond' in question_lower) or
+            ('before' in question_lower and 'respond' in question_lower) or
+            ('after' in question_lower and 'did' in question_lower) or
+            ('before' in question_lower and 'did' in question_lower)
+        )
+        is_chain_query = analysis_type == 'chain' or filters.get('chain_logic') or has_chain_keywords
+        
+        if is_chain_query:
+            # ALL chain queries → Try dedicated chain handler first
+            # The chain handler can parse rally sequences for shot-level attributes (forehand, crosscourt, etc.)
+            print("[CHAIN] Chain query detected -> Attempting sequence analysis")
+            try:
+                analysis = self._analyze_chain_logic(classification)
+                if 'error' not in analysis and analysis.get('total_shot_a', 0) > 0:
+                    # Success! Store analysis and format response
+                    self.last_analysis = analysis
+                    data_response = self._format_chain_logic_analysis(analysis)
+                    answer = self._synthesize_with_narrative(question, data_response, classification)
+                    
+                    # Append debug info (matching points) AFTER narrative synthesis
+                    debug_info = analysis.get('debug_info', [])
+                    if debug_info:
+                        answer += "\n\n" + "\n".join(debug_info)
+                    
+                    self.last_answer = answer
+                    print(f"[CHAIN] Successfully analyzed: {analysis.get('total_shot_a')} Shot A occurrences, {analysis.get('total_chain_sequences')} complete sequences")
+                    return answer
+                elif 'error' in analysis:
+                    print(f"[CHAIN] Error: {analysis.get('error')}, falling back to narrative")
+                else:
+                    print(f"[CHAIN] No pattern matches found, falling back to narrative")
+            except Exception as e:
+                print(f"[CHAIN] Exception: {e}, falling back to narrative")
+            
+            # Fallback: If chain handler couldn't find patterns, use narrative
+            print("[CHAIN] Using narrative fallback for complex chain analysis")
+            answer = self._handle_narrative_query(question, classification, top_k)
+            self.last_answer = answer
+            self.last_analysis = None
+            return answer
+        
+        # === LEVEL -0.5: SHOT PRE-FILTERING DETECTION (BEFORE HYBRID) ===
+        # Shot prefilter queries have shot-level attributes (e.g., "When Nadal hit forehand down-the-line...")
+        # These need _prefilter_points_by_shot_attributes to filter by shot attributes
+        filters_dict = classification.get('filters', {})
+        has_shot_attributes = any([
+            filters_dict.get('shot_type'),
+            classification.get('shot_type'),
+            filters_dict.get('direction'),
+            classification.get('direction'),
+            filters_dict.get('spin'),
+            classification.get('spin'),
+            filters_dict.get('outcome')
+        ])
+        
+        # Don't use shot prefilter for chain/consecutive (they have their own handlers)
+        # Multi-step patterns are handled earlier, so no need to check
+        is_shot_prefilter_query = has_shot_attributes and not (is_chain_query or is_consecutive_query)
+        
+        if is_shot_prefilter_query:
+            print("[SHOT-PREFILTER] Shot attribute query detected -> Using shot pre-filtering")
+            answer = self._handle_narrative_query(question, classification, top_k)
+            self.last_answer = answer
+            self.last_analysis = None
+            return answer
+        
         # === LEVEL 0: HYBRID ROUTING (Tree Filter â†' Narrative Analysis) ===
         # Hybrid is needed when:
         # 1. Query has tree-filterable condition (set, point_score, situation+shots, etc.)
@@ -18497,7 +20638,7 @@ Return ONLY the JSON:"""
             return answer
         
         # === LEVEL 2: POINT-LEVEL ROUTING ===
-        # === 0. NARRATIVE ROUTE â†’ LLM identified as narrative ===
+        # === 0. NARRATIVE ROUTE -> LLM identified as narrative ===
         # Questions about strategy, momentum, patterns, "did X change?", etc.
         # Narrative has access to BOTH NL file AND point-by-point data
         if query_category == 'narrative':
@@ -18507,7 +20648,7 @@ Return ONLY the JSON:"""
             self.last_analysis = None  # Narrative queries don't have structured analysis
             return answer
         
-        # === 0.5. GAME QUERY ROUTE â†’ "How many games won?" ===
+        # === 0.5. GAME QUERY ROUTE -> "How many games won?" ===
         # Games are aggregated from score transitions, not point counts
         # Route game queries to narrative instead of dedicated game handler
         if self._is_game_query(question):
@@ -18517,11 +20658,11 @@ Return ONLY the JSON:"""
             self.last_analysis = None  # Narrative queries don't have structured analysis
             return answer
         
-        # === 1. CHAIN LOGIC ANALYSIS â†’ Shot A â†’ Shot B patterns ===
+        # === 1. CHAIN LOGIC ANALYSIS -> Shot A -> Shot B patterns ===
         # CRITICAL: Chain logic is conceptually shot-level (requires full shot sequences)
         # But we distinguish between:
-        #   - Shot-to-shot chains (Shot A with shot filters) â†’ Embeddings (default)
-        #   - Point-level event chains (serve â†’ return â†’ outcome) â†’ Tree
+        #   - Shot-to-shot chains (Shot A with shot filters) -> Embeddings (default)
+        #   - Point-level event chains (serve -> return -> outcome) -> Tree
         is_chain_query = analysis_type == 'chain' or filters.get('chain_logic') or 'led to' in question_lower or 'lead to' in question_lower or 'followed by' in question_lower
         
         if is_chain_query:
@@ -18564,14 +20705,14 @@ Return ONLY the JSON:"""
                 has_shot_attributes_in_chain = shot_keywords_in_question and not is_serve_return_only
             
             if has_shot_attributes_in_chain:
-                # Shot-to-shot chain â†’ Embeddings (requires full rally shot sequences)
+                # Shot-to-shot chain -> Embeddings (requires full rally shot sequences)
                 print("[CHAIN] Shot-to-shot chain detected (requires shot sequences) -> Routing to embeddings")
                 answer = self._handle_narrative_query(question, classification, top_k)
                 self.last_answer = answer
                 self.last_analysis = None
                 return answer
             else:
-                # Point-level event chain (serve â†’ return â†’ outcome) â†’ Tree
+                # Point-level event chain (serve -> return -> outcome) -> Tree
                 print("[CHAIN] Point-level event chain detected (serve/return events) -> Routing to tree analysis")
                 try:
                     analysis = self._analyze_chain_logic(classification)
@@ -18580,6 +20721,12 @@ Return ONLY the JSON:"""
                         self.last_analysis = analysis
                         data_response = self._format_chain_logic_analysis(analysis)
                         answer = self._synthesize_with_narrative(question, data_response, classification)
+                        
+                        # Append debug info (matching points) AFTER narrative synthesis
+                        debug_info = analysis.get('debug_info', [])
+                        if debug_info:
+                            answer += "\n\n" + "\n".join(debug_info)
+                        
                         self.last_answer = answer
                         return answer
                     elif 'error' in analysis:
@@ -18589,7 +20736,7 @@ Return ONLY the JSON:"""
                 except Exception as e:
                     print(f"[CHAIN] Exception: {e}, falling through to taxonomy")
         
-        # === 2. UNIFIED TREE ANALYZER â†’ ALL analytical queries ===
+        # === 2. UNIFIED TREE ANALYZER -> ALL analytical queries ===
         # ONE PATH for all queries - complexity just affects tree depth
         # Simple query = shallow tree (0-1 filters), Complex = deep tree (3+ filters)
         # NOTE: "TAXONOMY" and "N-DIM" are the SAME system - just different log labels
@@ -18610,7 +20757,7 @@ Return ONLY the JSON:"""
             print(f"[TAXONOMY] Exception: {e}")
             traceback.print_exc()
         
-        # === 3. NARRATIVE FALLBACK â†’ Pure summary/story questions ===
+        # === 3. NARRATIVE FALLBACK -> Pure summary/story questions ===
         # Also handles any queries that taxonomy couldn't process
         print("[NARRATIVE] Routing to NL retrieval + LLM for narrative synthesis")
         answer = self._handle_narrative_query(question, classification, top_k)
